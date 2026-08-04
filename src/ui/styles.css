@@ -923,8 +923,12 @@ body.panel-open #ui #questTracker {
   cursor: pointer;
   border-radius: var(--r-lg);
   background-color: transparent;
-  border: 12px solid transparent;
-  border-image: url('/ui/slot-frame.png') 26 fill stretch;
+  /* slot-frame.png is 256²; corners curve out to ~50px and the soft bottom
+     shadow needs a little extra. Slice must clear that curve or the mid-edges
+     stretch the chamfer into the diamond look. Border width keeps the cream
+     rim chunky on a ~56–76px hotbar slot. */
+  border: 14px solid transparent;
+  border-image: url('/ui/slot-frame.png') 56 60 64 60 fill stretch;
   box-shadow: var(--shadow-sm);
   transition: transform 0.14s var(--spring), filter 0.12s ease, box-shadow 0.12s ease;
 }
@@ -1421,8 +1425,8 @@ body.panel-open #ui #questTracker {
   /* Inset well behind each icon, so a list of emoji reads as a row of
      labelled buttons rather than as loose text. */
   background-color: transparent;
-  border: 9px solid transparent;
-  border-image: url('/ui/slot-frame.png') 26 fill stretch;
+  border: 10px solid transparent;
+  border-image: url('/ui/slot-frame.png') 56 60 64 60 fill stretch;
   border-radius: var(--r-sm);
   flex-shrink: 0;
 }

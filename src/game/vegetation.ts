@@ -4,7 +4,7 @@ import { createFlowerModel } from '../assets/nature'
 import { createPebbleScatter, createCloverPatch, createMushroomCluster } from '../assets/decals'
 import { createReedsModel } from '../assets/bridge'
 import { MINOR_LAYER, rng } from '../assets/style'
-import { heightAt, isPlantable, WALK_LIMIT, WATER_LEVEL } from './terrain'
+import { heightAt, isPlantable, oceanMask, WALK_LIMIT, WATER_LEVEL } from './terrain'
 import { getModels, fitToHeight, PROP_HEIGHT } from '../assets/models'
 import { captureImpostor, createImpostorField, type ImpostorPlacement } from '../assets/impostor'
 import type { Obstacle } from './world'
@@ -86,6 +86,15 @@ const GRASS_COUNT = 14000
 const GRASS_FADE_NEAR = 38
 const GRASS_FADE_FAR = 60
 
+/**
+ * Nothing that grows in a meadow is planted beyond this on the seaward arc.
+ *
+ * One number for all three placement loops — trees, dressing and grass. They
+ * each sample independently, and the beach was carpeted twice over because the
+ * first two were fixed and the third was forgotten.
+ */
+const COAST_CLEAR = 40
+
 
 export function createVegetation(opts: VegetationOptions): THREE.Group {
   const group = new THREE.Group()
@@ -133,7 +142,16 @@ export function createVegetation(opts: VegetationOptions): THREE.Group {
   const bushPlacements: Placement[] = []
   const rockPlacements: Placement[][] = rockModels.map(() => [])
 
-  /** Rejection-sample a point on plantable ground outside the built-up area. */
+  /**
+   * Rejection-sample a point on plantable ground outside the built-up area.
+   *
+   * The coast is excluded outright rather than left to `isPlantable`, which only
+   * asks whether the ground is above water and gentle enough — both true of a
+   * beach. A forest growing down the sand to the tideline is the one thing that
+   * would stop the seaward side reading as a coast at all, so the whole seaward
+   * strip is off limits to trees, bushes and rocks alike. The shore dressing
+   * (reeds, pebbles) is placed separately and is unaffected.
+   */
   function sample(maxAttempts = 40): { x: number; z: number; h: number } | null {
     for (let i = 0; i < maxAttempts; i++) {
       const a = r() * Math.PI * 2
@@ -142,6 +160,7 @@ export function createVegetation(opts: VegetationOptions): THREE.Group {
       const z = Math.sin(a) * d
       if (opts.blocked(x, z)) continue
       if (!isPlantable(x, z)) continue
+      if (d > COAST_CLEAR && oceanMask(Math.atan2(z, x)) > 0.25) continue
       return { x, z, h: heightAt(x, z) }
     }
     return null
@@ -301,8 +320,17 @@ function createDressing(opts: VegetationOptions, r: () => number): THREE.Group {
 
   const flowerColors = [0xf25c9e, 0xf2e05c, 0xa06ff2, 0xf27a4a, 0xf5f5f5]
 
-  const kinds: { geos: THREE.BufferGeometry[]; count: number; shoreOnly?: boolean }[] = [
-    { geos: [bakeGroup(createPebbleScatter(r)), bakeGroup(createPebbleScatter(r))], count: DRESSING_COUNTS.pebbles },
+  /*
+   * `coast` says whether a kind may grow on the seaward sand.
+   *
+   * Only the pebbles may. Everything else here is meadow or marsh dressing, and
+   * the reeds were the ones that gave it away: `shoreOnly` means "just above the
+   * waterline", which was a river bank until there was an ocean and is now a
+   * whole beach as well. The first coast came out carpeted in bulrushes from the
+   * dunes to the surf.
+   */
+  const kinds: { geos: THREE.BufferGeometry[]; count: number; shoreOnly?: boolean; coast?: boolean }[] = [
+    { geos: [bakeGroup(createPebbleScatter(r)), bakeGroup(createPebbleScatter(r))], count: DRESSING_COUNTS.pebbles, coast: true },
     { geos: [bakeGroup(createCloverPatch(r)), bakeGroup(createCloverPatch(r))], count: DRESSING_COUNTS.clover },
     { geos: [bakeGroup(createMushroomCluster(r))], count: DRESSING_COUNTS.mushroom },
     {
@@ -324,6 +352,7 @@ function createDressing(opts: VegetationOptions, r: () => number): THREE.Group {
       const x = Math.cos(a) * d
       const z = Math.sin(a) * d
       if (opts.blocked(x, z) || !isPlantable(x, z)) continue
+      if (!kind.coast && d > COAST_CLEAR && oceanMask(Math.atan2(z, x)) > 0.25) continue
 
       const h = heightAt(x, z)
       // Reeds only belong in the band just above the waterline.
@@ -507,6 +536,10 @@ function createGrassField(opts: VegetationOptions, r: () => number): THREE.Group
     const cz = Math.sin(a) * d
     if (opts.blocked(cx, cz)) continue
     if (!isPlantable(cx, cz)) continue
+    // Off the sand, like the trees and the meadow dressing. The grass field has
+    // its own placement loop, which is exactly why it was the one that kept
+    // carpeting the beach after the other two were fixed.
+    if (d > COAST_CLEAR && oceanMask(Math.atan2(cz, cx)) > 0.25) continue
 
     const h = heightAt(cx, cz)
     // Grass thins out with altitude — bare rock above the tree line.

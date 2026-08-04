@@ -255,15 +255,30 @@ export class Water {
         uReflection: { value: this.reflectionRT.texture },
         uRefraction: { value: this.refractionRT.texture },
         uTextureMatrix: { value: this.textureMatrix },
-        uShallowColor: { value: new THREE.Color(0x6fdedc) },
+        uShallowColor: { value: new THREE.Color(0x62d9e4) },
         // Not near-black. A deep tone this dark plus any reflection at all leaves
         // the middle of a lake reading as a hole rather than as water.
-        uDeepColor: { value: new THREE.Color(0x1f6fa8) },
+        //
+        // Pushed bluer and more saturated with the coast: a lake is small enough
+        // that its colour is mostly borrowed from the sky, but an open sea fills
+        // a third of the frame and has to carry a colour of its own.
+        uDeepColor: { value: new THREE.Color(0x1a72cf) },
         uFoamColor: { value: new THREE.Color(0xeaf7fb) },
         uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
         uSunColor: { value: new THREE.Color(0xffffff) },
         uCameraPos: { value: new THREE.Vector3() },
-        uReflectivity: { value: 0.85 },
+        /*
+         * Reflectivity down from 0.85.
+         *
+         * At that level the surface was very nearly a mirror, so every body of
+         * water took the sky's colour and came out pale — fine on a pond read as
+         * a bright patch, wrong on an ocean, where it left the whole seaward half
+         * of the map looking washed out rather than blue. Lower reflectivity lets
+         * the body colour above do the work; fresnel still swings it back toward
+         * a mirror at grazing angles, which is where a reflection is convincing
+         * anyway.
+         */
+        uReflectivity: { value: 0.55 },
       },
     })
 

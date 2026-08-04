@@ -28,6 +28,10 @@ import {
   BRIDGES,
   WATER_LEVEL,
   WALK_LIMIT,
+  oceanMask,
+  OCEAN_BEARING,
+  OCEAN_HALF,
+  OCEAN_FEATHER,
 } from './terrain'
 import {
   FARM_SLOTS,
@@ -303,7 +307,10 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   // --- sky, terrain, water -------------------------------------------------
   // Skyline first so it is drawn behind everything, and so the ranges are in
   // place before the water builds its reflection of them.
-  const skyline = new Skyline()
+  // The painted ranges leave the sea's arc empty — see SkylineGap. The numbers
+  // are terrain's, so the horizon and the heightfield open on exactly the same
+  // bearings rather than on two hand-matched guesses.
+  const skyline = new Skyline({ at: OCEAN_BEARING, half: OCEAN_HALF, feather: OCEAN_FEATHER })
   group.add(skyline.group)
 
   group.add(createTerrainMesh())
@@ -857,6 +864,13 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     const h = heightAt(x, z)
     if (h > WATER_LEVEL - 0.4 || h < WATER_LEVEL - 2.6) continue
     if (isWalkable(x, z)) continue
+    /*
+     * Fresh water only. The depth test above is satisfied by the sea's shallows
+     * as readily as by a pond, and the first coast came out with lily pads
+     * floating in the surf — they are a still-water plant, and the ocean is the
+     * one body of water in the valley that is visibly not still.
+     */
+    if (oceanMask(Math.atan2(z, x)) > 0.2) continue
     const pad = createLilyPadModel(pads * 23 + 7)
     pad.position.set(x, WATER_LEVEL, z)
     setLayer(pad, MINOR_LAYER)

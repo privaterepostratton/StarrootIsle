@@ -44,3 +44,13 @@
   border-width: 0px 20px 0px 20px;
   border-image: url('chip-bg.png') 0 40 0 40 fill stretch;
 }
+
+/* slot-frame.png — 256² art; slice clears ~50px corner curves + bottom shadow.
+   Shop row wells (.row .emoji) share the same slice in styles.css with a
+   thinner border so the 42px wells keep icon room. */
+.slot {
+  border-style: solid;
+  border-color: transparent;
+  border-width: 14px 14px 14px 14px;
+  border-image: url('slot-frame.png') 56 60 64 60 fill stretch;
+}

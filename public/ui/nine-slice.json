@@ -133,5 +133,20 @@
     "fill": true,
     "selectors": ".tab",
     "power": 0.5
+  },
+  "slot-frame.png": {
+    "t": 56,
+    "r": 60,
+    "b": 64,
+    "l": 60,
+    "bt": 14,
+    "br": 14,
+    "bb": 14,
+    "bl": 14,
+    "outset": 0,
+    "repeat": "stretch",
+    "fill": true,
+    "selectors": ".slot",
+    "power": 0.23333333333333334
   }
 }

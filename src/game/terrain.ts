@@ -179,7 +179,13 @@ interface River {
  * farm.
  */
 const RIVERS: River[] = [
-  { along: 'z', centre: (z) => -74 + z * 0.2 + Math.sin(z * 0.048) * 7, width: 3.2, bank: 6.5, depth: 3.6 },
+  /*
+   * There is no west channel any more. It ran at x = -74, which the ocean now
+   * covers outright — a river carved along the sea bed is invisible, and its
+   * bridge stood in open water. The coast does that side's job, and the south
+   * channel below drains into it, which is a better story than the two of them
+   * running in parallel ever was.
+   */
   { along: 'z', centre: (z) => 72 - z * 0.18 + Math.sin(z * 0.042 + 1.4) * 8, width: 3.0, bank: 6.0, depth: 3.4 },
   { along: 'x', centre: (x) => -76 - x * 0.12 + Math.sin(x * 0.04 + 2.2) * 8, width: 2.8, bank: 6.0, depth: 3.2 },
 ]
@@ -212,8 +218,6 @@ interface Lake {
  * means recomputing them or the pool detaches and becomes a puddle again.
  */
 const LAKES: Lake[] = [
-  // On the west channel, level with the plots — the water the west row overlooks.
-  { x: -61, z: 30, r: 13, depth: 3.8 },
   // On the east channel, level with the square.
   { x: 75, z: 20, r: 12, depth: 3.6 },
   // The head of the valley: the one body of water big enough to be a landmark,
@@ -242,11 +246,11 @@ const HILLS = [
   // flank overlaps a river fills the bed — hills are added before the carve, so
   // the subtraction lands on raised ground and the water simply stops being
   // water for the length of the overlap.
-  { x: -40, z: 55, r: 20, h: 8 },
+  { x: 10, z: 72, r: 20, h: 8 },
   { x: 44, z: 56, r: 20, h: 7.5 },
-  { x: -66, z: -48, r: 22, h: 7 },
+  { x: -14, z: -84, r: 22, h: 7 },
   { x: 64, z: -22, r: 22, h: 7.5 },
-  { x: -38, z: 88, r: 24, h: 9 },
+  { x: 34, z: 84, r: 24, h: 9 },
   { x: 30, z: -92, r: 22, h: 8 },
 ]
 
@@ -331,6 +335,69 @@ function summitProfile(bearing: number) {
   return m
 }
 
+/**
+ * The open sea, as an arc of the compass where the mountain wall simply is not.
+ *
+ * The valley is otherwise a closed bowl, and a closed bowl has no horizon —
+ * every sightline ends on rock at the same distance. Opening one side to water
+ * gives the map a direction that means something: a wall you turn your back on,
+ * and a view you walk toward.
+ *
+ * Expressed as a bearing window rather than a half-plane, so the coast curves
+ * away at both ends and the mountains close in behind it. That is what makes it
+ * read as a bay rather than as a map edge that stops being drawn. The feather is
+ * the arc over which mountain gives way to water; too tight and the last summit
+ * ends in a cliff standing in the sea.
+ *
+ * `heightAt` measures bearing as `atan2(z, x)`, so PI is due west (−x).
+ */
+export const OCEAN_BEARING = Math.PI
+/** Half-width of the fully open arc, in radians — about 115 degrees of coast. */
+export const OCEAN_HALF = 1.0
+/**
+ * Arc over which the wall gives way to the water.
+ *
+ * Widened from 0.45. At that width the ring went from nothing to its full
+ * forty-six units inside about a quarter turn, which at this radius is forty
+ * metres of arc — so the headlands either side of the bay reared straight out of
+ * the beach at close to full height, and the coast was overshadowed by a cliff
+ * from the moment you got there.
+ *
+ * Just over a radian spreads that climb across roughly a hundred metres of
+ * coastline instead. The wall now *ramps*: low hills at the water, rising along
+ * the shore, full mountains only well round the far side. The valley reads as a
+ * bowl tipped toward the sea rather than as a crater with a bite taken out.
+ *
+ * Widening this does drop the north and south walls to around two thirds height,
+ * which is fine for containment — WALK_LIMIT is the real boundary out here, and
+ * the ramp only reaches a few units tall by the time it gets there anyway.
+ */
+export const OCEAN_FEATHER = 0.95
+
+/** 1 out to sea, 0 where the mountain ring stands untouched. */
+export function oceanMask(bearing: number) {
+  const d = Math.abs(bearingDelta(OCEAN_BEARING, bearing))
+  return 1 - smoothstep(OCEAN_HALF, OCEAN_HALF + OCEAN_FEATHER, d)
+}
+
+/**
+ * Where the seaward ground starts to fall, and where it reaches the sea bed.
+ *
+ * These are much tighter than the mountain wall they replaced. Putting the
+ * shore where the wall stood kept the valley's size but left the sea a hundred
+ * units from the farms — visible from the plots and a genuinely long walk, so it
+ * read as a painted backdrop rather than as somewhere to go. Bringing it in to
+ * the mid-fifties puts the waterline about forty units past the west fence line,
+ * which is the same distance the east river sits at.
+ *
+ * The fall is long and quadratic on purpose. The beach is the shallow head of
+ * that curve — a slope steep enough to reach depth quickly gives a waterline
+ * you cannot stand beside, which is the one thing a beach has to offer.
+ */
+const SHORE_START = 48
+const SHORE_FULL = 100
+const OCEAN_DEPTH = 14
+
 export function heightAt(x: number, z: number): number {
   // Rolling ground.
   let h = (fbm(x * 0.026 + 100, z * 0.026 + 100) - 0.5) * 3.2
@@ -342,17 +409,33 @@ export function heightAt(x: number, z: number): number {
     h += t * t * hill.h
   }
 
-  // Mountain ring.
+  // Mountain ring, everywhere the sea is not.
   const d = Math.hypot(x, z)
-  if (d > MOUNTAIN_START) {
+  const bearing = Math.atan2(z, x)
+  const sea = oceanMask(bearing)
+
+  if (sea < 1 && d > MOUNTAIN_START) {
     const t = smoothstep(MOUNTAIN_START, MOUNTAIN_FULL, d)
-    const profile = summitProfile(Math.atan2(z, x))
-    h += t * t * MOUNTAIN_RISE * profile
+    const profile = summitProfile(bearing)
+    const wall = 1 - sea
+    h += wall * t * t * MOUNTAIN_RISE * profile
     // Craggy detail scaled by the ramp *and* the profile, so summits break up
     // into ridges and spurs while the saddles stay smooth. Scaled with the rise
     // for the same reason the rise itself grew — detail that stayed at 20 while
     // the peaks went to 46 would have sanded the range smooth.
-    h += (fbm(x * 0.055, z * 0.055, 5) - 0.5) * 26 * t * profile
+    h += wall * (fbm(x * 0.055, z * 0.055, 5) - 0.5) * 26 * t * profile
+  }
+
+  /*
+   * The seaward fall, on the same arc the wall gave up.
+   *
+   * Subtracted rather than assigned, so the rolling ground and any hill that
+   * happens to sit near the coast still shape it — that is what turns the
+   * headland at (-66, -48) into a headland instead of a bite out of a circle.
+   */
+  if (sea > 0 && d > SHORE_START) {
+    const t = smoothstep(SHORE_START, SHORE_FULL, d)
+    h -= sea * t * t * OCEAN_DEPTH
   }
 
   // Carve rivers. Flat bed out to `width`, banks climbing over `bank`.
@@ -414,8 +497,6 @@ export interface Bridge {
  * walk round the end of it, which is worse than no bridge at all.
  */
 export const BRIDGES: Bridge[] = [
-  // West channel, due west of the street: -74 + 0 * 0.2 + sin(0) * 7.
-  { x: -74, z: 0, hw: 9, hd: 2.4, y: 0.9, along: 'x' },
   // East channel, due east: 72 - 0 * 0.18 + sin(1.4) * 8.
   { x: 80, z: 0, hw: 9, hd: 2.4, y: 0.9, along: 'x' },
   // South channel, straight down the lane: -76 - 0 * 0.12 + sin(2.2) * 8.
@@ -475,9 +556,22 @@ export function createTerrainMesh(): THREE.Mesh {
     const slope = slopeAt(x, z)
     const tint = fbm(x * 0.09, z * 0.09, 2)
 
-    if (h < WATER_LEVEL + 0.7) {
+    /*
+     * The sand band is far wider on the coast than around a pond.
+     *
+     * Inland, sand is a thin lip where the grass meets the water — that is what
+     * a lake shore looks like. A beach is the opposite: metres of dry sand well
+     * above the waterline, and holding it to the pond's 0.7 of a unit gave the
+     * coast a green lawn running to the sea's edge. Widened by the same ocean
+     * mask that removed the mountains, and only out where the shore actually is,
+     * so nothing inland changes.
+     */
+    const coast = oceanMask(Math.atan2(z, x)) * smoothstep(38, 56, Math.hypot(x, z))
+    const sandTop = WATER_LEVEL + 0.7 + coast * 2.6
+
+    if (h < sandTop) {
       // Sandy shoreline, fading into grass just above the waterline.
-      c.copy(C_SAND).lerp(C_GRASS, smoothstep(WATER_LEVEL + 0.1, WATER_LEVEL + 0.7, h))
+      c.copy(C_SAND).lerp(C_GRASS, smoothstep(WATER_LEVEL + 0.1, sandTop, h))
     } else if (h > 30) {
       // Snow line sits above the saddles (0.34 x MOUNTAIN_RISE, about 15.6) so
       // it caps the summits rather than whitewashing the whole ring. Nothing

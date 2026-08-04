@@ -96,8 +96,27 @@ function profileAt(bearing: number, summits: Summit[], saddle: number) {
   return m
 }
 
+/**
+ * An arc of the compass the ranges leave empty, so the sea has a horizon.
+ *
+ * The terrain's own mountain wall opens on one side (see terrain.ts), and a
+ * painted range still standing behind that gap would put three rows of peaks on
+ * the skyline above open water — the one place the eye is expecting nothing.
+ * Passed in rather than imported so this file keeps its one-way dependency:
+ * assets know nothing about the game layer, and world.ts hands it the numbers
+ * terrain.ts already owns.
+ */
+export interface SkylineGap {
+  at: number
+  half: number
+  feather: number
+}
+
 /** One range: a closed ring of inward-facing quads under a summit profile. */
-function buildRange(layer: RangeLayer): THREE.Mesh {
+function buildRange(layer: RangeLayer, gap: SkylineGap | null): THREE.Mesh {
+  const openness = (bearing: number) =>
+    gap ? 1 - smoothstep(gap.half, gap.half + gap.feather, Math.abs(bearingDelta(gap.at, bearing))) : 0
+
   const r = rng(layer.seed)
   const summits = makeSummits(layer.summits, r)
 
@@ -123,8 +142,14 @@ function buildRange(layer: RangeLayer): THREE.Mesh {
     const a0 = (i / layer.segments) * Math.PI * 2
     const a1 = ((i + 1) / layer.segments) * Math.PI * 2
 
-    const p0 = profileAt(a0, summits, layer.saddle)
-    const p1 = profileAt(a1, summits, layer.saddle)
+    const o0 = openness(a0)
+    const o1 = openness(a1)
+    // Fully open: emit nothing at all rather than a zero-height sliver, which
+    // would still draw a hairline of rock along the horizon.
+    if (o0 > 0.995 && o1 > 0.995) continue
+
+    const p0 = profileAt(a0, summits, layer.saddle) * (1 - o0)
+    const p1 = profileAt(a1, summits, layer.saddle) * (1 - o1)
     const h0 = p0 * layer.rise
     const h1 = p1 * layer.rise
 
@@ -187,9 +212,9 @@ export class Skyline {
   private readonly cloudMaterial: THREE.MeshBasicMaterial
   private readonly clouds: { object: THREE.Group; speed: number }[] = []
 
-  constructor() {
+  constructor(gap: SkylineGap | null = null) {
     for (const layer of LAYERS) {
-      const mesh = buildRange(layer)
+      const mesh = buildRange(layer, gap)
       this.rangeMaterials.push(mesh.material as THREE.MeshBasicMaterial)
       this.group.add(mesh)
     }
