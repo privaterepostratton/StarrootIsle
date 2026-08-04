@@ -1,5 +1,5 @@
 /**
- * Township-style painted icons for HUD / shop rows.
+ * Casual 3D cartoon (Township-style) icons for HUD / shop rows.
  *
  * Icons live at `ui/icons/<id>.png`. Anything without a file falls back to the
  * emoji already stored on the game data, so new content still shows something.
