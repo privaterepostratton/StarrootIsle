@@ -28,12 +28,42 @@ import {
 } from './crops'
 
 export const TILE_SIZE = 1.2
-/** Maximum extent of the farm. Only tiles the player has bought are usable. */
-export const GRID_W = 14
-export const GRID_H = 12
+/**
+ * Maximum extent of the farm. Only tiles the player has bought are usable, and
+ * only those inside the cleared span (see `Farm.span`) can be bought at all.
+ *
+ * Odd on both axes so the span below is symmetrical about the centre — an even
+ * grid cannot hold a centred 5x5 without favouring one side by half a tile.
+ */
+export const GRID_W = 13
+export const GRID_H = 13
 
-/** Plots the player owns at the start. */
-export const STARTING_PLOTS = 8
+/**
+ * The clearing you cut out of the forest, in tiles per side.
+ *
+ * The farm no longer starts as a block of beds handed over at spawn. You arrive
+ * with nothing, clear trees to open a patch of ground, and that patch is what
+ * bounds the farm — beds are bought inside it, and buying more *land* is a
+ * separate, larger purchase that widens the clearing by a ring.
+ *
+ * Two axes of growth rather than one, because they answer different questions:
+ * a bed is "I want another row of turnips this afternoon", a clearing is "my
+ * farm is too small". Collapsing them into a single per-tile purchase is what
+ * made expansion read as a formality once coins started flowing.
+ */
+export const PLOT_SPAN_START = 5
+export const PLOT_SPAN_MAX = Math.min(GRID_W, GRID_H)
+/** Each upgrade adds a ring — one tile on every side. */
+export const PLOT_SPAN_STEP = 2
+
+/** Cost of widening the clearing from `span` to the next size up. */
+export function expansionCost(span: number) {
+  const steps = Math.max(0, (span - PLOT_SPAN_START) / PLOT_SPAN_STEP)
+  return Math.round(600 * Math.pow(2.15, steps))
+}
+
+/** Plots the player owns once the first clearing is cut. */
+export const STARTING_PLOTS = 4
 
 /** Cost of the next plot, given how many are already owned. Escalating so
  *  expansion stays a meaningful goal rather than a formality once coins flow. */
@@ -351,13 +381,22 @@ export class Farm {
     this.ghost.layers.set(MINOR_LAYER)
     this.group.add(this.ghost)
 
-    this.placeStartingPlots()
+    /*
+     * No starting beds.
+     *
+     * The farm used to hand over a block of eight the moment it was constructed,
+     * which is right when the player wakes up standing in their own garden. They
+     * now wake on a beach owning nothing, and the beds arrive with the clearing
+     * — see openClearing, called when the last of the opening trees comes down.
+     * Seeding them here as well would put a farm on the ground before the ground
+     * was cleared, and the trees would be standing in the middle of it.
+     */
   }
 
   /** A compact block in the middle of the grid, so the first plots are
    *  adjacent and the farm grows outward from a sensible core. */
   private placeStartingPlots() {
-    const w = 4
+    const w = 2
     const h = Math.ceil(STARTING_PLOTS / w)
     const x0 = Math.floor((GRID_W - w) / 2)
     const z0 = Math.floor((GRID_H - h) / 2)
@@ -424,7 +463,40 @@ export class Farm {
      * full purse. Retiring used to leave exactly that: zero plots and no legal
      * move. The caller then adds whatever legacy bonus plots are owed on top.
      */
+    // A retirement returns the farm to its opening state: the clearing is still
+    // cut — that was the tutorial, not a purchase — but every expansion bought
+    // on top of it is gone with the rest of the run.
+    this.span = PLOT_SPAN_START
     this.placeStartingPlots()
+  }
+
+  /**
+   * Work out how much ground is cleared from the beds that are on it.
+   *
+   * Deliberately not a saved field. The span is a bounding box around land the
+   * player already owns, so it can always be recovered from the tiles — and
+   * recovering it keeps every save written before clearings existed loadable,
+   * where adding a field would have needed a migration and a default that was
+   * wrong for one of the two cases.
+   *
+   * Rounded up to the next odd size, because the clearing is symmetrical about
+   * the grid centre and an even span cannot be.
+   */
+  private recoverSpan() {
+    const cx = (GRID_W - 1) / 2
+    const cz = (GRID_H - 1) / 2
+    let reach = -1
+    for (const tile of this.tiles) {
+      if (!tile.placed) continue
+      reach = Math.max(reach, Math.abs(tile.gx - cx), Math.abs(tile.gz - cz))
+    }
+    if (reach < 0) {
+      // Nothing owned: the opening trees are still standing.
+      this.span = 0
+      return
+    }
+    const needed = Math.ceil(reach) * 2 + 1
+    this.span = Math.min(PLOT_SPAN_MAX, Math.max(PLOT_SPAN_START, needed))
   }
 
   get nextPlotCost() {
@@ -491,8 +563,63 @@ export class Farm {
 
   /** New plots must touch an existing one, so the farm stays a single field
    *  instead of a scatter of disconnected squares. */
+  /**
+   * The cleared ground, in tiles per side. Beds may only be built inside it.
+   *
+   * Starts at zero rather than at PLOT_SPAN_START: before the opening trees are
+   * cleared the player owns no land at all, and a farm that exists from the
+   * first frame would give the clearing nothing to do.
+   */
+  private span = 0
+
+  get plotSpan() {
+    return this.span
+  }
+
+  get nextExpansionCost() {
+    return expansionCost(this.span)
+  }
+
+  get canExpand() {
+    return this.span > 0 && this.span < PLOT_SPAN_MAX
+  }
+
+  /** Widen the clearing by a ring. Returns false at the maximum. */
+  expandPlot() {
+    if (!this.canExpand) return false
+    this.span += PLOT_SPAN_STEP
+    // The buyable-spot markers are cached; the new ring would not appear until
+    // the shovel was put away and taken out again without this.
+    this.buySpotsAge = 0
+    return true
+  }
+
+  /**
+   * Cut the first clearing. Called once, when the opening trees come down.
+   *
+   * Idempotent, because the FTUE and a restored save can both reach it and
+   * neither should be able to reset a farm that already exists.
+   */
+  openClearing() {
+    if (this.span > 0) return false
+    this.span = PLOT_SPAN_START
+    this.placeStartingPlots()
+    return true
+  }
+
+  /** Inside the cleared square, which is centred on the grid. */
+  private withinSpan(tile: Tile) {
+    if (this.span <= 0) return false
+    const half = (this.span - 1) / 2
+    const cx = (GRID_W - 1) / 2
+    const cz = (GRID_H - 1) / 2
+    return Math.abs(tile.gx - cx) <= half && Math.abs(tile.gz - cz) <= half
+  }
+
   canPlace(tile: Tile | null): tile is Tile {
     if (!tile || tile.placed) return false
+    // Beds cannot be built on ground that has not been cleared yet.
+    if (!this.withinSpan(tile)) return false
     const neighbours: [number, number][] = [
       [tile.gx - 1, tile.gz],
       [tile.gx + 1, tile.gz],
@@ -705,6 +832,16 @@ export class Farm {
    * `elapsed` drives the spawn pop-in; deserialize passes -1 to skip it, because
    * a whole farm of crops bouncing on load reads as a glitch, not a greeting.
    */
+  /**
+   * Whether rarity is rolled at all, or every crop comes up common.
+   *
+   * Set from the player's level (see the `mutations` feature unlock). A flag on
+   * the farm rather than a check at the call site because planting happens from
+   * four places — the player, a quest reward, the catch-up pass and a restore —
+   * and three of them would have forgotten it.
+   */
+  mutationsUnlocked = false
+
   plant(tile: Tile, cropId: string, luck = 1, elapsed = -1) {
     if (tile.state !== 'tilled' || tile.crop || tile.sprinkler) return false
     const def = CROP_BY_ID.get(cropId)
@@ -712,7 +849,7 @@ export class Farm {
 
     const seed = Math.floor(Math.random() * 1_000_000)
     // Sprinkler coverage improves the rarity roll as well as growth speed.
-    const rarity = rollRarity(luck + this.sprinklerLuck(tile))
+    const rarity = this.mutationsUnlocked ? rollRarity(luck + this.sprinklerLuck(tile)) : 'common'
     const sizeRoll = sizeRollFor(seed)
 
     const model = createCropModel(def, 0, { seed, rarityColor: RARITY_BY_ID.get(rarity)?.color })
@@ -1224,6 +1361,8 @@ export class Farm {
 
   deserialize(data: ReturnType<Farm['serialize']>, elapsed: number) {
     if (!Array.isArray(data) || data.length !== this.tiles.length) return
+    // The span is *derived*, not stored — see recoverSpan.
+    this.span = 0
     data.forEach((d, i) => {
       const tile = this.tiles[i]
       this.setPlaced(tile, d.o === 1)
@@ -1269,6 +1408,9 @@ export class Farm {
         this.applySoilColor(tile)
       }
     })
+
+    // Last, once every tile knows whether it is owned.
+    this.recoverSpan()
   }
 }
 

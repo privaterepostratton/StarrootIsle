@@ -523,9 +523,51 @@ export function isWalkable(x: number, z: number) {
   if (Math.hypot(x, z) > WALK_LIMIT) return false
   if (bridgeAt(x, z)) return true
   const h = heightAt(x, z)
-  if (h < WATER_LEVEL + 0.25) return false
+  /*
+   * Right down to the waterline, not a hand's breadth above it.
+   *
+   * The old margin of 0.25 was written for lake and river banks, where it keeps
+   * the player from standing in the shallows and looking like they are walking
+   * on water. On a beach it fenced off the wet sand — the strip between the dry
+   * dune and the surf, which is the part of a beach anyone actually walks along
+   * — and left an invisible wall a couple of metres short of the sea.
+   *
+   * Held a hair above WATER_LEVEL rather than at it, so the boundary lands on
+   * sand rather than on the surface itself and there is no frame where the
+   * farmer's feet are under the plane.
+   */
+  if (h < WATER_LEVEL + 0.02) return false
   if (h > 13) return false
+  /*
+   * Slope is not tested on the shore.
+   *
+   * The seaward fall is gentle by design, but the fbm roll on top of it puts
+   * occasional patches over the cliff threshold, and on an otherwise flat beach
+   * those read as nothing at all — the player simply stops, in the open, on
+   * sand, for no visible reason. There is nothing to fall off here: the water
+   * is the boundary, and it is already enforced above.
+   */
+  if (h < WATER_LEVEL + 2.4 && oceanMask(Math.atan2(z, x)) > 0.25) return true
   return slopeAt(x, z) < 0.72
+}
+
+/**
+ * Beach: coastal ground low enough to be sand rather than meadow.
+ *
+ * One test, exported, because four different things plant trees — the global
+ * forest scatter, the wood around the player's clearing, the thickets over the
+ * unbuilt village, and the neighbours' plots — and each of them had to learn
+ * separately not to put a pine on a beach. They did not, so the shore ended up
+ * with conifers standing in the sand.
+ *
+ * Matches the band the terrain shader paints as sand (see createTerrainMesh) so
+ * the rule and the look cannot drift apart. Palms are placed *against* this
+ * rather than excluded by it — they are the one thing that belongs here.
+ */
+export function isSand(x: number, z: number) {
+  const coast = oceanMask(Math.atan2(z, x)) * smoothstep(38, 56, Math.hypot(x, z))
+  if (coast <= 0.05) return false
+  return heightAt(x, z) < WATER_LEVEL + 0.7 + coast * 2.6
 }
 
 /** Good spot for scattered decoration: on land, not too steep, not in the farm. */

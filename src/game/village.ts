@@ -104,78 +104,55 @@ export const FARM_SLOTS: FarmSlot[] = [
 ]
 
 /**
- * Where the player's own plot is remembered between sessions.
+ * The player's farm: a clearing between the lane and the sea.
  *
- * Its own key rather than a field in the save, because the choice has to be
- * made at *module load* — PLAYER_SLOT, FARM_CENTRE and SPAWN are consumed as
- * constants by the world builder, the farm and the player, all of which are
- * constructed long before `Save.load()` resolves. A synchronous read is the
- * only thing available that early.
+ * It is no longer one of the six lane plots. The game now opens on the beach
+ * and the first thing you do is cut a clearing out of the woods behind it, so
+ * the farm has to be *there* — walking inland to a plot that already existed on
+ * a street would undo the whole point of clearing it.
+ *
+ * Far enough west that the sea is in view from the fence and close enough that
+ * the lane is a short walk east, which is what lets the seed stall and the barn
+ * arrive on the square later and still feel like they arrived near you.
+ *
+ * Shaped like a lane plot — same FarmSlot, same fence extents, `inward` still
+ * pointing at the lane — so the gate, the signpost, the fence builder and the
+ * router all keep working without knowing it has moved off the street.
  */
-const PLOT_KEY = 'sprout-valley-plot-v1'
+export const PLAYER_SLOT: FarmSlot = { side: 'west', row: 1, x: -38, z: 2, inward: 1 }
 
 /**
- * Which of the six plots the player farms, drawn once and then kept forever.
+ * The five plots the neighbours live on.
  *
- * It used to be fixed at FARM_SLOTS[0] — the south-west plot, first off the
- * market square — so every playthrough opened on the same view of the same
- * corner. Drawing it makes the walk up the lane, the neighbours you pass, and
- * which side the morning sun comes from different from one player to the next.
- *
- * Drawn *once*, though, and that matters more than the draw: rerolling per
- * session would move a returning player's farm out from under them. Crop state
- * survives a move (tiles serialise by index, so they rebuild around the new
- * centre) but anything holding a world position does not — placed decor would
- * stay behind, some of it now standing in a neighbour's garden.
+ * They keep their cottages, mailboxes and gardens; the crop plots are gone with
+ * the six-farm layout. The player's farm is no longer among these, so this is a
+ * straight slice rather than a filter — there is nothing to exclude.
  */
-function chosenSlotIndex(): number {
-  // The router tests and the dev contact sheets import this module with no DOM.
-  // A fixed plot there is also what makes those tests reproducible.
-  if (typeof localStorage === 'undefined') return 0
-  try {
-    /*
-     * The raw string is tested before the number, because `Number(null)` is 0 —
-     * not NaN. Converting first made "nothing stored yet" indistinguishable from
-     * "stored plot 0", so the range check passed, the draw never ran, and every
-     * player got the south-west plot exactly as before.
-     */
-    const raw = localStorage.getItem(PLOT_KEY)
-    const stored = raw === null ? NaN : Number(raw)
-    if (Number.isInteger(stored) && stored >= 0 && stored < FARM_SLOTS.length) return stored
-    const drawn = Math.floor(Math.random() * FARM_SLOTS.length)
-    localStorage.setItem(PLOT_KEY, String(drawn))
-    return drawn
-  } catch {
-    // Private browsing, or storage disabled. Fall back to the old fixed plot
-    // rather than rerolling on every load, which is the one outcome worse than
-    // not randomising at all.
-    return 0
-  }
-}
-
-/** The plot the player farms. Drawn on first run — see chosenSlotIndex. */
-export const PLAYER_SLOT = FARM_SLOTS[chosenSlotIndex()]
-
-/** Forget the drawn plot, so the next load draws again. Called on save wipe. */
-export function clearPlotChoice() {
-  try {
-    localStorage.removeItem(PLOT_KEY)
-  } catch {
-    /* ignore */
-  }
-}
+export const NEIGHBOUR_SLOTS = FARM_SLOTS.slice(0, 5)
 
 /**
- * The five plots the simulated neighbours occupy, in profile order.
+ * Every fenced plot in the world — the neighbours' and the player's.
  *
- * Filtered rather than sliced: the player's plot is no longer guaranteed to be
- * the first one, and `slice(1)` would have handed a neighbour the player's own
- * garden and left one plot empty.
+ * The player's clearing stopped being one of FARM_SLOTS when it moved off the
+ * street, and anything that reasons about fences as obstacles has to see it
+ * anyway. The waypoint router is the one that matters: built from FARM_SLOTS
+ * alone it had no gate node for the player's own farm, so the guide trail could
+ * route to the fence and stop there.
  */
-export const NEIGHBOUR_SLOTS = FARM_SLOTS.filter((s) => s !== PLAYER_SLOT)
+export const FENCED_PLOTS: FarmSlot[] = [...NEIGHBOUR_SLOTS, PLAYER_SLOT]
 
 /** Centre of the player's tile grid. */
 export const FARM_CENTRE = new THREE.Vector3(PLAYER_SLOT.x, 0, PLAYER_SLOT.z)
+
+/**
+ * Where the game begins: on the sand, a few paces from the water.
+ *
+ * The old spawn put the player inside their own garden so the first thirty
+ * seconds explained themselves. There is no garden yet — that is the tutorial
+ * now — so the opening shot is the sea instead, and the walk inland is the
+ * first thing the player chooses to do.
+ */
+export const SPAWN = new THREE.Vector3(-56, 0, 6)
 
 /** Where a plot's gate opens onto the lane. */
 export function gatePos(s: FarmSlot) {
@@ -235,13 +212,6 @@ export const BARN_FRONT = -1
 export const PASTURE_CENTRE = new THREE.Vector3(24.5, 0, LANE_Z_MAX + 9)
 export const PASTURE_RADIUS = 7.5
 
-/**
- * Where the player starts and respawns: *inside their own garden*, beside the
- * starting bed. Waking up on your farm makes the first thirty seconds
- * self-explanatory — the plots are right there — where the old lane spawn
- * opened on scenery and left the tutorial pointing at things off-screen.
- */
-export const SPAWN = new THREE.Vector3(PLAYER_SLOT.x + 2.6, 0, PLAYER_SLOT.z + 3.4)
 
 /** The well capping the north end of the lane. */
 export const WELL_POS = new THREE.Vector3(0, 0, LANE_Z_MAX - 3)
@@ -288,13 +258,20 @@ export const FLAT_PADS: FlatPad[] = [
   { cx: BARN_POS.x, cz: BARN_POS.z, hx: 8, hz: 7, falloff: 8 },
   // The turning circle at the north end of the lane.
   { cx: 0, cz: LANE_Z_MAX - 2, hx: 9, hz: 6, falloff: 8 },
+  /*
+   * The player's clearing. Flattened like any other built ground — a farm on a
+   * slope cannot have a square tile grid — and given a wide falloff so the
+   * ground eases back into the woods rather than sitting on a plateau.
+   */
+  { cx: PLAYER_SLOT.x, cz: PLAYER_SLOT.z, hx: FENCE_HX + 2, hz: FENCE_HZ + 2, falloff: 11 },
 ]
 
 // --- queries -----------------------------------------------------------------
 
 /** Extent of everything the village occupies, used to keep wild features out. */
 export const VILLAGE_BOUNDS = {
-  minX: -(PLOT_CX + FENCE_HX),
+  // Reaches west to the player's clearing, which is well off the street now.
+  minX: Math.min(-(PLOT_CX + FENCE_HX), PLAYER_SLOT.x - FENCE_HX - 3),
   maxX: PASTURE_CENTRE.x + PASTURE_RADIUS + 2,
   minZ: SQUARE_CZ - 9,
   /*
@@ -321,8 +298,14 @@ export function inPlayerPlot(x: number, z: number, margin = 0) {
 
 /** True inside any fenced plot, with an optional margin. */
 export function inAnyPlot(x: number, z: number, margin = 0) {
-  return FARM_SLOTS.some(
-    (s) => Math.abs(x - s.x) < FENCE_HX + margin && Math.abs(z - s.z) < FENCE_HZ + margin,
+  // The player's clearing is not one of the lane slots any more, so it has to
+  // be named explicitly — without it the forest scatter plants trees inside the
+  // player's own fence.
+  return (
+    inPlayerPlot(x, z, margin) ||
+    NEIGHBOUR_SLOTS.some(
+      (s) => Math.abs(x - s.x) < FENCE_HX + margin && Math.abs(z - s.z) < FENCE_HZ + margin,
+    )
   )
 }
 

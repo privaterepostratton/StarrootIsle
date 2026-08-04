@@ -61,7 +61,7 @@ export const MAX_LEVEL = LEVEL_REWARDS.length + 1
  * button is nothing.
  */
 export interface FeatureUnlock {
-  id: 'valley' | 'almanac' | 'sprinkler' | 'animals' | 'decor' | 'pets' | 'legacy'
+  id: 'valley' | 'mutations' | 'almanac' | 'sprinkler' | 'animals' | 'decor' | 'pets' | 'legacy'
   name: string
   emoji: string
   level: number
@@ -70,6 +70,16 @@ export interface FeatureUnlock {
 
 export const FEATURE_UNLOCKS: FeatureUnlock[] = [
   { id: 'valley', name: 'The Valley', emoji: '🏘️', level: 3, blurb: 'Meet the neighbours' },
+  /*
+   * Mutations are held back rather than being on from the first turnip.
+   *
+   * They are the game's main source of variance, and variance the player has no
+   * frame of reference for is just noise: a gold turnip in the first five
+   * minutes reads as the normal price of a turnip, and the moment stops meaning
+   * anything the second time. Withheld until level 4, the first one lands after
+   * enough plain harvests to know what plain is worth.
+   */
+  { id: 'mutations', name: 'Mutations', emoji: '✨', level: 4, blurb: 'Crops can come up rare' },
   { id: 'almanac', name: 'Almanac', emoji: '📖', level: 4, blurb: 'Track your discoveries' },
   { id: 'sprinkler', name: 'Sprinklers', emoji: '💦', level: 5, blurb: 'Automatic watering' },
   { id: 'animals', name: 'Animal Barn', emoji: '🐄', level: 6, blurb: 'Buy livestock' },

@@ -718,6 +718,8 @@ export class Player {
     // cheap AABB reject keeps this linear scan free even with hundreds of
     // trees in the world.
     for (const o of obstacles) {
+      // Colliders belonging to a building that has not arrived yet.
+      if (o.off) continue
       const dx = this.position.x - o.x
       if (dx > 3 || dx < -3) continue
       const dz = this.position.z - o.z
@@ -746,6 +748,8 @@ export class Player {
    */
   private resolveWalls(walls: Wall[]) {
     for (const w of walls) {
+      // Fences that are not standing yet — see Wall.off.
+      if (w.off) continue
       const dx = this.position.x - w.x
       const ex = w.hx + PLAYER_RADIUS
       const overlapX = ex - Math.abs(dx)

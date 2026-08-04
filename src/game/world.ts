@@ -24,6 +24,7 @@ import {
   createTerrainMesh,
   heightAt,
   isPlantable,
+  isSand,
   isWalkable,
   BRIDGES,
   WATER_LEVEL,
@@ -104,7 +105,24 @@ export interface Obstacle {
   x: number
   z: number
   r: number
+  /**
+   * Which arriving building this belongs to, if any.
+   *
+   * The seed stall, the barn and the neighbours are all built at world
+   * construction and then *revealed* by level, because they carry keepers,
+   * animals and pathing that are far cheaper to hide than to construct at an
+   * arbitrary moment mid-session. Hiding a mesh does not hide its collider
+   * though, and a player walking into an invisible barn is a worse bug than a
+   * barn that arrives early — so every collider a hidden group owns is tagged
+   * here and skipped while that group is off.
+   */
+  owner?: ArrivalId
+  /** Set by setArrivalVisible. Skipped by collision while true. */
+  off?: boolean
 }
+
+/** Things that are not in the world at the start of a new game. */
+export type ArrivalId = 'shop' | 'barn' | 'lane' | `neighbour${number}`
 
 /**
  * Axis-aligned wall the player cannot cross — a whole fence run, not a segment.
@@ -118,6 +136,14 @@ export interface Wall {
   /** Centre. */
   x: number
   z: number
+  /**
+   * Set while the fence this belongs to is not standing.
+   *
+   * The player's own fence does not exist until they clear the ground for it —
+   * the opening is a wood, not a garden — and a wall left live behind a fence
+   * that is not drawn is an invisible barrier around an empty field.
+   */
+  off?: boolean
   /** Half-extents. Thin on whichever axis the run is not along. */
   hx: number
   hz: number
@@ -144,6 +170,11 @@ export interface World {
   /** The stallholder beside the seed shop: idles, and waves as you walk up. */
   shopkeeper: Shopkeeper
   farmgirl: Shopkeeper
+  /** Put the player's fence up. Off until the opening clearing is cut. */
+  setPlayerFenceVisible(on: boolean): void
+  /** Reveal or hide a building that arrives with the player's level. */
+  setArrivalVisible(id: ArrivalId, on: boolean): void
+  hasArrived(id: ArrivalId): boolean
 }
 
 /**
@@ -287,11 +318,24 @@ function fenceRun(
  * Exported because the neighbours bake their fencing into a single mesh — they
  * need the same pieces, built the same way, just collected somewhere else.
  */
-export function buildPlotFence(s: FarmSlot, fences: PropPlacement[], walls?: Wall[]) {
+export function buildPlotFence(
+  s: FarmSlot,
+  fences: PropPlacement[],
+  walls?: Wall[],
+  /**
+   * A second opening on the far side, away from the lane.
+   *
+   * The neighbours' plots front onto the street and are only ever approached
+   * from it, so one gate is right. The player's clearing is not on the street:
+   * they arrive from the beach, on the opposite side, and a single lane-facing
+   * gate meant walking the length of the fence every time they came home.
+   */
+  outerGate = false,
+) {
   const inner = s.x + s.inward * FENCE_HX
   const outer = s.x - s.inward * FENCE_HX
   fenceRun(fences, 'z', inner, s.z - FENCE_HZ, s.z + FENCE_HZ, GATE_WIDTH / 2, walls)
-  fenceRun(fences, 'z', outer, s.z - FENCE_HZ, s.z + FENCE_HZ, 0, walls)
+  fenceRun(fences, 'z', outer, s.z - FENCE_HZ, s.z + FENCE_HZ, outerGate ? GATE_WIDTH / 2 : 0, walls)
   fenceRun(fences, 'x', s.z - FENCE_HZ, s.x - FENCE_HX, s.x + FENCE_HX, 0, walls)
   fenceRun(fences, 'x', s.z + FENCE_HZ, s.x - FENCE_HX, s.x + FENCE_HX, 0, walls)
 }
@@ -302,6 +346,75 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   const walls: Wall[] = []
   /** Every fence panel in the world, collected then drawn in one call. */
   const fences: PropPlacement[] = []
+
+  /*
+   * Groups for the things that are not in the world when a new game starts.
+   *
+   * Built now and revealed later rather than constructed on the level-up,
+   * because each one owns a keeper with a rig and an animation mixer, and
+   * building those mid-session would hitch the frame at exactly the moment the
+   * game is trying to celebrate. Hiding is free; constructing is not.
+   */
+  const arrivalGroups = new Map<ArrivalId, THREE.Group>()
+  const arrivalGroup = (id: ArrivalId) => {
+    let g = arrivalGroups.get(id)
+    if (!g) {
+      g = new THREE.Group()
+      arrivalGroups.set(id, g)
+      group.add(g)
+    }
+    return g
+  }
+  /** Push a collider that belongs to an arrival, so it can be switched off with it. */
+  const ownedObstacle = (id: ArrivalId, o: Omit<Obstacle, 'owner'>) => {
+    obstacles.push({ ...o, owner: id })
+  }
+
+  /*
+   * A thicket standing on each building's ground until it arrives.
+   *
+   * Without this the level-gated buildings leave bare lawns behind them: the
+   * player walks a village of empty rectangles and can see exactly where every
+   * future building will be. Woodland is the honest answer — it is what the
+   * rest of the valley is made of, it is what the player's own farm was cut
+   * out of, and it means the village visibly *clears* as it grows rather than
+   * popping buildings onto mown grass.
+   *
+   * The trees are the inverse of the building: shown while it is hidden,
+   * removed when it arrives, with their colliders switched the same way.
+   */
+  const thickets = new Map<ArrivalId, THREE.Group>()
+  const thicketObstacles = new Map<ArrivalId, Obstacle[]>()
+
+  /**
+   * Scatter trees over one block, tagged to the arrival that will clear it.
+   *
+   * Additive: an id may be planted several times (the lane is three separate
+   * blocks — street, square and turning circle) and each call appends to that
+   * id's group and collider list rather than replacing them.
+   */
+  function plantThicket(id: ArrivalId, cx: number, cz: number, hx: number, hz: number, count: number) {
+    const g = thickets.get(id) ?? new THREE.Group()
+    const mine = thicketObstacles.get(id) ?? []
+    for (let i = 0; i < count; i++) {
+      const x = cx + (r() - 0.5) * 2 * hx
+      const z = cz + (r() - 0.5) * 2 * hz
+      if (!isWalkable(x, z) || isSand(x, z)) continue
+      const conifer = r() < 0.35
+      const model = conifer ? getModels().pine : getModels().tree
+      const height = (conifer ? PROP_HEIGHT.pine : PROP_HEIGHT.tree) * (0.8 + r() * 0.45)
+      const tree = modelGroup(model, height)
+      tree.position.set(x, heightAt(x, z), z)
+      tree.rotation.y = r() * Math.PI * 2
+      g.add(tree)
+      const o: Obstacle = { x, z, r: 0.55 }
+      obstacles.push(o)
+      mine.push(o)
+    }
+    thickets.set(id, g)
+    thicketObstacles.set(id, mine)
+    if (!g.parent) group.add(g)
+  }
   const r = rng(20260727)
 
   // --- sky, terrain, water -------------------------------------------------
@@ -337,12 +450,21 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   const laneDrawMin = Math.max(LANE_Z_MIN, SQUARE_CZ + SQUARE_HZ)
   const laneLength = LANE_Z_MAX - laneDrawMin
   const laneMat = dirtMaterial((LANE_HALF * 2) / 4, laneLength / 4)
-  group.add(
+  /*
+   * The street itself is an arrival.
+   *
+   * A dirt road with lamp posts down it, running past six empty lawns, tells the
+   * player there is a village here long before there is one — and it is the only
+   * thing in the opening that is not woodland, so it reads as the game having
+   * forgotten to load. The lane, the square, the worn verges and the lanterns
+   * all appear together when the first neighbour moves in.
+   */
+  arrivalGroup('lane').add(
     groundQuad(LANE_HALF * 2, laneLength, laneMat, 0, (laneDrawMin + LANE_Z_MAX) / 2),
   )
 
   const squareMat = dirtMaterial((SQUARE_HX * 2) / 4, (SQUARE_HZ * 2) / 4)
-  group.add(groundQuad(SQUARE_HX * 2, SQUARE_HZ * 2, squareMat, 0, SQUARE_CZ))
+  arrivalGroup('lane').add(groundQuad(SQUARE_HX * 2, SQUARE_HZ * 2, squareMat, 0, SQUARE_CZ))
 
   /*
    * The animal store's yard.
@@ -359,7 +481,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   const yardCX = BARN_POS.x * 0.62
   const yardCZ = BARN_POS.z + BARN_FRONT * (yardD / 2 - 1.5)
   const yardMat = dirtMaterial(yardW / 4, yardD / 4)
-  group.add(groundQuad(yardW, yardD, yardMat, yardCX, yardCZ))
+  arrivalGroup('barn').add(groundQuad(yardW, yardD, yardMat, yardCX, yardCZ))
 
   /*
    * The verge scatter is a *decal set*, and decals must not write depth.
@@ -414,7 +536,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     // After the terrain and the lane, before anything standing on the ground.
     mesh.renderOrder = 1
     setLayer(mesh, MINOR_LAYER)
-    group.add(mesh)
+    arrivalGroup('lane').add(mesh)
   }
 
   // Small and tight against the edge: big blobs out on the grass stop reading
@@ -446,13 +568,13 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   // The stall is symmetric apart from its painted sign, so the rotation is
   // chosen to put that sign toward the market square — which is the side every
   // player walks in from.
-  group.add(shop)
+  arrivalGroup('shop').add(shop)
   // Two circles spanning the stall's own width, so the counter blocks the way
   // through while the ends stay walkable. Derived from the model rather than
   // hardcoded, or a swapped stall leaves a gap to stroll through.
   const shopHX = halfWidth(shopModel, PROP_HEIGHT.shop)
   for (const side of [-1, 1]) {
-    obstacles.push({ x: SHOP_POS.x + side * shopHX * 0.5, z: SHOP_POS.z, r: shopHX * 0.55 })
+    ownedObstacle('shop', { x: SHOP_POS.x + side * shopHX * 0.5, z: SHOP_POS.z, r: shopHX * 0.55 })
   }
 
   /*
@@ -467,8 +589,8 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     new THREE.Vector3(SHOP_POS.x + shopHX + 0.5, 0, SHOP_POS.z + 0.55),
     -0.35,
   )
-  group.add(shopkeeper.object)
-  obstacles.push({ x: shopkeeper.object.position.x, z: shopkeeper.object.position.z, r: 0.4 })
+  arrivalGroup('shop').add(shopkeeper.object)
+  ownedObstacle('shop', { x: shopkeeper.object.position.x, z: shopkeeper.object.position.z, r: 0.4 })
 
   // --- animal store + pasture ---------------------------------------------
   const barnModel = getModels().barn
@@ -477,13 +599,13 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   // Turned to face BARN_FRONT, then nudged off-square so the building is not
   // dead-on to the lane. The nudge is the same either way round.
   barn.rotation.y = (BARN_FRONT > 0 ? 0 : Math.PI) - 0.3
-  group.add(barn)
+  arrivalGroup('barn').add(barn)
   // Colliders across the barn footprint so the player walks around it. Spread
   // from the model's own width so a swapped barn does not leave a gap to walk
   // through or a wall of collision hanging off the end.
   const barnHX = halfWidth(barnModel, PROP_HEIGHT.barn)
   for (let i = -1; i <= 1; i++) {
-    obstacles.push({ x: BARN_POS.x + i * barnHX * 0.66, z: BARN_POS.z - BARN_FRONT * 0.4, r: barnHX * 0.5 })
+    ownedObstacle('barn', { x: BARN_POS.x + i * barnHX * 0.66, z: BARN_POS.z - BARN_FRONT * 0.4, r: barnHX * 0.5 })
   }
 
   /*
@@ -498,11 +620,12 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     (BARN_FRONT > 0 ? 0 : Math.PI) - 0.32,
     getFarmgirlModel(),
   )
-  group.add(farmgirl.object)
-  obstacles.push({ x: farmgirl.object.position.x, z: farmgirl.object.position.z, r: 0.4 })
+  arrivalGroup('barn').add(farmgirl.object)
+  ownedObstacle('barn', { x: farmgirl.object.position.x, z: farmgirl.object.position.z, r: 0.4 })
 
   // Ring fence around the pasture, with a gap facing the barn so the animals
   // read as belonging to the store.
+  const pastureFences: PropPlacement[] = []
   const posts = Math.round((2 * Math.PI * PASTURE_RADIUS) / FENCE_PANEL)
   const chord = ((2 * Math.PI * PASTURE_RADIUS) / posts) * 1.06
   const toBarn = Math.atan2(BARN_POS.z - PASTURE_CENTRE.z, BARN_POS.x - PASTURE_CENTRE.x)
@@ -511,13 +634,21 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     // Leave a gate on the side nearest the barn.
     if (Math.abs(angleDelta(a, toBarn)) < 0.28) continue
 
-    fences.push({
+    pastureFences.push({
       x: PASTURE_CENTRE.x + Math.cos(a) * PASTURE_RADIUS,
       y: fenceGroundY(),
       z: PASTURE_CENTRE.z + Math.sin(a) * PASTURE_RADIUS,
       rotationY: -a + Math.PI / 2,
       scale: { x: chord / FENCE_PANEL, y: 1, z: 1 },
     })
+  }
+  /*
+   * The paddock rail is its own instanced batch rather than part of the shared
+   * fence run. One batch cannot be half-hidden, and the rest of that run is the
+   * player's own fence — which is standing from the first clearing.
+   */
+  if (pastureFences.length > 0) {
+    arrivalGroup('barn').add(instanceModel(getModels().plotFence, pastureFences))
   }
 
   /*
@@ -545,12 +676,28 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     // Turned off the barn's own angle so the clutter reads as stacked against
     // the building rather than dropped on a grid beside it.
     prop.rotation.y = barn.rotation.y + (r() - 0.5) * 0.9
-    group.add(prop)
-    obstacles.push({ x, z, r: item.r })
+    arrivalGroup('barn').add(prop)
+    ownedObstacle('barn', { x, z, r: item.r })
   }
 
-  // --- the player's plot ---------------------------------------------------
-  buildPlotFence(PLAYER_SLOT, fences, walls)
+  /*
+   * The player's fence, built apart from every other one.
+   *
+   * It is the only fence in the world that is not there from the start: the
+   * game opens on unclaimed woodland, and the rails go up when the clearing is
+   * cut. That means its own batch — an InstancedMesh cannot be half-drawn — and
+   * its own slice of the wall list, so the collision can be switched off with
+   * the mesh.
+   */
+  const playerFences: PropPlacement[] = []
+  const firstPlayerWall = walls.length
+  buildPlotFence(PLAYER_SLOT, playerFences, walls, true)
+  const playerWalls = walls.slice(firstPlayerWall)
+  const playerFenceGroup = new THREE.Group()
+  playerFenceGroup.add(instanceModel(getModels().plotFence, playerFences))
+  playerFenceGroup.visible = false
+  for (const w of playerWalls) w.off = true
+  group.add(playerFenceGroup)
 
   // Signpost beside the gate, turned to face along the lane so it is readable
   // to someone walking up the street rather than edge-on.
@@ -583,11 +730,11 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
       rotationY: sx > 0 ? -Math.PI / 2 : Math.PI / 2,
       scale: lanternScale,
     })
-    obstacles.push({ x, z, r: 0.3 })
+    ownedObstacle('lane', { x, z, r: 0.3 })
   }
 
   const lanternMesh = instanceModel(getModels().lantern, lanterns)
-  group.add(lanternMesh)
+  arrivalGroup('lane').add(lanternMesh)
 
   /**
    * The lantern glows from its head only.
@@ -652,7 +799,15 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     pools.updateMatrix()
     pools.matrixAutoUpdate = false
     pools.visible = false
-    group.add(pools)
+    /*
+     * Into the lane group with the posts.
+     *
+     * The pools and the point lights were left on the world group when the
+     * lanterns moved, so before the street arrives the ground still lit up in
+     * circles with nothing standing over them — lamplight from lamps that do
+     * not exist, which is a far stranger sight than an unlit street.
+     */
+    arrivalGroup('lane').add(pools)
   }
 
   /*
@@ -708,14 +863,15 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     cones.updateMatrix()
     cones.matrixAutoUpdate = false
     cones.visible = false
-    group.add(cones)
+    arrivalGroup('lane').add(cones)
   }
 
   const LIGHT_BUDGET = 3
   const LANTERN_HEAD_Y = PROP_HEIGHT.lantern * LANTERN_HEAD_Y_FRACTION
   const pointLights = Array.from({ length: LIGHT_BUDGET }, () => {
     const light = new THREE.PointLight(0xffd9a0, 0, 8.5, 2)
-    group.add(light)
+    // Same reason as the pools above: a hidden group's lights still light.
+    arrivalGroup('lane').add(light)
     return light
   })
 
@@ -889,7 +1045,39 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   group.add(instanceModel(getModels().plotFence, fences))
 
   const homeMarker = createHomeMarker(group)
-  const shopMarkers = createShopMarkers(group, shopkeeper.object.position, farmgirl.object.position)
+  const shopMarkers = createShopMarkers(group, shopkeeper.object.position, farmgirl.object.position, (id) => arrivalGroups.get(id)?.visible ?? false)
+
+  /*
+   * Everything starts hidden except the world itself.
+   *
+   * The default has to be *absent*, not present: a new game opens on an empty
+   * coast, and anything that defaults to visible would be standing there for the
+   * frames between world construction and main.ts getting round to applying the
+   * player's level.
+   */
+  /*
+   * Every block of the village, wooded until the thing that stands on it comes.
+   *
+   * The first pass only covered the buildings, which left the ground *between*
+   * them as open lawn — and open lawn inside a forest is a clearing, so the
+   * village read as already cleared with a few copses dotted about. The whole
+   * footprint has to be wood or none of it should be: what the player sees at
+   * level one is unbroken forest, and each unlock cuts a block out of it.
+   *
+   * The lane's own corridor is the biggest of them and the one that was most
+   * obviously missing — the street was a bare strip running the length of the
+   * map before a single neighbour had moved in.
+   */
+  plantThicket('shop', SHOP_POS.x, SHOP_POS.z, 10, 8, 46)
+  plantThicket('barn', (BARN_POS.x + PASTURE_CENTRE.x) / 2, BARN_POS.z, 17, 11, 76)
+  plantThicket('lane', 0, (LANE_Z_MIN + LANE_Z_MAX) / 2, LANE_HALF + 2.5, (LANE_Z_MAX - LANE_Z_MIN) / 2, 96)
+  // The square, and the turning circle at the north end — both part of the
+  // street, both bare strips of nothing without this.
+  plantThicket('lane', 0, SQUARE_CZ, SQUARE_HX + 1, SQUARE_HZ + 1, 30)
+  plantThicket('lane', 0, LANE_Z_MAX - 2, 10, 7, 26)
+
+  for (const g of arrivalGroups.values()) g.visible = false
+  for (const o of obstacles) if (o.owner) o.off = true
 
   return {
     group,
@@ -902,6 +1090,26 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     shopMarkers,
     shopkeeper,
     farmgirl,
+    setPlayerFenceVisible(on: boolean) {
+      playerFenceGroup.visible = on
+      for (const w of playerWalls) w.off = !on
+    },
+    setArrivalVisible(id: ArrivalId, on: boolean) {
+      const g = arrivalGroups.get(id)
+      if (!g) return
+      g.visible = on
+      // The collider has to move with the mesh, or the player walks into a barn
+      // that is not there yet. See the note on Obstacle.owner.
+      for (const o of obstacles) if (o.owner === id) o.off = !on
+
+      // ...and the wood standing on that ground is the exact inverse.
+      const wood = thickets.get(id)
+      if (wood) wood.visible = !on
+      for (const o of thicketObstacles.get(id) ?? []) o.off = on
+    },
+    hasArrived(id: ArrivalId) {
+      return arrivalGroups.get(id)?.visible ?? false
+    },
   }
 }
 
@@ -925,7 +1133,13 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
  * the eye stops seeing it — whereas one that appears as you arrive is a state
  * change, which is what actually draws attention.
  */
-function createShopMarkers(parent: THREE.Group, shopkeeperAt: THREE.Vector3, barnKeeperAt: THREE.Vector3) {
+function createShopMarkers(
+  parent: THREE.Group,
+  shopkeeperAt: THREE.Vector3,
+  barnKeeperAt: THREE.Vector3,
+  /** Whether that building is in the world yet — see setArrivalVisible. */
+  arrived: (id: ArrivalId) => boolean,
+) {
   /*
    * Over the keeper's head, not over the roof.
    *
@@ -942,6 +1156,7 @@ function createShopMarkers(parent: THREE.Group, shopkeeperAt: THREE.Vector3, bar
     // worse than none.
     { id: 'shop', at: overHead(shopkeeperAt), range: 4.2, marker: createAlertMarker(1.2) },
     { id: 'barn', at: overHead(barnKeeperAt), range: 5.2, marker: createAlertMarker(1.2) },
+    // NOTE: these are hidden along with their building — see markersFor below.
   ]
   for (const s of spots) {
     s.marker.position.copy(s.at)
@@ -967,6 +1182,12 @@ function createShopMarkers(parent: THREE.Group, shopkeeperAt: THREE.Vector3, bar
     },
     update(elapsed: number, camera: THREE.Camera, playerPos: THREE.Vector3) {
       for (const s of spots) {
+        // A marker over a building that has not arrived is a "!" hovering above
+        // empty grass, pointing at nothing the player can act on.
+        if (!arrived(s.id)) {
+          s.marker.visible = false
+          continue
+        }
         const near = Math.hypot(playerPos.x - s.at.x, playerPos.z - s.at.z) < s.range
         const shout = urgent.has(s.id)
         s.marker.visible = near || shout

@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import {
-  FARM_SLOTS,
+  FENCED_PLOTS,
   FENCE_HX,
   FENCE_HZ,
   gatePos,
@@ -29,8 +29,18 @@ import {
 
 /** How far outside a fence the corner nodes sit. */
 const CORNER_PUSH = 1.2
-/** Expansion applied to rects when testing legs, half a body of slack. */
-const BLOCK_PAD = 0.4
+/**
+ * Expansion applied to rects when testing legs.
+ *
+ * Raised from 0.4. The caller re-asks for a waypoint every frame and walks a
+ * straight step toward whatever comes back, so the path actually travelled is a
+ * chord across each turn rather than the polyline the search returned. At 0.4
+ * that chord could clip the corner of a plot on a long route — which never came
+ * up while every destination was a few plots down the same street, and did as
+ * soon as the player's farm moved to the coast and paths ran the length of the
+ * village. Wider legs leave room for the corner-cutting the walker does anyway.
+ */
+const BLOCK_PAD = 0.9
 
 interface Node {
   x: number
@@ -84,7 +94,7 @@ function insideRect(x: number, z: number, s: FarmSlot, shrink = 0) {
  * instead: interior points only ever connect to their own gate nodes.
  */
 function legClear(x1: number, z1: number, x2: number, z2: number) {
-  for (const s of FARM_SLOTS) {
+  for (const s of FENCED_PLOTS) {
     if (insideRect(x1, z1, s) || insideRect(x2, z2, s)) continue
     if (segmentHitsRect(x1, z1, x2, z2, s.x, s.z, FENCE_HX + BLOCK_PAD, FENCE_HZ + BLOCK_PAD)) {
       return false
@@ -102,7 +112,7 @@ const approachNode = new Map<FarmSlot, number>()
 function buildGraph() {
   if (nodes.length > 0) return
 
-  for (const s of FARM_SLOTS) {
+  for (const s of FENCED_PLOTS) {
     // Four pushed corners: the turning points for going around this farm.
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
@@ -255,6 +265,6 @@ export function exitWaypoint(pos: THREE.Vector3, slot: FarmSlot): THREE.Vector3 
 
 /** The slot whose fences contain this point, if any. */
 export function containingSlot(pos: THREE.Vector3): FarmSlot | null {
-  for (const s of FARM_SLOTS) if (insideRect(pos.x, pos.z, s)) return s
+  for (const s of FENCED_PLOTS) if (insideRect(pos.x, pos.z, s)) return s
   return null
 }

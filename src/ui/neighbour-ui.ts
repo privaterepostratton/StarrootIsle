@@ -52,7 +52,7 @@ export class NeighbourUi {
     this.root.className = 'hidden'
     this.root.innerHTML = `
       <div class="panel">
-        <header><h2>${iconHtml('valley', '🏘️', 'title-ico')} Sprout Valley</h2><button id="neighbourClose">✕</button></header>
+        <header><h2>${iconHtml('valley', '🏘️', 'title-ico')} Starroot Isle</h2><button id="neighbourClose">✕</button></header>
         <div id="neighbourBody"></div>
       </div>`
     document.getElementById('ui')!.appendChild(this.root)

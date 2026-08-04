@@ -25,13 +25,25 @@ export interface FtueStats {
   nearShop: boolean
   /** Seed purchases made this session — the shop step watches this move. */
   seedsBought: number
+  /** Seed crates still lying on the sand. */
+  cratesLeft: number
+  /** Trees of the opening stand still standing. */
+  treesLeft: number
+  /** True once the clearing has been cut and the farm exists. */
+  hasFarm: boolean
 }
 
 /** The steps, by name. `main` uses these to keep each one completable. */
-export type StepId = 'welcome' | 'plant' | 'water' | 'walk-to-shop' | 'buy-seeds'
+export type StepId =
+  | 'welcome'
+  | 'gather-seeds'
+  | 'find-ground'
+  | 'clear-trees'
+  | 'plant'
+  | 'water'
 
 /** What the finger should point at while a step is active. */
-export type PointerHint = 'plot' | 'crop' | 'shop' | null
+export type PointerHint = 'plot' | 'crop' | 'shop' | 'seeds' | 'trees' | null
 
 interface Step {
   /** Stable name for this step, so game code can ask what is being asked of the player. */
@@ -48,21 +60,66 @@ interface Step {
   pointer?: PointerHint
 }
 
+/*
+ * The opening, in the order the player actually does it.
+ *
+ * The old sequence assumed a farm: it opened with "this garden is yours",
+ * taught planting on beds that already existed, and finished by walking to a
+ * stall that had always been standing there. None of that is true any more —
+ * the player wakes on a beach owning nothing, and the stall does not exist
+ * until level 2.
+ *
+ * So the tutorial now teaches the three things that are genuinely new, in the
+ * order the world presents them: find the seeds, find the ground, pay to clear
+ * it. Planting and watering come after, on a farm the player made rather than
+ * one they were given — which is the whole reason for the change.
+ *
+ * Nothing here mentions the stall. It arrives with a level-up banner of its own
+ * several minutes later, and a tutorial that points at a building which is not
+ * there yet is worse than no tutorial.
+ */
 const STEPS: Step[] = [
   {
     iconId: 'ftue-welcome',
     id: 'welcome',
-    emoji: '🌱',
-    title: 'Welcome to Sprout Valley!',
-    body: 'This garden is yours — everything inside the fence. Your neighbours farm the plots across the lane.',
-    button: "Let's grow",
+    emoji: '🌊',
+    title: 'Washed ashore',
+    body: 'You have the clothes you stand in and a handful of coins. There is good soil inland — but first, see what came in with the tide.',
+    button: 'Take a look',
+  },
+  {
+    iconId: 'ftue-plant',
+    id: 'gather-seeds',
+    emoji: '🥬',
+    title: 'Gather the seed crates',
+    body: 'Three crates washed up along the sand. Walk over each one to pick it up.',
+    done: (s) => s.cratesLeft === 0,
+    pointer: 'seeds',
+  },
+  {
+    iconId: 'ftue-stall',
+    id: 'find-ground',
+    emoji: '🌲',
+    title: 'Find somewhere to plant',
+    body: 'Seeds are no use on sand. Head inland — there is a stand of trees on ground worth clearing.',
+    done: (s) => s.treesLeft < 4,
+    pointer: 'trees',
+  },
+  {
+    iconId: 'ftue-buy',
+    id: 'clear-trees',
+    emoji: '🪓',
+    title: 'Clear the trees',
+    body: 'Stand by a tree and press E to pay to fell it. Clear them all and the ground is yours.',
+    done: (s) => s.hasFarm,
+    pointer: 'trees',
   },
   {
     iconId: 'ftue-plant',
     id: 'plant',
-    emoji: '🥕',
-    title: 'Plant a seed',
-    body: 'Pick a seed from the hotbar (or press 1), then click any tilled plot to plant it.',
+    emoji: '🌱',
+    title: 'Plant your first seed',
+    body: 'Pick a seed from the hotbar (or press 1), then click any bed to plant it.',
     done: (s, base) => s.plantedCount > base.plantedCount,
     pointer: 'plot',
   },
@@ -75,36 +132,40 @@ const STEPS: Step[] = [
     done: (s, base) => s.wateredCount > base.wateredCount,
     pointer: 'crop',
   },
-  {
-    iconId: 'ftue-stall',
-    id: 'walk-to-shop',
-    emoji: '🏪',
-    title: 'Walk to the seed stall',
-    body: 'More seeds are sold at the market stall. Follow the lane out of your gate, south to the square.',
-    done: (s) => s.nearShop,
-    pointer: 'shop',
-  },
-  /*
-   * Arriving is not the lesson; buying is. Standing near the stall taught the
-   * player where it is and nothing about restocking, prices, or the fact that
-   * the shelf only carries a few species at a time — and a player who never
-   * opened it once has no reason to come back when they run out of turnips.
-   *
-   * Completed by a purchase rather than by opening the panel, because opening
-   * it can be an accident on the way past.
-   */
-  {
-    iconId: 'ftue-buy',
-    id: 'buy-seeds',
-    emoji: '🛒',
-    title: 'Buy some seeds',
-    body: 'Press E at the stall to open it, then buy a packet. The shelf restocks on a timer, so the good seeds are worth checking back for.',
-    done: (s, base) => s.seedsBought > base.seedsBought,
-    pointer: 'shop',
-  },
 ]
 
 const KEY = 'sv-ftue'
+
+/**
+ * How much room the card is taking at the bottom of the screen.
+ *
+ * The interaction prompt ("E — Clear this tree") is anchored bottom-centre too,
+ * and the two landed on top of each other: the card is the taller of the pair,
+ * so it simply covered the prompt telling the player what to press — during the
+ * one step of the game where they have never pressed it before.
+ *
+ * Published as a CSS variable rather than fixed in the stylesheet because the
+ * card's height depends on how the body text wraps, which depends on the step
+ * and the window width. A hard-coded offset is right at one size and wrong at
+ * every other.
+ */
+const LIFT_VAR = '--ftue-lift'
+
+/**
+ * Forget that the tour was ever completed.
+ *
+ * Separate from `restart()`, which replays it for this session only. A save
+ * wipe has to clear the stored flag as well, or the "new game" the dev panel
+ * produces is a new game that skips its own tutorial — which is the one thing
+ * you were most likely wiping the save to look at.
+ */
+export function forgetFtue() {
+  try {
+    localStorage.removeItem(KEY)
+  } catch {
+    /* storage off */
+  }
+}
 
 export class Ftue {
   private readonly root: HTMLDivElement
@@ -116,6 +177,9 @@ export class Ftue {
     wateredCount: 0,
     nearShop: false,
     seedsBought: 0,
+    cratesLeft: 0,
+    treesLeft: 0,
+    hasFarm: false,
   }
   private baselineFresh = false
   /** Most recent stats seen, whatever the step — advance() snapshots from it. */
@@ -181,6 +245,13 @@ export class Ftue {
   }
 
   /** Restart from step 0 — used by the dev panel for QA. */
+  /** Tell the stylesheet how tall the card currently is. See LIFT_VAR. */
+  private publishHeight() {
+    const shown = !this.root.classList.contains('hidden')
+    const lift = shown ? this.root.offsetHeight + 12 : 0
+    document.documentElement.style.setProperty(LIFT_VAR, `${lift}px`)
+  }
+
   restart() {
     this.step = 0
     this.baselineFresh = false
@@ -224,6 +295,7 @@ export class Ftue {
       this.active = false
       localStorage.setItem(KEY, 'done')
       this.root.classList.add('hidden')
+      this.publishHeight()
       this.hidePointer()
       return
     }
@@ -234,6 +306,7 @@ export class Ftue {
   private show() {
     const step = STEPS[this.step]
     this.root.classList.remove('hidden')
+    this.publishHeight()
     // Re-trigger the entrance spring per step.
     this.root.classList.remove('ftue-in')
     void this.root.offsetWidth
@@ -259,6 +332,7 @@ export class Ftue {
       this.active = false
       localStorage.setItem(KEY, 'done')
       this.root.classList.add('hidden')
+      this.publishHeight()
       this.hidePointer()
     })
   }

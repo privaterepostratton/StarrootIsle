@@ -999,7 +999,16 @@ body.panel-open #ui #questTracker {
 /* ---------- action prompt ---------- */
 #prompt {
   position: absolute;
-  bottom: calc(var(--slot-size) + var(--ui-inset-b) + 28px);
+  /*
+   * Lifted clear of the FTUE card when one is on screen.
+   *
+   * Both are anchored bottom-centre and the card is taller, so it covered the
+   * prompt outright — during the tutorial, which is the one time the player has
+   * never seen the prompt before. `--ftue-lift` is published by the FTUE with
+   * the card's measured height (see ftue.ts) and is 0 the rest of the time.
+   */
+  bottom: calc(var(--slot-size) + var(--ui-inset-b) + 28px + var(--ftue-lift, 0px));
+  transition: bottom 0.18s ease;
   left: 50%;
   transform: translateX(-50%);
   padding: clamp(7px, 1vw, 10px) clamp(14px, 3vw, 26px);
@@ -3787,9 +3796,12 @@ body.panel-open #ui #questTracker {
  * mistaken for (or shipped as) player-facing chrome. */
 #devPanel {
   position: absolute;
-  /* Bottom-left: the one corner the game UI leaves alone (only the keyboard
-     help card lives there, and that hides on touch). Centred at the top, it
-     sat over the resource pills it is used to change. */
+  /*
+   * Bottom-left is only where it *starts*. The panel is draggable by its title
+   * bar and remembers where it was left (see dev-ui.ts), because the thing
+   * being tested is as likely to be under this corner as anywhere else — the
+   * hotbar, the controls card and the plot menu all live down here.
+   */
   bottom: 8px;
   left: 8px;
   z-index: 50;
@@ -3801,6 +3813,45 @@ body.panel-open #ui #questTracker {
   padding: 8px 10px;
   pointer-events: auto;
   max-width: min(92vw, 560px);
+}
+
+/* Title bar: drag handle, and the only affordance saying the panel moves. */
+#devPanel .dev-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -8px -10px 6px;
+  padding: 3px 8px;
+  background: #1d2433;
+  border-bottom: 1px solid #39445c;
+  border-radius: 6px 6px 0 0;
+  cursor: move;
+  user-select: none;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+#devPanel .dev-close {
+  font: inherit;
+  background: transparent;
+  border: none;
+  color: #cfe3cf;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+#devPanel .dev-close:hover {
+  color: #ff8f7a;
+}
+
+/* The one button that destroys work gets to look like it. */
+#devPanel button.dev-danger {
+  background: #3a1c1c;
+  border-color: #7a3535;
+  color: #ffb3a3;
 }
 
 #devPanel .dev-row {

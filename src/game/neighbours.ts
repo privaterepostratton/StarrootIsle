@@ -10,6 +10,7 @@ import { createAlertMarker } from '../assets/alert-marker'
 import {
   getModels,
   instanceModel,
+  modelGroup,
   fitToHeight,
   cloneFarmer,
   PROP_HEIGHT,
@@ -25,6 +26,7 @@ import {
   gatePos,
   type FarmSlot,
 } from './village'
+import { isSand } from './terrain'
 import { buildPlotFence, type Obstacle, type Wall } from './world'
 
 /**
@@ -441,6 +443,15 @@ export class Neighbour {
   /** False when the viewer is too far to resolve the pose; set by setViewer. */
   private animate = true
 
+  /**
+   * Whether this neighbour has moved into the village yet.
+   *
+   * Owned by Neighbourhood.setArrivedFor. Kept as state on the neighbour rather
+   * than as a one-off visibility write because setViewer runs every frame and
+   * would otherwise overwrite it — see the note there.
+   */
+  arrived = false
+
   /** Somewhere inside the fence, kept off the boundary so they never clip it. */
   private pickNpcTarget() {
     return new THREE.Vector2(
@@ -591,9 +602,15 @@ export class Neighbour {
     const level = dist < CLOSE_RANGE ? 2 : dist < DETAIL_RANGE ? 1 : 0
     this.animate = dist < ANIMATE_RANGE
 
-    // Visibility is cheap to set and independent of the crop level, so it is
-    // updated every call rather than only on a level change.
-    this.group.visible = level > 0 || dist < BUILDING_RANGE
+    /*
+     * Arrival first, then distance.
+     *
+     * This runs every frame and owns `group.visible`, so a neighbour hidden
+     * because they have not moved in yet was being switched straight back on by
+     * the next LOD update — the arrival schedule looked like it did nothing at
+     * all. Distance culling only ever applies to somebody who is actually here.
+     */
+    this.group.visible = this.arrived && (level > 0 || dist < BUILDING_RANGE)
 
     if (level === this.detailLevel) return
     this.detailLevel = level
@@ -740,19 +757,157 @@ export class Neighbourhood {
     PROFILES.forEach((profile, i) => {
       const slot = NEIGHBOUR_SLOTS[i]
       if (!slot) return
+      /*
+       * Each neighbour's contribution to the shared batches is bracketed, so a
+       * rebuild can take a prefix of them.
+       *
+       * The batches exist because fences, planters and cottages are textured
+       * models that cannot be baked into a vertex-coloured static mesh — one
+       * instanced draw for all five farms instead of five of each. That is
+       * still the right call, and it is also why a single neighbour cannot
+       * simply be hidden: an InstancedMesh is all-or-nothing. Recording where
+       * each one's entries start lets the whole set be rebuilt from however
+       * many have moved in, which costs a handful of small allocations on a
+       * level-up and nothing at all in between.
+       */
+      const mark = () => ({
+        fences: batches.fences.length,
+        trays: batches.trays.length,
+        benches: batches.benches.length,
+        cottages: batches.cottages.length,
+        scarecrows: batches.scarecrows.length,
+        flowerBeds: batches.flowerBeds.length,
+        bushes: batches.bushes.length,
+      })
+      const before = mark()
+      const firstObstacle = obstacles.length
       const neighbour = new Neighbour(profile, slot, obstacles, walls, batches)
       this.group.add(neighbour.group)
       this.all.push(neighbour)
+      this.ranges.push({ from: before, to: mark() })
+      this.obstacleRanges.push({ from: firstObstacle, to: obstacles.length })
+
+      /*
+       * Woodland over the ground this neighbour will occupy.
+       *
+       * Same reasoning as the stall's and the barn's (see plantThicket in
+       * world.ts): a level-gated building leaves a bare rectangle otherwise,
+       * and a street of empty lawns tells the player exactly what is coming and
+       * where. The wood is the inverse of the neighbour — shown until they move
+       * in, cleared when they do.
+       */
+      const wood = new THREE.Group()
+      const woodObstacles: Obstacle[] = []
+      for (let t = 0; t < 26; t++) {
+        const x = slot.x + (Math.random() - 0.5) * 2 * (PLOT_HX + 1)
+        const z = slot.z + (Math.random() - 0.5) * 2 * (PLOT_HZ + 1)
+        if (isSand(x, z)) continue
+        const conifer = Math.random() < 0.35
+        const model = conifer ? getModels().pine : getModels().tree
+        const height = (conifer ? PROP_HEIGHT.pine : PROP_HEIGHT.tree) * (0.8 + Math.random() * 0.4)
+        const tree = modelGroup(model, height)
+        tree.position.set(x, 0, z)
+        tree.rotation.y = Math.random() * Math.PI * 2
+        wood.add(tree)
+        const o: Obstacle = { x, z, r: 0.55 }
+        obstacles.push(o)
+        woodObstacles.push(o)
+      }
+      this.group.add(wood)
+      this.woods.push(wood)
+      this.woodObstacles.push(woodObstacles)
     })
 
+    this.batches = batches
+    this.obstacles = obstacles
+
+    /*
+     * Nobody has moved in yet.
+     *
+     * `arrived` starts at 0 and setArrivedFor early-returns when the count has
+     * not changed, so the opening call for a level-1 player is a no-op — which
+     * left all five standing on the street at construction and made the whole
+     * schedule look broken from the first frame. The absent state has to be
+     * established here, not inferred from the first update.
+     */
+    this.all.forEach((nb) => {
+      nb.arrived = false
+      nb.group.visible = false
+    })
+    // The woods start standing — nobody has moved in to clear them.
+    this.woods.forEach((wood, i) => {
+      wood.visible = true
+      for (const o of this.woodObstacles[i]) o.off = false
+    })
+    for (const range of this.obstacleRanges) {
+      for (let k = range.from; k < range.to; k++) obstacles[k].off = true
+    }
+    this.rebuildBatches()
+  }
+
+  private readonly ranges: { from: Record<string, number>; to: Record<string, number> }[] = []
+  private readonly obstacleRanges: { from: number; to: number }[] = []
+  private batches!: NeighbourBatches
+  private obstacles!: Obstacle[]
+  private readonly batchMeshes: THREE.Object3D[] = []
+  /** Per neighbour: the trees standing on their plot until they move in. */
+  private readonly woods: THREE.Group[] = []
+  private readonly woodObstacles: Obstacle[][] = []
+  private arrived = 0
+
+  /**
+   * How many neighbours have moved in at this level.
+   *
+   * One every other level from the third, which is where the Valley panel
+   * unlocks — so the panel arrives with the first person to put in it rather
+   * than with an empty street. Spreading them out is the point: a village that
+   * fills up as you grow gives the middle levels something to show for
+   * themselves that is not another crop.
+   */
+  static arrivedCountFor(level: number) {
+    return Math.max(0, Math.min(PROFILES.length, Math.floor((level - 3) / 2) + 1))
+  }
+
+  setArrivedFor(level: number) {
+    const n = Neighbourhood.arrivedCountFor(level)
+    if (n === this.arrived) return
+    this.arrived = n
+    this.all.forEach((nb, i) => {
+      nb.arrived = i < n
+      nb.group.visible = nb.arrived
+    })
+    this.woods.forEach((wood, i) => {
+      wood.visible = i >= n
+      for (const o of this.woodObstacles[i]) o.off = i < n
+    })
+    this.obstacleRanges.forEach((range, i) => {
+      for (let k = range.from; k < range.to; k++) this.obstacles[k].off = i >= n
+    })
+    this.rebuildBatches()
+  }
+
+  /** Redraw the shared instanced batches from the neighbours who have arrived. */
+  private rebuildBatches() {
+    for (const mesh of this.batchMeshes) this.group.remove(mesh)
+    this.batchMeshes.length = 0
+    if (this.arrived === 0) return
+
+    const cut = this.ranges[this.arrived - 1].to
     const models = getModels()
-    this.group.add(instanceModel(models.plotFence, batches.fences))
-    this.group.add(instanceModel(models.plotTray, batches.trays))
-    this.group.add(instanceModel(models.bench, batches.benches))
-    this.group.add(instanceModel(models.cottage, batches.cottages))
-    this.group.add(instanceModel(models.scarecrow, batches.scarecrows))
-    this.group.add(instanceModel(models.flowerBed, batches.flowerBeds))
-    this.group.add(instanceModel(models.bush, batches.bushes))
+    const add = (model: Parameters<typeof instanceModel>[0], list: PropPlacement[], end: number) => {
+      const slice = list.slice(0, end)
+      if (slice.length === 0) return
+      const mesh = instanceModel(model, slice)
+      this.batchMeshes.push(mesh)
+      this.group.add(mesh)
+    }
+    add(models.plotFence, this.batches.fences, cut.fences)
+    add(models.plotTray, this.batches.trays, cut.trays)
+    add(models.bench, this.batches.benches, cut.benches)
+    add(models.cottage, this.batches.cottages, cut.cottages)
+    add(models.scarecrow, this.batches.scarecrows, cut.scarecrows)
+    add(models.flowerBed, this.batches.flowerBeds, cut.flowerBeds)
+    add(models.bush, this.batches.bushes, cut.bushes)
   }
 
   /** The neighbour and planted plot under a world point, for click-to-inspect. */

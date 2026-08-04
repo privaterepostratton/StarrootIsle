@@ -40,6 +40,8 @@ interface ModelCache {
   signpost: LoadedModel
   barn: LoadedModel
   pine: LoadedModel
+  /** Coastal only. See the palm pass in game/vegetation.ts. */
+  palm: LoadedModel
   shop: LoadedModel
   flowerBed: LoadedModel
   rock: LoadedModel
@@ -219,7 +221,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -232,6 +234,7 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/signpost.glb')),
       gltf.loadAsync(asset('models/barn.glb')),
       gltf.loadAsync(asset('models/tree-conifer.glb')),
+      gltf.loadAsync(asset('models/palm.glb')),
       gltf.loadAsync(asset('models/shop.glb')),
       gltf.loadAsync(asset('models/plot-tray-blooms.glb')),
       gltf.loadAsync(asset('models/rock.glb')),
@@ -273,6 +276,7 @@ export async function loadModels(): Promise<ModelCache> {
     signpost: extractMesh(signpost.scene),
     barn: extractMesh(barn.scene),
     pine: extractMesh(pine.scene),
+    palm: extractMesh(palm.scene),
     shop: extractMesh(shop.scene),
     flowerBed: extractMesh(flowerBed.scene),
     rock: extractMesh(rock.scene),
@@ -326,6 +330,9 @@ export const PROP_HEIGHT = {
      stopped reading as the biggest thing on the square. */
   barn: 6.2,
   pine: 6.8,
+  /* Shorter than the forest canopy behind it. A palm the height of a conifer
+     reads as a jungle; the coast wants a fringe you can see the sea over. */
+  palm: 5.2,
   /*
    * A market stall, not a building — the first one towered over the farmer it
    * serves at building height. Raised from 2.36 with the model swap, for the

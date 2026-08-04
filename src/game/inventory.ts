@@ -142,10 +142,16 @@ export class Inventory {
 
   private readonly listeners = new Set<() => void>()
 
-  constructor() {
-    // A few starter turnip seeds so the first action is planting, not shopping.
-    this.seeds.set('turnip', 5)
-  }
+  /*
+   * The bag starts empty.
+   *
+   * It used to open with five turnip seeds, so the first action was planting
+   * rather than shopping — right when the game began in a garden. It begins on a
+   * beach now, and those same five seeds are crates washed up on the sand (see
+   * game/beach-seeds.ts), so that the first thing the player does is *find*
+   * something. `reset()` still stocks a handful, because a retirement drops you
+   * back onto a working farm with no beach to comb.
+   */
 
   onChange(fn: () => void) {
     this.listeners.add(fn)

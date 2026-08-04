@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
 import { nextWaypoint, exitWaypoint, containingSlot, routeToPoint } from '../village-router'
 import {
-  FARM_SLOTS,
+  FENCED_PLOTS,
+  NEIGHBOUR_SLOTS,
   PLAYER_SLOT,
   FENCE_HX,
   FENCE_HZ,
@@ -21,7 +22,8 @@ import {
 const STEP = 4.4 / 30 // one 30Hz frame at run speed
 
 function insideForeign(pos: THREE.Vector3, target = PLAYER_SLOT) {
-  for (const s of FARM_SLOTS) {
+  // Every neighbour plot is foreign now — the player's is no longer among them.
+  for (const s of NEIGHBOUR_SLOTS) {
     if (s === target) continue
     if (Math.abs(pos.x - s.x) < FENCE_HX - 0.05 && Math.abs(pos.z - s.z) < FENCE_HZ - 0.05) {
       return true
@@ -32,7 +34,15 @@ function insideForeign(pos: THREE.Vector3, target = PLAYER_SLOT) {
 
 function walkIn(spawnDeg: number, goal: THREE.Vector3) {
   const a = (spawnDeg * Math.PI) / 180
-  const pos = new THREE.Vector3(Math.cos(a) * 46, 0, Math.sin(a) * 46)
+  /*
+   * The ring has to clear every fence, including the player's own.
+   *
+   * It was 46, chosen when the player farmed a lane plot and everything fenced
+   * sat within about 28 of the origin. The farm is a coastal clearing now,
+   * centred 38 out, so a spawn due west landed *inside* the target plot and the
+   * gate test could never observe an entry.
+   */
+  const pos = new THREE.Vector3(Math.cos(a) * 62, 0, Math.sin(a) * 62)
   let stalledFrames = 0
 
   for (let i = 0; i < 30 * 240; i++) {
@@ -69,10 +79,18 @@ describe('village router', () => {
   })
 
   it('reaches every other farm too', () => {
-    for (const slot of FARM_SLOTS) {
+    for (const slot of FENCED_PLOTS) {
       const g = new THREE.Vector3(slot.x - 1.5, 0, slot.z + 2)
       const a = Math.atan2(slot.z, slot.x) + 0.5
-      const pos = new THREE.Vector3(Math.cos(a) * 46, 0, Math.sin(a) * 46)
+      /*
+   * The ring has to clear every fence, including the player's own.
+   *
+   * It was 46, chosen when the player farmed a lane plot and everything fenced
+   * sat within about 28 of the origin. The farm is a coastal clearing now,
+   * centred 38 out, so a spawn due west landed *inside* the target plot and the
+   * gate test could never observe an entry.
+   */
+  const pos = new THREE.Vector3(Math.cos(a) * 62, 0, Math.sin(a) * 62)
       let ok = false
       for (let i = 0; i < 30 * 240; i++) {
         const wp = nextWaypoint(pos, g, slot)
@@ -95,7 +113,15 @@ describe('village router', () => {
   it('enters through the gate, never through a fence', () => {
     for (let deg = 0; deg < 360; deg += 45) {
       const a = (deg * Math.PI) / 180
-      const pos = new THREE.Vector3(Math.cos(a) * 46, 0, Math.sin(a) * 46)
+      /*
+   * The ring has to clear every fence, including the player's own.
+   *
+   * It was 46, chosen when the player farmed a lane plot and everything fenced
+   * sat within about 28 of the origin. The farm is a coastal clearing now,
+   * centred 38 out, so a spawn due west landed *inside* the target plot and the
+   * gate test could never observe an entry.
+   */
+  const pos = new THREE.Vector3(Math.cos(a) * 62, 0, Math.sin(a) * 62)
       let entered = false
       for (let i = 0; i < 30 * 240 && !entered; i++) {
         const wasInside = containingSlot(pos) === PLAYER_SLOT
@@ -123,7 +149,7 @@ describe('village router', () => {
     // The historical failure: standing just outside the gate, the radial
     // treeline ray dives back through the farm rect and the fence pins the
     // escapee. Walk the routed flee from every farm's gate mouth.
-    for (const slot of FARM_SLOTS) {
+    for (const slot of FENCED_PLOTS) {
       const pos = new THREE.Vector3(
         slot.x + slot.inward * (FENCE_HX + 1.9),
         0,

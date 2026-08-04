@@ -38,6 +38,8 @@ import { PlotUi } from './ui/plot-ui'
 import { AnimalUi } from './ui/animal-ui'
 import { Pasture, type AnimalDef } from './game/animals'
 import { Wildlife, type TameTarget } from './game/wildlife'
+import { Clearing, CLEAR_COST } from './game/clearing'
+import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
 import { Stock } from './game/stock'
 import { Audio } from './core/audio'
 import { Pets, type EggDef } from './game/pets'
@@ -52,7 +54,7 @@ import { Popups, Shake } from './ui/popups'
 import { RARITY_BY_ID } from './game/mutations'
 import { SettingsUi } from './ui/settings-ui'
 import { BagUi } from './ui/bag-ui'
-import { Ftue } from './ui/ftue'
+import { Ftue, forgetFtue } from './ui/ftue'
 import { DevUi } from './ui/dev-ui'
 import { isEditingUi } from './ui/layout/editing'
 import { Tips } from './ui/tips'
@@ -366,6 +368,9 @@ function grantXp(amount: number) {
     platform.setGameContext({ level })
 
     hud.rebuildHotbar(progression.level)
+    // Whatever this level brings to the village — the stall, the barn, the next
+    // neighbour — turns up as part of the level-up rather than on the next load.
+    applyArrivals()
     audio.play('levelup')
     // Coins arrive as doobers so the payout is felt, not just tallied.
     if (reward?.coins) doobers.spawn(player.position, 'coin', 12, reward.coins)
@@ -670,6 +675,44 @@ const animalUi = new AnimalUi(
     for (const { def, count } of pasture.collectAll()) collectFrom(def, count)
   },
 )
+
+// --- seeds on the sand -------------------------------------------------------
+const beachSeeds = new BeachSeeds()
+engine.scene.add(beachSeeds.group)
+
+beachSeeds.onCollect = (at, seeds) => {
+  inventory.giveSeed(BEACH_SEED_CROP, seeds)
+  bursts.emit(at, 12, [0xfff0a0, 0x9fe8b5], { kind: 'spark', speed: 2.6, life: 0.7 })
+  popups.spawn(`+${seeds} 🥬`, at, 'good', 1.4)
+  audio.play('collect')
+}
+
+beachSeeds.onEmptied = () => {
+  hud.toast('🥬 Turnip seeds — now you need somewhere to plant them', 'good')
+}
+
+// --- the opening clearing ----------------------------------------------------
+/*
+ * The stand of trees on the ground the farm will occupy. Felling the last one
+ * is what brings the farm into existence — see game/clearing.ts.
+ */
+const clearing = new Clearing(world.obstacles, rng(0xc1ea21))
+engine.scene.add(clearing.group)
+
+clearing.onCut = (at) => {
+  bursts.emit(at, 16, [0x7ec850, 0x4a7a2c], { kind: 'petal', speed: 3, life: 1.2, jitter: 0.3 })
+  bursts.emit(at, 10, [0xc7ad85, 0x8a6238], { kind: 'puff', speed: 1.2, scale: 0.22 })
+  audio.play('harvest')
+  shake.add(0.22)
+}
+
+clearing.onOpened = () => {
+  farm.openClearing()
+  world.setPlayerFenceVisible(true)
+  hud.toast('🌱 The ground is clear — your farm is yours', 'good')
+  audio.play('levelup')
+  grantXp(20)
+}
 
 // --- wildlife ----------------------------------------------------------------
 /*
@@ -1081,6 +1124,13 @@ if (saved) {
   requests.deserialize(saved.requests)
   placeables.deserialize(saved.placeables)
   farm.deserialize(saved.farm, elapsed)
+  // The clearing is implied by the farm: if any ground is owned, it was cut.
+  if (farm.plotSpan > 0) {
+    clearing.restoreOpened()
+    world.setPlayerFenceVisible(true)
+  }
+  // Any seeds at all, or any progress, means the beach was already combed.
+  if (farm.plotSpan > 0 || inventory.seedCount(BEACH_SEED_CROP) > 0) beachSeeds.restoreEmptied()
 
   const away = Save.offlineSeconds(saved.savedAt)
   if (away > 20) catchUp(away, 'while you were away')
@@ -1186,22 +1236,23 @@ function keepFtuePossible() {
   if (step === 'plant' && inventory.seedCount('turnip') === 0 && inventory.produce.size === 0) {
     ftueRescued.add(step)
     inventory.giveSeed('turnip', 3)
-    hud.toast('A neighbour left a few turnip seeds by your gate', 'good')
+    hud.toast('You find a few more turnip seeds in a pocket', 'good')
     return
   }
 
-  if (step === 'buy-seeds') {
-    // An empty shelf is the same dead end as an empty wallet.
-    if (stock.totalItems === 0) stock.restock(progression.level)
-
-    const affordable = CROPS.filter((c) => stock.countOf(c.id) > 0).map((c) => c.seedCost)
-    if (affordable.length === 0) return
-    const cheapest = Math.min(...affordable)
-    if (inventory.coins >= cheapest) return
-
+  /*
+   * The opening's one hard dead end: no coins, and trees still standing.
+   *
+   * Clearing is the only thing to spend on at this point and the only way to
+   * get a farm, so a player who somehow arrives at it broke has no move at all
+   * — there is nothing to sell, because there is nowhere to have grown it.
+   * Topped up to exactly one tree's worth, so the rescue does not also skip the
+   * lesson.
+   */
+  if (step === 'clear-trees' && inventory.coins < CLEAR_COST) {
     ftueRescued.add(step)
-    inventory.coins = cheapest
-    hud.toast(`The stallholder spots you a few coins — go on, buy a packet`, 'good')
+    inventory.coins = CLEAR_COST
+    hud.toast('You turn out your pockets — just enough', 'good')
   }
 }
 
@@ -1395,6 +1446,7 @@ function interactAt(clientX: number, clientY: number, reach = TILE_SIZE * 0.8) {
     Math.hypot(hit.x - BARN_POS.x, hit.z - BARN_POS.z) < 4.5 ||
     rayDistanceToPoint(engine, clientX, clientY, barnClickPoint) < 3.2
   if (clickedBarn) {
+    if (!world.hasArrived('barn')) return
     const near = Math.hypot(player.position.x - BARN_POS.x, player.position.z - BARN_POS.z) < 7
     if (!near) player.moveTo(barnApproach)
     else if (requireFeature('animals')) animalUi.show()
@@ -1590,7 +1642,58 @@ function feedWildAnimal(target: TameTarget) {
   wildlife.feedNear(player.position)
 }
 
+/** A tree of the opening stand within reach, or null. */
+function clearTarget() {
+  if (modalOpen() || clearing.opened) return null
+  return clearing.targetNear(player.position)
+}
+
+function clearPromptText() {
+  return inventory.coins >= CLEAR_COST
+    ? `🪓 Clear this tree — 🪙${formatCoins(CLEAR_COST)}`
+    : `🪓 Clearing costs 🪙${formatCoins(CLEAR_COST)}`
+}
+
+function fellTree() {
+  if (!inventory.spend(CLEAR_COST)) {
+    audio.play('error')
+    hud.toast('Not enough coins to clear it', 'bad')
+    return
+  }
+  clearing.cutNear(player.position)
+}
+
+/**
+ * The level each building turns up at.
+ *
+ * The barn reuses the existing `animals` feature unlock so the building and the
+ * panel it opens can never disagree — they were already both level 6, but only
+ * the panel was gated, so a level-1 player could walk into a barn that sold
+ * them nothing. The stall has no feature of its own: seeds are the whole game
+ * from minute one, so its arrival *is* the unlock.
+ */
+const ARRIVAL_LEVEL = { shop: 2, lane: featureLevel('valley'), barn: featureLevel('animals') } as const
+
+/**
+ * Show whatever the player's level has earned.
+ *
+ * Called on restore and on every level-up rather than per frame — the set only
+ * changes at those two moments, and toggling a group's visibility every frame
+ * would dirty the scene graph for nothing.
+ */
+function applyArrivals() {
+  // Rarity rolls stay off until the feature unlocks — see Farm.mutationsUnlocked.
+  farm.mutationsUnlocked = progression.hasFeature('mutations')
+  world.setArrivalVisible('shop', progression.level >= ARRIVAL_LEVEL.shop)
+  world.setArrivalVisible('barn', progression.level >= ARRIVAL_LEVEL.barn)
+  // The street arrives with the first neighbour to walk down it.
+  world.setArrivalVisible('lane', progression.level >= ARRIVAL_LEVEL.lane)
+  hood.setArrivedFor(progression.level)
+}
+
 function shopInRange() {
+  // Not there yet: no prompt, no click target, no panel.
+  if (!world.hasArrived('shop')) return false
   // Ground-plane distance only — the player's Y tracks the terrain and would
   // otherwise skew the range check.
   return Math.hypot(player.position.x - SHOP_POS.x, player.position.z - SHOP_POS.z) < SHOP_RANGE
@@ -1667,8 +1770,10 @@ function handleInput() {
   }
 
   if (Input.justPressed('KeyE') || Input.justPressed('Space')) {
+    const fellable = clearTarget()
     const tameable = tameTarget()
-    if (shopInRange()) shopUi.show()
+    if (fellable) fellTree()
+    else if (shopInRange()) shopUi.show()
     else if (tameable) feedWildAnimal(tameable)
     else {
       const tile = farm.tileNear(player.position)
@@ -1804,6 +1909,22 @@ function updateFtuePointer() {
     if (!tile) return ftue.hidePointer()
     ftueProj.copy(tile.pos)
     ftueProj.y += 1.0
+  } else if (hint === 'seeds') {
+    // The nearest crate still on the sand.
+    const crate = beachSeeds.group.children[0]
+    if (!crate) return ftue.hidePointer()
+    ftueProj.copy(crate.position)
+    ftueProj.y += 1.0
+  } else if (hint === 'trees') {
+    /*
+     * The clearing, not a specific tree.
+     *
+     * Pointing at the nearest trunk is right once you are standing among them
+     * and useless from the beach, where the four are a single distant clump and
+     * the finger would jitter between them as the camera turns. The centre of
+     * the plot is the thing the player is actually being sent to.
+     */
+    ftueProj.set(FARM_CENTRE.x, 3.2, FARM_CENTRE.z)
   } else {
     ftueProj.copy(SHOP_POS)
     ftueProj.y += 2.4
@@ -1906,6 +2027,44 @@ const devUi = new DevUi({
   restartFtue: () => {
     ftue.restart()
     hud.toast('Dev: FTUE restarted', 'info')
+  },
+  saveNow: () => {
+    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables)
+    hud.toast('Dev: saved', 'info')
+  },
+  resetSave: () => {
+    /*
+     * Wipe and reload rather than tearing the running game down.
+     *
+     * A new game is not a state this session can reach by mutating what is
+     * already loaded — the farm, the clearing, the crates and the FTUE all
+     * carry one-way progress, and half-resetting them is exactly the sort of
+     * inconsistent state a dev tool is supposed to help find, not create. The
+     * reload is the only honest "new game" button.
+     */
+    Save.clear()
+    forgetFtue()
+    location.reload()
+  },
+  openClearing: () => {
+    clearing.restoreOpened()
+    farm.openClearing()
+    world.setPlayerFenceVisible(true)
+    hud.toast('Dev: clearing opened', 'info')
+  },
+  respawnCrates: () => {
+    beachSeeds.respawn()
+    hud.toast('Dev: crates back on the sand', 'info')
+  },
+  expandPlot: () => {
+    if (farm.expandPlot()) hud.toast(`Dev: plot is now ${farm.plotSpan}x${farm.plotSpan}`, 'info')
+    else hud.toast('Dev: plot is already at maximum', 'bad')
+  },
+  revealAll: () => {
+    world.setArrivalVisible('shop', true)
+    world.setArrivalVisible('barn', true)
+    hood.setArrivedFor(99)
+    hud.toast('Dev: everything revealed', 'info')
   },
   stats: () => ({
     fps: fpsEma,
@@ -2052,6 +2211,7 @@ function frame() {
   updateGrass(elapsed)
   pasture.update(dt, elapsed, engine.camera)
   wildlife.update(dt, elapsed, player.position)
+  beachSeeds.update(dt, elapsed, player.position)
   placeables.update(dt, elapsed, farm)
   pets.update(dt, elapsed, player.position, () => {
     // A pet watering something should feel like a small gift, not a silent stat.
@@ -2228,8 +2388,10 @@ function frame() {
     hud.clearPrompt()
     farm.setHighlight(null, 'none')
   } else {
+    const fellable = clearTarget()
     const tameable = tameTarget()
-    if (shopInRange()) hud.setPrompt('shop')
+    if (fellable) hud.setPrompt('tame', clearPromptText())
+    else if (shopInRange()) hud.setPrompt('shop')
     else if (tameable) hud.setPrompt('tame', tamePromptText(tameable))
     else if (tile?.placed) hud.setPrompt('menu')
     else hud.clearPrompt()
@@ -2256,6 +2418,9 @@ function frame() {
     wateredCount: farm.tiles.filter((t) => t.water > 0).length,
     nearShop: shopInRange(),
     seedsBought: inventory.purchases,
+    cratesLeft: beachSeeds.remaining,
+    treesLeft: clearing.remaining,
+    hasFarm: farm.plotSpan > 0,
   })
   updateFtuePointer()
   tips.enabled = settingsUi.settings.showTips && !ftue.active
@@ -2302,6 +2467,16 @@ function frame() {
   Input.endFrame()
 }
 
+/*
+ * The village catches up with the player's level before the first frame.
+ *
+ * After the restore, not inside it: a new game has no save to restore from and
+ * still needs the empty-coast state applied, and a loaded one needs the stall
+ * and neighbours it has already earned standing there when the screen fades in
+ * rather than arriving a level later.
+ */
+applyArrivals()
+
 platform.setLoadingProgress(1)
 window.__loading?.(1)
 platform.loadComplete()
@@ -2315,7 +2490,7 @@ syncGameplayLifecycle()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, platform, guidePath, wildlife,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, platform, guidePath, wildlife, clearing, beachSeeds,
   }
 
   /**

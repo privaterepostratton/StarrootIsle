@@ -2,6 +2,12 @@
  * Developer panel. Backquote (`) toggles it; `?dev` in the URL opens it at
  * boot for touch devices with no backquote to press.
  *
+ * Floating and draggable by its title bar, with the position remembered. It was
+ * pinned bottom-left, which is fine until the thing you are testing is *also*
+ * bottom-left — the hotbar, the controls card, the plot menu — and then the
+ * panel is sitting on top of the only evidence you have. Being able to shove it
+ * out of the way is most of what makes it usable during a real session.
+ *
  * Deliberately styled as a tool, not as game UI — monospace, dark, dense.
  * Making it pretty would invite leaving it reachable in production; making it
  * ugly keeps its status honest. It talks to the game exclusively through the
@@ -27,6 +33,18 @@ export interface DevActions {
   showTip(): void
   /** Restart the first-time tour from step 1 (QA). */
   restartFtue(): void
+  /** Wipe the save and reload into a brand new game. */
+  resetSave(): void
+  /** Save right now, without waiting for the autosave tick. */
+  saveNow(): void
+  /** Fell the opening stand outright, creating the farm. */
+  openClearing(): void
+  /** Put the beach seed crates back, for testing the opening. */
+  respawnCrates(): void
+  /** Widen the farm clearing by one ring. */
+  expandPlot(): void
+  /** Force every level-gated building into the world regardless of level. */
+  revealAll(): void
   /** Live render stats for the readout line. */
   stats(): { fps: number; calls: number; tris: number; quality: string }
 }
@@ -43,10 +61,35 @@ export class DevUi {
     this.root.id = 'devPanel'
     this.root.style.display = 'none'
 
+    /*
+     * Title bar doubles as the drag handle.
+     *
+     * Dragging the panel body instead would mean every button press starts a
+     * drag, and a one-pixel wobble between mousedown and mouseup then reads as
+     * a drag rather than a click — the buttons would feel broken about a third
+     * of the time.
+     */
+    const bar = document.createElement('div')
+    bar.className = 'dev-bar'
+    bar.textContent = 'dev'
+    const close = document.createElement('button')
+    close.className = 'dev-close'
+    close.textContent = '×'
+    close.addEventListener('click', () => this.toggle())
+    bar.append(close)
+    this.root.append(bar)
+    this.makeDraggable(bar)
+
     const btn = (label: string, run: () => void) => {
       const b = document.createElement('button')
       b.textContent = label
       b.addEventListener('click', run)
+      return b
+    }
+    /** A button that destroys progress. Coloured so it cannot be hit absently. */
+    const danger = (label: string, run: () => void) => {
+      const b = btn(label, run)
+      b.className = 'dev-danger'
       return b
     }
     const row = (title: string, ...els: HTMLElement[]) => {
@@ -128,6 +171,29 @@ export class DevUi {
         btn('tip', () => actions.showTip()),
         btn('ftue', () => actions.restartFtue()),
       ),
+      /*
+       * The opening, which is the hardest thing in the game to test by playing:
+       * every step of it is one-way, so without these the only way back to the
+       * beach is a save wipe and a five-minute replay.
+       */
+      row(
+        'open',
+        btn('clear trees', () => actions.openClearing()),
+        btn('respawn crates', () => actions.respawnCrates()),
+        btn('+plot ring', () => actions.expandPlot()),
+        btn('reveal all', () => actions.revealAll()),
+      ),
+      /*
+       * Destructive, so it is last and it asks. A stray click on "wipe" during a
+       * long test session costs exactly the session it was meant to help.
+       */
+      row(
+        'save',
+        btn('save now', () => actions.saveNow()),
+        danger('WIPE + reload', () => {
+          if (confirm('Delete the save and start a new game?')) actions.resetSave()
+        }),
+      ),
     )
 
     this.statsLine = document.createElement('div')
@@ -135,8 +201,68 @@ export class DevUi {
     this.root.append(this.statsLine)
 
     document.getElementById('ui')!.appendChild(this.root)
+    this.restorePosition()
 
     if (new URLSearchParams(location.search).has('dev')) this.toggle()
+  }
+
+  /** Where the panel was left, so it does not jump back every reload. */
+  private static readonly POS_KEY = 'sv-dev-pos'
+
+  private restorePosition() {
+    try {
+      const raw = localStorage.getItem(DevUi.POS_KEY)
+      if (!raw) return
+      const { x, y } = JSON.parse(raw) as { x: number; y: number }
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return
+      this.moveTo(x, y)
+    } catch {
+      /* no stored position, or storage is off */
+    }
+  }
+
+  /**
+   * Position from the top-left, clamped so the panel can never be dragged
+   * somewhere it cannot be dragged back from.
+   */
+  private moveTo(x: number, y: number) {
+    const w = this.root.offsetWidth || 320
+    const h = this.root.offsetHeight || 200
+    const cx = Math.max(0, Math.min(innerWidth - Math.min(w, 120), x))
+    const cy = Math.max(0, Math.min(innerHeight - 28, y))
+    this.root.style.left = `${cx}px`
+    this.root.style.top = `${cy}px`
+    this.root.style.right = 'auto'
+    this.root.style.bottom = 'auto'
+    void h
+  }
+
+  private makeDraggable(handle: HTMLElement) {
+    let dx = 0
+    let dy = 0
+    const onMove = (e: PointerEvent) => this.moveTo(e.clientX - dx, e.clientY - dy)
+    const onUp = () => {
+      removeEventListener('pointermove', onMove)
+      removeEventListener('pointerup', onUp)
+      try {
+        localStorage.setItem(
+          DevUi.POS_KEY,
+          JSON.stringify({ x: this.root.offsetLeft, y: this.root.offsetTop }),
+        )
+      } catch {
+        /* storage off; the panel still drags, it just forgets */
+      }
+    }
+    handle.addEventListener('pointerdown', (e) => {
+      // Not the close button, which lives in the same bar.
+      if ((e.target as HTMLElement).classList.contains('dev-close')) return
+      const rect = this.root.getBoundingClientRect()
+      dx = e.clientX - rect.left
+      dy = e.clientY - rect.top
+      addEventListener('pointermove', onMove)
+      addEventListener('pointerup', onUp)
+      e.preventDefault()
+    })
   }
 
   toggle() {

@@ -5,6 +5,7 @@ import { createPebbleScatter, createCloverPatch, createMushroomCluster } from '.
 import { createReedsModel } from '../assets/bridge'
 import { MINOR_LAYER, rng } from '../assets/style'
 import { heightAt, isPlantable, oceanMask, WALK_LIMIT, WATER_LEVEL } from './terrain'
+import { SPAWN } from './village'
 import { getModels, fitToHeight, PROP_HEIGHT } from '../assets/models'
 import { captureImpostor, createImpostorField, type ImpostorPlacement } from '../assets/impostor'
 import type { Obstacle } from './world'
@@ -94,6 +95,22 @@ const GRASS_FADE_FAR = 60
  * first two were fixed and the third was forgotten.
  */
 const COAST_CLEAR = 40
+
+/**
+ * Palms along the shore — the one thing that *does* grow on the seaward arc.
+ *
+ * Everything else is kept off the sand by COAST_CLEAR, which is what makes the
+ * coast read as a coast rather than as a forest that happens to end in water.
+ * The result was a beach with nothing on it at all, and an empty beach reads as
+ * unfinished for the same reason an empty sightline does. Palms are the
+ * exception because they are the one species the eye accepts on sand — they
+ * dress the shore without putting the forest back on it.
+ *
+ * Placed in a band that starts *inland* of the sand and runs down to just above
+ * the tideline, so they cluster along the top of the beach the way real ones do
+ * rather than standing in the surf.
+ */
+const PALM_COUNT = 150
 
 
 export function createVegetation(opts: VegetationOptions): THREE.Group {
@@ -215,6 +232,48 @@ export function createVegetation(opts: VegetationOptions): THREE.Group {
     opts.obstacles.push({ x: p.x, z: p.z, r: 0.5 * jitter })
   }
 
+  // --- palms, along the shore ----------------------------------------------
+  const palmModel = getModels().palm
+  const palmFit = fitToHeight(palmModel, PROP_HEIGHT.palm)
+  const palmPlacements: Placement[] = []
+  {
+    let attempts = 0
+    while (palmPlacements.length < PALM_COUNT && attempts < PALM_COUNT * 40) {
+      attempts++
+      const a = r() * Math.PI * 2
+      const d = 40 + Math.sqrt(r()) * (WALK_LIMIT - 30)
+      const x = Math.cos(a) * d
+      const z = Math.sin(a) * d
+      // Only on the open arc, and only where the ground is genuinely coastal.
+      if (oceanMask(Math.atan2(z, x)) < 0.6) continue
+      /*
+       * Never on the spot the player wakes up on.
+       *
+       * This is the opening shot of the game, and the radius has to cover the
+       * *camera*, not the farmer: the boom sits about ten units back, so a nine
+       * unit clearing around the spawn point left the first frame looking
+       * straight into a canopy from inside it. Eighteen clears the boom whatever
+       * direction it happens to be pointing, and takes the crates with it.
+       */
+      if (Math.hypot(x - SPAWN.x, z - SPAWN.z) < 18) continue
+      if (opts.blocked(x, z) || !isPlantable(x, z)) continue
+      const h = heightAt(x, z)
+      // Above the tideline, below the point where the beach turns back to
+      // meadow — a palm standing in grass is just a badly chosen tree.
+      if (h < WATER_LEVEL + 0.6 || h > WATER_LEVEL + 4.0) continue
+
+      const jitter = 0.82 + r() * 0.55
+      palmPlacements.push({
+        x,
+        y: h + palmFit.groundY * jitter,
+        z,
+        rotationY: r() * Math.PI * 2,
+        scale: palmFit.scale * jitter,
+      })
+      opts.obstacles.push({ x, z, r: 0.45 * jitter })
+    }
+  }
+
   // --- bushes and rocks ----------------------------------------------------
   for (let i = 0; i < BUSH_COUNT; i++) {
     const p = sample()
@@ -282,6 +341,15 @@ export function createVegetation(opts: VegetationOptions): THREE.Group {
     const shot = captureImpostor(opts.renderer, species.model)
     group.add(createImpostorField(shot, species.impostors))
   }
+  if (palmPlacements.length > 0) {
+    group.add(
+      makeInstancedChunks(palmModel.geometry, palmPlacements, {
+        chunkSize: 68,
+        material: palmModel.material,
+      }),
+    )
+  }
+
   rockModels.forEach((model, i) => {
     if (rockPlacements[i].length === 0) return
     group.add(

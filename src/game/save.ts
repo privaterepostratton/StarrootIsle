@@ -14,7 +14,6 @@ import type { Trading } from './trading'
 import type { Requests } from './requests'
 import type { Placeables } from './placeables'
 import { platform } from '../platform/platform'
-import { clearPlotChoice } from './village'
 
 const KEY = 'sprout-valley-save-v1'
 
@@ -201,9 +200,6 @@ export function clear() {
   } catch {
     /* ignore */
   }
-  // The drawn plot lives outside the save blob (see village.ts for why) so it
-  // has to be forgotten explicitly, or a fresh start reopens on the same corner.
-  clearPlotChoice()
 }
 
 /**

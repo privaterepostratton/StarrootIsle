@@ -35,6 +35,9 @@ describe('seed selection', () => {
 
   it('hops off a seed as its last packet is spent', () => {
     const inv = new Inventory()
+    // The bag starts empty now — the opening turnips are crates on the beach —
+    // so the seed to hop *to* has to be part of the fixture rather than assumed.
+    inv.giveSeed('turnip', 3)
     inv.giveSeed('carrot', 1)
     inv.select(indexOf('carrot'))
     expect(inv.takeSeed('carrot')).toBe(true)
