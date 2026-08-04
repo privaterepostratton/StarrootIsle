@@ -77,6 +77,9 @@
    */
   --rail-w: clamp(58px, 12vmin, 70px);
   --nav-btn: clamp(52px, 11vmin, 65px);
+  /* Extra inset past --ui-inset-x so nav icons / lock badges aren't clipped
+   * by the viewport edge (html/body overflow:hidden). */
+  --rail-edge: 22px;
   /* Width of the bottom-right tool dock, so the hotbar can reserve it on both
    * sides and stay genuinely centred instead of sliding under the dock. */
   --dock-w: calc(4 * var(--nav-btn) + 28px);
@@ -386,7 +389,7 @@ body.panel-open #ui #questTracker {
   left: calc(var(--ui-inset-x) + var(--avatar-col));
   /* Breathing room before the gear, and dropped a touch below the screen edge
      so the pills sit on the gear's centreline rather than its hat. */
-  right: calc(var(--ui-inset-x) + var(--menu-col) + 10px);
+  right: calc(var(--ui-inset-x) + var(--rail-edge) + var(--menu-col) + 10px);
   margin-top: 5px;
   display: flex;
   flex-wrap: wrap;
@@ -618,7 +621,8 @@ body.panel-open #ui #questTracker {
 #menuBtn {
   position: absolute;
   top: var(--ui-pad);
-  right: var(--ui-inset-x);
+  /* Match the rail — icons are 112% wide and body/html clip overflow. */
+  right: calc(var(--ui-inset-x) + var(--rail-edge));
 }
 
 #navRail {
@@ -626,14 +630,15 @@ body.panel-open #ui #questTracker {
   /* Clear of the menu button, which owns the corner above it. */
   top: calc(var(--ui-pad) + var(--nav-btn) + 12px);
   /*
-   * Held further off the edge than the bare inset, because the icons are wider
-   * than the buttons they sit on (see .nav-ico) and the rail was leaving them
-   * about ten pixels of screen to hang into. That is enough on a wide desktop
-   * window and nothing at all on a phone, where the inset collapses to its 12px
-   * floor and the safe-area may eat that too.
+   * Icons sit at 112% of the button and lock badges hang off the rim, so the
+   * painted circle is wider than the layout box. html/body use overflow:hidden,
+   * which shears anything that crosses the viewport edge — the classic "half a
+   * gear" look. `--rail-edge` keeps that overhang on-screen.
    */
-  right: calc(var(--ui-inset-x) + 10px);
-  width: var(--rail-w);
+  right: calc(var(--ui-inset-x) + var(--rail-edge));
+  /* Wide enough that centred oversized icons stay inside the rail box. */
+  width: max(var(--rail-w), calc(var(--nav-btn) * 1.24));
+  overflow: visible;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -735,7 +740,7 @@ body.panel-open #ui #questTracker {
 #toolDock {
   position: absolute;
   bottom: var(--ui-inset-b);
-  right: var(--ui-inset-x);
+  right: calc(var(--ui-inset-x) + var(--rail-edge));
   display: flex;
   gap: 8px;
   pointer-events: none;
@@ -4298,7 +4303,7 @@ body:has(#devPanel:not([style*='display: none'])) #help {
     display: grid;
     place-items: center;
     position: absolute;
-    right: var(--ui-inset-x);
+    right: calc(var(--ui-inset-x) + var(--rail-edge));
     top: calc(var(--ui-pad) + var(--nav-btn) + 18px);
     width: var(--nav-btn);
     height: var(--nav-btn);
