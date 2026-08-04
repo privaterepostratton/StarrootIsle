@@ -152,6 +152,8 @@ export class Engine {
     this.renderer.toneMappingExposure = 1.05
 
     this.scene = new THREE.Scene()
+    // Fallback clear colour until the equirectangular dome is attached; day
+    // cycle keeps fog in sync with the sky keys either way.
     this.scene.background = new THREE.Color(0x8fd4f2)
     this.scene.fog = new THREE.Fog(0x8fd4f2, FOG_NEAR, FOG_FAR)
 
@@ -389,6 +391,9 @@ export class Engine {
   /** Distant mountain ranges and clouds. Attached by main so the day cycle can
    *  tint them without the engine having to know about the world. */
   skyline: { setTint(color: THREE.Color): void } | null = null
+
+  /** Painted equirectangular dome. Day/weather tint via setTint multiply. */
+  skybox: { setTint(color: THREE.Color): void } | null = null
 
   /** Lane lanterns, likewise driven by the day cycle. */
   lanterns: { setGlow(v: number): void } | null = null

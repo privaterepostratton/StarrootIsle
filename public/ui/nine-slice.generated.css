@@ -29,13 +29,7 @@
   border-image: url('btn-plot-paid.png') 0 52 0 52 fill stretch;
 }
 
-/* toast-panel.png */
-.toast {
-  border-style: solid;
-  border-color: transparent;
-  border-width: 0px 37px 0px 40px;
-  border-image: url('toast-panel.png') 0 88 0 96 fill stretch;
-}
+/* toast-panel.png — unused; toasts are a flat black CSS pill now. */
 
 /* chip-bg.png */
 .tab {

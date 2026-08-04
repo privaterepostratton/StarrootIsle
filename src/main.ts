@@ -3,6 +3,7 @@ import { Input } from './core/input'
 import { pickGround, pickObjects, rayDistanceToPoint } from './core/picking'
 import { worldClicksSwallowed, swallowBackdropClick } from './core/click-guard'
 import { loadGroundTextures, loadParticleTextures } from './assets/textures'
+import { loadSkyTexture, Skybox } from './assets/skybox'
 import { loadModels, loadFarmerModel, loadShopkeeperModel, loadFarmgirlModel } from './assets/models'
 import { createWorld, SHOP_POS, FARM_CENTRE, BARN_POS } from './game/world'
 import { inPlayerPlot, SPAWN } from './game/village'
@@ -120,7 +121,7 @@ window.__loading?.(0.15, 'Loading the valley…')
 // Both must be resident before anything is built: the world reads ground
 // textures at construction, and the farm reads the planter model the first time
 // a plot is tilled — including while deserialising a save.
-await Promise.all([
+const [, , , , , , skyTex] = await Promise.all([
   loadGroundTextures(),
   loadParticleTextures(),
   loadModels(),
@@ -130,6 +131,7 @@ await Promise.all([
   loadShopkeeperModel(PLAYER_HEIGHT * 1.15),
   // A shade shorter than the shopkeeper — she reads as the younger of the two.
   loadFarmgirlModel(PLAYER_HEIGHT * 1.02),
+  loadSkyTexture(), // → skyTex
 ])
 /*
  * The UI art, warmed before the loading screen lifts.
@@ -163,6 +165,11 @@ const postfx = new PostFX(engine.renderer, engine.scene, engine.camera)
 engine.postfx = postfx
 engine.skyline = world.skyline
 engine.lanterns = world.lanterns
+
+const skybox = new Skybox(skyTex)
+engine.scene.add(skybox.mesh)
+engine.skybox = skybox
+engine.scene.background = null
 
 const ambience = new Ambience()
 engine.scene.add(ambience.group)
@@ -2279,6 +2286,7 @@ function frame() {
   // Water renders its reflection and refraction buffers first — both need the
   // scene in its final state for this frame, and neither may include the water.
   world.skyline.update(dt)
+  skybox.follow(engine.camera)
   world.homeMarker.update(elapsed, engine.camera)
   world.lanterns.update(player.position)
   world.shopMarkers.update(elapsed, engine.camera, player.position)

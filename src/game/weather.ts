@@ -166,6 +166,8 @@ const greyColor = new THREE.Color(0x8c93a0)
 const flashColor = new THREE.Color(0xffffff)
 const eventColor = new THREE.Color()
 const tmpColor = new THREE.Color()
+const skyWeatherTint = new THREE.Color()
+const WHITE = new THREE.Color(0xffffff)
 
 /* Weather recomputes the fog band from Engine's clear-weather constants rather
  * than mutating scene.fog in place — nothing else resets them each frame, so an
@@ -320,17 +322,26 @@ export class Weather {
     engine.ambient.intensity = engine.ambient.intensity * ambMul + this.flash * 1.6
 
     // Desaturate the sky and fog toward overcast grey.
-    const bg = engine.scene.background as THREE.Color
     // Events colour the sky rather than greying it — that tint is the signal
     // the player reads from anywhere on the map.
     const tint = this.current.tint ?? this.previous.tint
     tmpColor.copy(tint !== undefined ? eventColor.setHex(tint) : greyColor)
     if (this.flash > 0) tmpColor.lerp(flashColor, this.flash)
-    bg.lerp(tmpColor, greyness)
 
     // Tighten the fog band toward the camera as conditions close in.
     const fog = engine.scene.fog as THREE.Fog
-    fog.color.copy(bg)
+    fog.color.lerp(tmpColor, greyness)
+
+    if (engine.skybox) {
+      // Fog already holds day-sky lerped toward weather; drive the dome from that.
+      const peak = Math.max(fog.color.r, fog.color.g, fog.color.b) || 1
+      skyWeatherTint.copy(fog.color).multiplyScalar(1 / peak).lerp(WHITE, 0.45)
+      const brightness = Math.min(1, Math.max(0.18, 0.22 + engine.sun.intensity * 0.48))
+      engine.skybox.setTint(skyWeatherTint.multiplyScalar(brightness * (1 - greyness * 0.25)))
+    } else if (engine.scene.background instanceof THREE.Color) {
+      engine.scene.background.lerp(tmpColor, greyness)
+      fog.color.copy(engine.scene.background)
+    }
     fog.near = FOG_NEAR - 48 * fogPull
     fog.far = FOG_FAR - 130 * fogPull
 

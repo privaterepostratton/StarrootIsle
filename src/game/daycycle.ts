@@ -104,8 +104,18 @@ export class DayCycle {
     cA.setHex(a.sky)
     cB.setHex(b.sky)
     const sky = cA.clone().lerp(cB, t)
-    ;(engine.scene.background as THREE.Color).copy(sky)
     engine.scene.fog!.color.copy(sky)
+    if (engine.skybox) {
+      // Texture owns midday look; keys only shift hue/brightness around it.
+      const peak = Math.max(sky.r, sky.g, sky.b) || 1
+      skyTint.copy(sky).multiplyScalar(1 / peak).lerp(WHITE, 0.55)
+      const brightness = clamp(0.22 + engine.sun.intensity * 0.48, 0.18, 1)
+      engine.skybox.setTint(skyTint.clone().multiplyScalar(brightness))
+      // Dome covers the view — solid background would flash through any gap.
+      engine.scene.background = null
+    } else if (engine.scene.background instanceof THREE.Color) {
+      engine.scene.background.copy(sky)
+    }
 
     cA.setHex(a.sun)
     cB.setHex(b.sun)

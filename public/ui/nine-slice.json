@@ -56,7 +56,7 @@
     "outset": 0,
     "repeat": "stretch",
     "fill": true,
-    "selectors": ".toast",
+    "selectors": "",
     "power": 0.4166666666666667
   },
   "parchment.png": {

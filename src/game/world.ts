@@ -310,7 +310,11 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   // The painted ranges leave the sea's arc empty — see SkylineGap. The numbers
   // are terrain's, so the horizon and the heightfield open on exactly the same
   // bearings rather than on two hand-matched guesses.
-  const skyline = new Skyline({ at: OCEAN_BEARING, half: OCEAN_HALF, feather: OCEAN_FEATHER })
+  // Procedural puff clouds off — the equirectangular skybox already paints them.
+  const skyline = new Skyline(
+    { at: OCEAN_BEARING, half: OCEAN_HALF, feather: OCEAN_FEATHER },
+    { clouds: false },
+  )
   group.add(skyline.group)
 
   group.add(createTerrainMesh())

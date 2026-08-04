@@ -44,7 +44,8 @@ export const WATER_LEVEL = -0.9
 export const WALK_LIMIT = 106
 
 // --- palette -----------------------------------------------------------------
-const C_SAND = new THREE.Color(0xe0d2a4)
+/** Warm shore tint — must stay R/G-led over B so the sand-map mix recognises it. */
+const C_SAND = new THREE.Color(0xe8d09a)
 const C_GRASS = new THREE.Color(0x7ec850)
 const C_GRASS_D = new THREE.Color(0x5fa83c)
 const C_ROCK = new THREE.Color(0xa8a9a2)
@@ -615,9 +616,12 @@ export function createTerrainMesh(): THREE.Mesh {
         #ifdef USE_MAP
           vec4 grassSample = texture2D(map, vMapUv);
           vec4 sandSample = texture2D(uSandMap, vMapUv);
-          // Warm sand vertex colours: high R+G, low B.
-          float sandW = smoothstep(0.55, 0.78, vColor.r) * smoothstep(0.55, 0.78, vColor.g)
-            * (1.0 - smoothstep(0.35, 0.55, vColor.b));
+          // Warm sand: high R+G and clearly warmer than its blue (beige shores
+          // still carry real B — the old "low B" gate never fired, so sand.png
+          // never mixed in and beaches stayed flat vertex colour).
+          float sandW = smoothstep(0.55, 0.75, vColor.r)
+            * smoothstep(0.50, 0.70, vColor.g)
+            * smoothstep(0.05, 0.18, vColor.r - vColor.b);
           // Green dominance keeps tufts on meadows; rock/snow stay flat.
           //
           // No constant term. A floor here leaks grass detail onto every
@@ -626,10 +630,18 @@ export function createTerrainMesh(): THREE.Mesh {
           // snowcaps grey-green. The gain is steep instead, so meadow greens
           // still saturate to a full tuft.
           float grassW = clamp((vColor.g - max(vColor.r, vColor.b)) * 8.0, 0.0, 1.0);
+          sandW *= 1.0 - grassW;
           vec4 detail = mix(grassSample, sandSample, clamp(sandW, 0.0, 1.0));
           float detailW = max(grassW, sandW);
           vec4 sampledDiffuseColor = mix(vec4(1.0), detail, detailW);
-          diffuseColor *= sampledDiffuseColor;
+          // Shores: prefer sand.png over vertexColour × map (the tint was
+          // flattening the pebble grain into a solid beige slab).
+          diffuseColor.rgb = mix(
+            diffuseColor.rgb * sampledDiffuseColor.rgb,
+            sandSample.rgb,
+            clamp(sandW, 0.0, 1.0)
+          );
+          diffuseColor.a *= sampledDiffuseColor.a;
         #endif
         `,
       )

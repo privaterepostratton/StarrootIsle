@@ -1052,40 +1052,32 @@ body.panel-open #ui #questTracker {
   z-index: 12;
 }
 
-.toast {
+/* Id-prefixed so this wins over nine-slice.generated.css (loads after). */
+#toasts .toast {
   border-radius: 99px;
-  /*
-   * 9-slice, not a stretch. Percentage slices suit a pill: each 49% corner
-   * block IS a rounded end, kept pixel-true, and only the sliver of flat
-   * middle stretches to fit the text — a wide toast used to pull the whole
-   * pill art sideways, ends included. The border supplies the horizontal
-   * padding; only a little extra is added on top.
-   */
-  border: 0 22px;
-  border-style: solid;
-  border-color: transparent;
-  border-image: url('/ui/toast-panel.png') 0 48 fill stretch;
-  /* +5px top/bottom vs the old 9px — taller pill, same width. */
-  padding: 14px 4px;
+  border: none;
+  border-image: none;
+  padding: 12px 18px;
   font-size: clamp(13px, 1.4vw + 10px, 15px);
   font-weight: 800;
   line-height: 1.15;
-  color: var(--ink);
-  background-color: transparent;
-  box-shadow: 0 4px 0 rgba(90, 55, 25, 0.28);
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.45);
+  color: #fff;
+  background: #000;
+  box-shadow: none;
+  text-shadow: none;
+  outline: none;
   animation: toastIn 0.25s ease backwards, toastOut 0.35s ease 1.9s forwards;
 }
 
-.toast.good {
-  box-shadow: 0 4px 0 #3f8a28;
-  outline: 2px solid rgba(95, 173, 56, 0.75);
+#toasts .toast.good {
+  box-shadow: none;
+  outline: 2px solid rgba(95, 173, 56, 0.85);
   outline-offset: 1px;
 }
 
-.toast.bad {
-  box-shadow: 0 4px 0 #b84438;
-  outline: 2px solid rgba(224, 92, 74, 0.75);
+#toasts .toast.bad {
+  box-shadow: none;
+  outline: 2px solid rgba(224, 92, 74, 0.85);
   outline-offset: 1px;
 }
 
@@ -4912,31 +4904,20 @@ body:has(#devPanel:not([style*='display: none'])) #help {
    *
    * They sit over the left thumb's half of the screen, which on a phone is both
    * the smallest space and the one the hand is already using — a desktop-sized
-   * pill there covers the plot you are standing on. The border supplies this
-   * pill's horizontal padding (see the 9-slice note above), so shrinking it is
-   * a matter of the border width as much as the font.
+   * pill there covers the plot you are standing on.
    */
   #toasts {
     max-width: min(240px, 46vw);
     gap: 5px;
   }
 
-  .toast {
-    border-width: 0 15px;
-    padding: 9px 3px;
+  #toasts .toast {
+    padding: 9px 14px;
     font-size: 12px;
-    box-shadow: 0 3px 0 rgba(90, 55, 25, 0.28);
   }
 
-  /* Same hues as the desktop rule — the green/red split is what distinguishes a
-     sale from a warning — only shallower, to match the smaller pill. */
-  .toast.good {
-    box-shadow: 0 3px 0 #3f8a28;
-    outline-width: 1px;
-  }
-
-  .toast.bad {
-    box-shadow: 0 3px 0 #b84438;
+  #toasts .toast.good,
+  #toasts .toast.bad {
     outline-width: 1px;
   }
 }
@@ -4961,27 +4942,6 @@ body:has(#devPanel:not([style*='display: none'])) #help {
    */
   :root {
     --slot-size: clamp(46px, 9.5vmin, 60px);
-  }
-
-  /*
-   * Toast caps, un-squashed.
-   *
-   * The pill's art is 384x96 sliced `0 88 0 96`, so each rounded end is a
-   * ~96x96 square that has to be drawn square to look round. The generated
-   * sheet renders them into 40px and 37px borders against a 45px-tall pill —
-   * about 11% narrower than they want, which pinches both ends inward and
-   * reads as the whole pill having been stretched sideways.
-   *
-   * Expressed in em rather than px so it tracks the pill's height: at the 15px
-   * font this row uses, 3em is the 45px the left cap needs, and the right cap
-   * keeps the art's own 88/96 ratio against it.
-   */
-  /* `#toasts .toast`, not `.toast`: nine-slice.generated.css sets the border
-     widths and loads after this sheet, so an equal-specificity rule loses to it
-     however deep in a media query it sits. The id outranks it. */
-  #toasts .toast {
-    border-left-width: 3em;
-    border-right-width: 2.75em;
   }
 
   /*

@@ -212,7 +212,7 @@ export class Skyline {
   private readonly cloudMaterial: THREE.MeshBasicMaterial
   private readonly clouds: { object: THREE.Group; speed: number }[] = []
 
-  constructor(gap: SkylineGap | null = null) {
+  constructor(gap: SkylineGap | null = null, opts: { clouds?: boolean } = {}) {
     for (const layer of LAYERS) {
       const mesh = buildRange(layer, gap)
       this.rangeMaterials.push(mesh.material as THREE.MeshBasicMaterial)
@@ -227,15 +227,19 @@ export class Skyline {
       depthWrite: false,
     })
 
-    const r = rng(0xc10d5)
-    for (let i = 0; i < 16; i++) {
-      const cloud = buildCloud(i * 977 + 13, this.cloudMaterial)
-      const a = (i / 16) * Math.PI * 2 + r() * 0.3
-      const dist = 150 + r() * 130
-      cloud.position.set(Math.cos(a) * dist, 78 + r() * 58, Math.sin(a) * dist)
-      this.group.add(cloud)
-      // Slow, and varied, so the sky is never quite still but never distracts.
-      this.clouds.push({ object: cloud, speed: 0.9 + r() * 1.5 })
+    // Painted skybox already has clouds — stacking the soft puff billboards on
+    // top of it just muddies the panorama.
+    if (opts.clouds !== false) {
+      const r = rng(0xc10d5)
+      for (let i = 0; i < 16; i++) {
+        const cloud = buildCloud(i * 977 + 13, this.cloudMaterial)
+        const a = (i / 16) * Math.PI * 2 + r() * 0.3
+        const dist = 150 + r() * 130
+        cloud.position.set(Math.cos(a) * dist, 78 + r() * 58, Math.sin(a) * dist)
+        this.group.add(cloud)
+        // Slow, and varied, so the sky is never quite still but never distracts.
+        this.clouds.push({ object: cloud, speed: 0.9 + r() * 1.5 })
+      }
     }
 
     // Drawn before everything else. The ranges are genuinely distant so depth

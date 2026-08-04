@@ -154,8 +154,17 @@ const fragmentShader = /* glsl */ `
     float inBuffer = smoothstep(0.0, 0.05, min(reflectEdge.x, reflectEdge.y));
     vec3 reflected = texture2D(uReflection, clamp(rawReflectUv, 0.001, 0.999)).rgb;
 
-    // Body colour: turquoise in the shallows deepening to blue.
-    vec3 waterColor = mix(uShallowColor, uDeepColor, clamp(vDepth / 3.4, 0.0, 1.0));
+    /*
+     * Body colour: turquoise in the shallows deepening to blue.
+     *
+     * The ramp is short on purpose. Spread over several metres of depth it gives
+     * a smooth wash from cyan to blue, which is what real water does and what
+     * stylised water conspicuously does not — the look this is after reads as
+     * two colours meeting in a band you can point at, not as a gradient. Ending
+     * it inside a couple of units puts that band right where the bed shelves,
+     * which is where the eye already expects the change.
+     */
+    vec3 waterColor = mix(uShallowColor, uDeepColor, clamp(vDepth / 2.0, 0.0, 1.0));
 
     // Translucency — how much of the bed survives. Beer-Lambert style falloff
     // so shallow edges read as clear and deep centres as solid.
@@ -196,6 +205,30 @@ const fragmentShader = /* glsl */ `
     float surf = 1.0 - smoothstep(0.0, depthPx * (5.0 + ripple * 2.2), vDepth);
     float wash = 1.0 - smoothstep(0.0, depthPx * 17.0, vDepth);
     color = mix(color, uFoamColor, clamp(surf * 0.85 + wash * 0.16, 0.0, 1.0));
+
+    /*
+     * Painted ripple streaks.
+     *
+     * The single biggest thing separating this surface from the reference art.
+     * Everything above shades the water *physically* — refraction, fresnel, a
+     * specular glint — and the result is smooth, which at this camera distance
+     * means featureless: a flat sheet of blue with a lit edge. Hand-painted
+     * water of this kind carries marks on it, short light dashes that give the
+     * surface a scale and a direction to read.
+     *
+     * Built from a wave whose phase is itself wavy, so the streaks meander
+     * instead of ruling straight lines, then cut into dashes across the other
+     * axis. Both are thresholded hard rather than blended: a soft streak is just
+     * more smooth shading, and the crispness is the whole point.
+     *
+     * Damped in the shallows so it never fights the surf line, and faded out in
+     * deep water where the reference keeps its darkest areas plain.
+     */
+    float streakPhase = vWorldPos.x * 1.35 + sin(vWorldPos.z * 0.62 + uTime * 0.5) * 2.6 + uTime * 0.75;
+    float streak = smoothstep(0.80, 0.99, sin(streakPhase));
+    float dash = smoothstep(0.25, 0.85, sin(vWorldPos.z * 4.3 - uTime * 0.35) * 0.5 + 0.5);
+    float streakDepth = smoothstep(0.25, 1.4, vDepth) * (1.0 - smoothstep(3.5, 9.0, vDepth));
+    color = mix(color, uFoamColor, streak * dash * streakDepth * 0.42 * (1.0 - surf));
 
     // Fade the very edge out so the plane never shows a hard rim where it meets
     // dry land — but over a couple of pixels, not a couple of metres.
@@ -255,14 +288,14 @@ export class Water {
         uReflection: { value: this.reflectionRT.texture },
         uRefraction: { value: this.refractionRT.texture },
         uTextureMatrix: { value: this.textureMatrix },
-        uShallowColor: { value: new THREE.Color(0x62d9e4) },
+        uShallowColor: { value: new THREE.Color(0x7ae6ee) },
         // Not near-black. A deep tone this dark plus any reflection at all leaves
         // the middle of a lake reading as a hole rather than as water.
         //
         // Pushed bluer and more saturated with the coast: a lake is small enough
         // that its colour is mostly borrowed from the sky, but an open sea fills
         // a third of the frame and has to carry a colour of its own.
-        uDeepColor: { value: new THREE.Color(0x1a72cf) },
+        uDeepColor: { value: new THREE.Color(0x1566d6) },
         uFoamColor: { value: new THREE.Color(0xeaf7fb) },
         uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
         uSunColor: { value: new THREE.Color(0xffffff) },
