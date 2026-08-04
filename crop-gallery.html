@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sprout Valley — crop gallery</title>
+    <style>
+      /* Dev tool, not part of the game's UI — deliberately plain so nothing
+         about the page competes with the models it exists to show. */
+      html, body { margin: 0; background: #1d2126; color: #e8e2d4; font: 13px/1.3 system-ui, sans-serif; }
+      #wrap { position: relative; }
+      canvas { display: block; }
+      #labels { position: absolute; inset: 0; pointer-events: none; }
+      .label {
+        position: absolute;
+        padding: 2px 7px;
+        border-radius: 6px;
+        background: rgba(12, 14, 17, 0.62);
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+      }
+      .label b { font-weight: 600; }
+      .label span { opacity: 0.6; }
+      #head { padding: 10px 14px; font-size: 14px; }
+      #head a { color: #8ecdf0; }
+    </style>
+  </head>
+  <body>
+    <div id="head"></div>
+    <div id="wrap">
+      <canvas id="c"></canvas>
+      <div id="labels"></div>
+    </div>
+    <script type="module" src="/src/dev/crop-gallery.ts"></script>
+  </body>
+</html>

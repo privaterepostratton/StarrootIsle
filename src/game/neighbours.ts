@@ -1,0 +1,827 @@
+import * as THREE from 'three'
+import { createMailboxModel, type Mailbox } from '../assets/cottage'
+import { createCropModel } from '../assets/crops'
+import { rng, MINOR_LAYER, setLayer } from '../assets/style'
+import { bakeGroup } from '../assets/bake'
+import { CROPS, GROWTH_STAGES, stageForProgress, growSecondsFor, type CropDef } from './crops'
+import { rollRarity, RARITY_BY_ID, produceLabel, produceValue, type RarityId } from './mutations'
+import { TILE_SIZE, plotTrayPlacement, soilSurfaceY } from './farm'
+import { createAlertMarker } from '../assets/alert-marker'
+import {
+  getModels,
+  instanceModel,
+  fitToHeight,
+  cloneFarmer,
+  PROP_HEIGHT,
+  type FarmerModel,
+  type PropPlacement,
+} from '../assets/models'
+import {
+  NEIGHBOUR_SLOTS,
+  PLOT_HX,
+  PLOT_HZ,
+  GATE_WIDTH,
+  approachPos,
+  gatePos,
+  type FarmSlot,
+} from './village'
+import { buildPlotFence, type Obstacle, type Wall } from './world'
+
+/**
+ * Simulated neighbours.
+ *
+ * Five other farmers share the street, each with a real plot whose crops grow
+ * on the same timers the player's do. They are not networked — but every
+ * interaction goes through this class, so swapping in a real backend later
+ * means reimplementing `Neighbourhood` rather than touching the world, UI or
+ * game loop.
+ *
+ * The point of them is social pull: a neighbour with dry crops is free XP, a
+ * neighbour with a raised mailbox flag has a gift, and their rarest find sits
+ * on a leaderboard next to yours. Putting all six farms on one lane is what
+ * makes that pull constant rather than occasional — every neighbour is a short
+ * walk away, and you can see their crops from your own gate.
+ */
+
+/**
+ * Tilled patch inside the fenced plot: PLOT_W deep, PLOT_H along the lane.
+ *
+ * The bed is sized to fill most of the plot, because a big fence around a small
+ * bed reads as an empty lawn. Only PLANTED_FRACTION of those tiles actually
+ * carry a crop though — the soil is baked into the static mesh and costs
+ * nothing, whereas every crop is a live model. Bare tilled rows between planted
+ * ones look like a working farm rather than a shortfall.
+ */
+const PLOT_W = 6
+const PLOT_H = 8
+const PLANTED_FRACTION = 0.55
+const TILE = TILE_SIZE
+
+/**
+ * Authored props gathered across all five farms and drawn as one batch each.
+ *
+ * These are textured models, so they cannot go into a neighbour's baked
+ * vertex-coloured static mesh — baking flattens material colour into vertex
+ * colours and drops the UVs a texture needs.
+ */
+interface NeighbourBatches {
+  fences: PropPlacement[]
+  trays: PropPlacement[]
+  benches: PropPlacement[]
+  cottages: PropPlacement[]
+  scarecrows: PropPlacement[]
+  flowerBeds: PropPlacement[]
+  bushes: PropPlacement[]
+}
+
+const WHITE = new THREE.Color(0xffffff)
+
+/** Mix a colour towards white. Instance tints multiply the baseColour texture,
+ *  so they have to be pale or the model's own detail disappears under them. */
+function washToward(hex: number, amount: number) {
+  return new THREE.Color(hex).lerp(WHITE, amount).getHex()
+}
+
+/**
+ * Crop detail is graded by distance — see `setViewer`.
+ *
+ * Six farms on one street means several neighbours are in view at once, so a
+ * single on/off range would either pop crops in and out as you walk the lane or
+ * leave a hundred crop models resident. Instead: every plot inside CLOSE_RANGE,
+ * every *other* plot out to DETAIL_RANGE, nothing beyond.
+ */
+const CLOSE_RANGE = 18
+const DETAIL_RANGE = 32
+
+/** Cottage, fence and mailbox stay drawn this far out. */
+const BUILDING_RANGE = 110
+
+/**
+ * Beyond this, a villager's skinning pose is frozen.
+ *
+ * The mixer poses 24 bones and re-uploads the skin every frame whether or not
+ * anyone can resolve the result. At thirty-plus units a villager is a few
+ * dozen pixels tall — the *walk* still has to advance (the inspect panel reads
+ * positions), but nobody can tell a mid-stride freeze from
+ * a stride, so the pose stops paying rent. Five villagers, most of them
+ * usually far, makes this a per-frame win for free.
+ */
+const ANIMATE_RANGE = 34
+
+export interface NeighbourProfile {
+  id: string
+  name: string
+  blurb: string
+  wallColor: number
+  roofColor: number
+  shirt: number
+  hair: number
+  /** Crop they plant most often. */
+  favourite: string
+  level: number
+}
+
+const PROFILES: NeighbourProfile[] = [
+  {
+    id: 'pippa', name: 'Pippa', blurb: 'Swears by turnips. Will not be argued with.',
+    wallColor: 0xf2e2c4, roofColor: 0xc4483c, shirt: 0xe0655c, hair: 0x8a4a2a,
+    favourite: 'turnip', level: 4,
+  },
+  {
+    id: 'bramble', name: 'Bramble', blurb: 'Grows berries, eats most of them.',
+    wallColor: 0xe4dcc8, roofColor: 0x4a7a8c, shirt: 0x5c9ce0, hair: 0x2f2b26,
+    favourite: 'strawberry', level: 7,
+  },
+  {
+    id: 'juniper', name: 'Juniper', blurb: 'Corn. Rows and rows of corn.',
+    wallColor: 0xf0e8d0, roofColor: 0x6b8f4a, shirt: 0x7ac45c, hair: 0xd8a53f,
+    favourite: 'corn', level: 10,
+  },
+  {
+    id: 'marlow', name: 'Marlow', blurb: 'Claims to have grown a rainbow melon once.',
+    wallColor: 0xe8dcd4, roofColor: 0x8a5a9c, shirt: 0xa06ff2, hair: 0x4a3a5a,
+    favourite: 'melon', level: 13,
+  },
+  {
+    id: 'odette', name: 'Odette', blurb: 'Only dragonfruit. Nothing else is worth the soil.',
+    wallColor: 0xf4e0e8, roofColor: 0xc44a7a, shirt: 0xe8459b, hair: 0x2f2b26,
+    favourite: 'dragonfruit', level: 17,
+  },
+]
+
+/**
+ * One of a neighbour's planted tiles.
+ *
+ * Exported as a type only — the UI holds a reference to inspect and act on a
+ * specific plot, but every mutation goes through a method on Neighbour so
+ * friendship and the mailbox flag cannot be bypassed.
+ */
+export interface NeighbourPlot {
+  def: CropDef
+  rarity: RarityId
+  progress: number
+  stage: number
+  /** Dry plots are the ones the player can help with. */
+  watered: boolean
+  seed: number
+  model: THREE.Group | null
+  pos: THREE.Vector3
+  /** Checkerboard flag — the half of the bed that survives at mid detail. */
+  checker: boolean
+}
+
+/** Friendship milestones and what they pay out. */
+const GIFT_TIERS = [
+  { at: 25, coins: 250, seeds: 3 },
+  { at: 50, coins: 900, seeds: 5 },
+  { at: 75, coins: 3000, seeds: 6 },
+  { at: 100, coins: 12000, seeds: 8 },
+]
+
+export class Neighbour {
+  readonly group = new THREE.Group()
+  readonly centre: THREE.Vector3
+  /** Where the player lands when they fast-travel here. */
+  readonly gate: THREE.Vector3
+
+  friendship = 0
+  /** Milestones already paid out. */
+  private claimedTiers = 0
+  /** Day of the last visit greeting, so it pays once a day. -1 is never. */
+  private lastVisitDay = -1
+
+  /** Their best-ever find, for the leaderboard. */
+  bestFind = { label: 'nothing yet', value: 0 }
+
+  readonly plots: NeighbourPlot[] = []
+  /** Shown while this neighbour has an open request. */
+  private readonly requestMarker: THREE.Group
+  private readonly markerY: number
+  private readonly farmer: FarmerModel
+  private readonly mixer: THREE.AnimationMixer
+  private readonly npcIdleAction: THREE.AnimationAction | null
+  private readonly npcWalkAction: THREE.AnimationAction | null
+  private npcCurrent: THREE.AnimationAction | null = null
+  private readonly mailbox: Mailbox
+  private readonly cropRoot = new THREE.Group()
+
+  /** 0 = no crops built, 1 = every other plot, 2 = all of them. */
+  private detailLevel = 0
+
+  // NPC wander state.
+  private npcPos: THREE.Vector2
+  private npcTarget: THREE.Vector2
+  private npcFacing = 0
+  private npcIdle = 0
+
+  constructor(
+    readonly profile: NeighbourProfile,
+    readonly slot: FarmSlot,
+    obstacles: Obstacle[],
+    walls: Wall[],
+    /** Shared batches, drawn once for the whole neighbourhood. */
+    batches: NeighbourBatches,
+  ) {
+    this.centre = new THREE.Vector3(slot.x, 0, slot.z)
+    this.gate = approachPos(slot)
+
+    const r = rng(hashString(profile.id))
+    // Which way the lane lies. Every asymmetric piece below is mirrored by this
+    // rather than rotated, so the tile grid stays axis-aligned on both verges.
+    const inward = slot.inward
+
+    /**
+     * Everything static on this farm is collected here and baked into a single
+     * mesh at the end of construction. A cottage is ~25 meshes and a ring of
+     * fence another ~80; left separate, five neighbours would add several
+     * hundred draw calls for geometry that never moves.
+     */
+    const statics = new THREE.Group()
+
+    // --- cottage ----------------------------------------------------------
+    // At the back of the strip, turned to face the lane so the street is lined
+    // with front doors rather than gable ends.
+    //
+    // One authored model for all five, tinted per neighbour. Their wall colour is
+    // part of how you tell them apart — it is on their card in the valley UI too
+    // — so it is washed most of the way to white and used as an instance tint
+    // rather than being dropped. Applied at full strength it would swamp the
+    // model's own texture.
+    const cottageX = slot.x - inward * (PLOT_HX - 3.0)
+    const cottageZ = slot.z - 2.4
+    const cottageFit = fitToHeight(getModels().cottage, PROP_HEIGHT.cottage)
+    batches.cottages.push({
+      x: cottageX,
+      y: cottageFit.groundY,
+      z: cottageZ,
+      rotationY: inward * (Math.PI / 2) + 0.18,
+      scale: cottageFit.scale,
+      color: washToward(profile.wallColor, 0.72),
+    })
+    obstacles.push({ x: cottageX, z: cottageZ, r: 2.0 })
+
+    // --- mailbox ----------------------------------------------------------
+    // On the verge beside the gate, so its raised flag is readable from the lane.
+    const gate = gatePos(slot)
+    this.mailbox = createMailboxModel(profile.roofColor)
+    this.mailbox.object.position.set(gate.x + inward * 0.8, 0, slot.z + GATE_WIDTH / 2 + 0.9)
+    this.group.add(this.mailbox.object)
+
+    // Request marker, parked over the cottage roof and hidden until they ask
+    // for something. The same object the shop uses, so an exclamation mark
+    // means one thing across the whole game.
+    this.markerY = PROP_HEIGHT.cottage + 0.9
+    this.requestMarker = createAlertMarker(1.5)
+    this.requestMarker.position.set(cottageX, this.markerY, cottageZ)
+    this.requestMarker.visible = false
+    this.group.add(this.requestMarker)
+
+    // --- plot -------------------------------------------------------------
+    // The tilled patch sits towards the lane end of the strip, so their crops
+    // are the part of their farm you see from the street.
+    const bedCX = slot.x + inward * 2.6
+    const bedCZ = slot.z + 0.4
+
+    for (let gz = 0; gz < PLOT_H; gz++) {
+      for (let gx = 0; gx < PLOT_W; gx++) {
+        const pos = new THREE.Vector3(
+          bedCX + (gx - (PLOT_W - 1) / 2) * TILE,
+          0,
+          bedCZ + (gz - (PLOT_H - 1) / 2) * TILE,
+        )
+
+        // The same authored planter the player's tilled plots use, so the street
+        // reads as one village rather than as the player's farm next to a
+        // different game's. Collected for one instanced draw call rather than
+        // baked, because baking would destroy the model's texture.
+        const tray = plotTrayPlacement()
+        batches.trays.push({
+          x: pos.x,
+          y: pos.y + tray.originY,
+          z: pos.z,
+          rotationY: ((gx * 3 + gz * 7) % 4) * (Math.PI / 2),
+          scale: tray.scale,
+        })
+
+        // Leave the rest of the bed fallow. Draw the die unconditionally so the
+        // random stream — and therefore every crop below it — is unaffected by
+        // which tiles happen to be skipped.
+        if (r() > PLANTED_FRACTION) continue
+
+        this.plots.push({
+          // Mostly their favourite, with the occasional something else so the
+          // plot does not read as a copy-paste.
+          def: r() < 0.7 ? cropById(profile.favourite) : CROPS[Math.floor(r() * CROPS.length)],
+          rarity: rollRarity(1 + profile.level * 0.05),
+          progress: r(),
+          stage: 0,
+          watered: r() > 0.4,
+          seed: Math.floor(r() * 1e6),
+          model: null,
+          pos,
+          checker: (gx + gz) % 2 === 0,
+        })
+      }
+    }
+
+    this.group.add(this.cropRoot)
+
+    // --- yard dressing ----------------------------------------------------
+    // The bed and the cottage together only cover half the plot, and a fence
+    // around bare lawn is the thing that makes a farm look unfinished. All of
+    // this bakes into the static mesh with everything else, so filling the yard
+    // is free at runtime.
+    const yardX = slot.x - inward * (PLOT_HX - 1.6)
+
+    const scarecrowFit = fitToHeight(getModels().scarecrow, PROP_HEIGHT.scarecrow)
+    batches.scarecrows.push({
+      x: slot.x - inward * 1.2,
+      y: scarecrowFit.groundY,
+      z: slot.z + PLOT_HZ - 1.8,
+      rotationY: inward * (Math.PI / 2),
+      scale: scarecrowFit.scale,
+    })
+
+    /*
+     * Instanced, not baked. The flower bed became an authored GLB whose colour
+     * lives entirely in its texture — its baseColour factor is plain white — so
+     * baking it flattened that white into vertex colours and dropped the UVs,
+     * and every yard grew a set of blank white troughs. Same rule as the bench
+     * below; see NeighbourBatches.
+     */
+    const bedFit = fitToHeight(getModels().flowerBed, PROP_HEIGHT.flowerBed)
+    for (let i = 0; i < 3; i++) {
+      batches.flowerBeds.push({
+        // Draws from the shared PRNG in the same order as before, so moving
+        // these out of the bake does not reshuffle every yard's dressing.
+        x: yardX + (r() - 0.5) * 1.6,
+        y: bedFit.groundY,
+        z: slot.z - PLOT_HZ + 1.6 + i * 2.4,
+        rotationY: r() * Math.PI,
+        scale: bedFit.scale,
+      })
+    }
+
+    /*
+     * Bushes scattered along the back fence, thinned near the cottage door.
+     *
+     * Authored and textured now, like the world's, so they join the instanced
+     * batch instead of being baked into the yard's static mesh — the same reason
+     * the benches and flower beds moved out of the bake. The per-yard hash that
+     * used to pick a procedural variant is gone with it; one silhouette turned
+     * by a free rotation is what the world scatter uses too.
+     */
+    const bushFit = fitToHeight(getModels().bush, PROP_HEIGHT.bush)
+    for (let i = 0; i < 7; i++) {
+      const bx = slot.x - inward * (2.4 + r() * (PLOT_HX - 3.2))
+      const bz = slot.z - PLOT_HZ + 0.9 + r() * (PLOT_HZ * 2 - 1.8)
+      if (Math.hypot(bx - cottageX, bz - cottageZ) < 2.6) continue
+      const jitter = 0.75 + r() * 0.5
+      batches.bushes.push({
+        x: bx,
+        y: bushFit.groundY * jitter,
+        z: bz,
+        rotationY: r() * Math.PI * 2,
+        scale: bushFit.scale * jitter,
+      })
+    }
+
+    // Authored and textured, so it joins the instanced batch rather than being
+    // baked in with the procedural dressing.
+    const benchFit = fitToHeight(getModels().bench, PROP_HEIGHT.bench)
+    batches.benches.push({
+      x: cottageX + inward * 2.4,
+      y: benchFit.groundY,
+      z: cottageZ + 2.2,
+      rotationY: inward * (Math.PI / 2),
+      scale: benchFit.scale,
+    })
+
+    // --- fence ------------------------------------------------------------
+    // Same builder the player's plot uses, so all six footprints match exactly —
+    // and the same colliders, so a neighbour's fence is as solid as your own.
+    buildPlotFence(slot, batches.fences, walls)
+
+    // Collapse every static piece into one vertex-coloured mesh.
+    const baked = new THREE.Mesh(bakeGroup(statics), new THREE.MeshLambertMaterial({ vertexColors: true }))
+    baked.castShadow = true
+    baked.receiveShadow = true
+    this.group.add(baked)
+
+    // --- the farmer -------------------------------------------------------
+    /*
+     * The same authored rig as the player, tinted toward the profile's shirt
+     * colour. The tint is blended most of the way back to white before it
+     * multiplies the texture: at full saturation it dyes skin, hat and all,
+     * and the villager reads as a statue of paint rather than a person.
+     */
+    const tint = new THREE.Color(profile.shirt).lerp(new THREE.Color(0xffffff), 0.55)
+    this.farmer = cloneFarmer(tint.getHex())
+    this.mixer = new THREE.AnimationMixer(this.farmer.root)
+    const action = (clip?: THREE.AnimationClip) => (clip ? this.mixer.clipAction(clip) : null)
+    this.npcIdleAction = action(this.farmer.idle)
+    this.npcWalkAction = action(this.farmer.walk)
+    this.npcCurrent = this.npcIdleAction
+    // Offset each villager's clock so five idles never breathe in unison.
+    this.npcCurrent?.play()
+    this.mixer.setTime(Math.random() * 3)
+    this.group.add(this.farmer.root)
+
+    this.npcPos = new THREE.Vector2(bedCX, bedCZ + 1)
+    this.npcTarget = this.pickNpcTarget()
+
+    this.refreshMailbox()
+  }
+
+  /** Where this villager is standing, in world XZ. */
+  get npcWorldPos(): THREE.Vector2 {
+    return this.npcPos
+  }
+
+  /** False when the viewer is too far to resolve the pose; set by setViewer. */
+  private animate = true
+
+  /** Somewhere inside the fence, kept off the boundary so they never clip it. */
+  private pickNpcTarget() {
+    return new THREE.Vector2(
+      this.centre.x + (Math.random() - 0.5) * (PLOT_HX - 1) * 2,
+      this.centre.z + (Math.random() - 0.5) * (PLOT_HZ - 1) * 2,
+    )
+  }
+
+  /** Raise or drop the "they want something" marker over the cottage. */
+  setNeedsAttention(on: boolean) {
+    this.requestMarker.visible = on
+  }
+
+  /** Plots that are grown but dry — what the player can help with. */
+  get dryPlots() {
+    return this.plots.filter((p) => !p.watered && p.progress < 1)
+  }
+
+  get ripeCount() {
+    return this.plots.filter((p) => p.progress >= 1).length
+  }
+
+  get hasGift() {
+    return this.giftTierReady() !== null
+  }
+
+  private giftTierReady() {
+    const tier = GIFT_TIERS[this.claimedTiers]
+    if (tier && this.friendship >= tier.at) return tier
+    return null
+  }
+
+  private refreshMailbox() {
+    this.mailbox.setFlag(this.hasGift)
+  }
+
+  /** Water one dry plot. Returns true if there was anything to do. */
+  waterOne() {
+    const dry = this.dryPlots
+    if (dry.length === 0) return false
+    this.water(dry[0])
+    return true
+  }
+
+  /**
+   * The planted plot nearest a world point, for click-to-inspect.
+   *
+   * Only *planted* tiles are candidates — the bed has fallow rows and clicking
+   * bare soil should fall through to whatever is behind it rather than opening a
+   * panel about nothing.
+   */
+  /*
+   * The tolerance is deliberately wider than a tile.
+   *
+   * The click arrives as a point on the *ground*, but the plant sits on top of a
+   * planter — so at a shallow camera angle the ray passes over the crop and
+   * lands most of a tile beyond it. Half a tile of slack missed almost every
+   * click. Since the nearest planted tile wins, being generous only means
+   * clicking near a plant selects it, which is what a player expects anyway.
+   */
+  plotNear(point: THREE.Vector3, maxDist = TILE * 1.3): NeighbourPlot | null {
+    let best: NeighbourPlot | null = null
+    let bestDist = maxDist
+    for (const plot of this.plots) {
+      const d = Math.hypot(point.x - plot.pos.x, point.z - plot.pos.z)
+      if (d < bestDist) {
+        best = plot
+        bestDist = d
+      }
+    }
+    return best
+  }
+
+  /** Water one specific plot. Same friendship as helping out generally. */
+  water(plot: NeighbourPlot) {
+    if (plot.watered || plot.progress >= 1) return false
+    plot.watered = true
+    this.friendship = Math.min(100, this.friendship + 3)
+    this.refreshMailbox()
+    return true
+  }
+
+  /**
+   * Finish someone else's crop for them.
+   *
+   * The plant is left ripe rather than harvested — it is their produce, and
+   * their own tick picks it up and replants in its own time. What the player
+   * gets is the friendship.
+   */
+  forceRipen(plot: NeighbourPlot) {
+    if (plot.progress >= 1) return false
+    plot.progress = 1
+    plot.watered = true
+    this.friendship = Math.min(100, this.friendship + 8)
+    this.refreshMailbox()
+    this.rebuildPlot(plot)
+    return true
+  }
+
+  /**
+   * Say hello. Pays out the first time the player walks over on a given day.
+   *
+   * The valley is a street of five farms the player can see from their gate and
+   * had no reason to walk down — every interaction with a neighbour worked
+   * perfectly well from a menu. This is the reason to make the lap: a small,
+   * certain payout for turning up, once each, each day.
+   *
+   * Deliberately small. It is a greeting, not an income — the friendship it
+   * builds is worth more than the coins, and it is the friendship that unlocks
+   * the gift tiers and the better trades.
+   */
+  greet(day: number): { coins: number; friendship: number; seedId: string | null } | null {
+    if (day === this.lastVisitDay) return null
+    const first = this.lastVisitDay < 0
+    this.lastVisitDay = day
+
+    // Scaled by their standing, so the lap keeps paying as the farm grows.
+    const coins = Math.round(20 + this.profile.level * 8 + this.friendship * 1.5)
+    const friendship = 2
+    this.friendship = Math.min(100, this.friendship + friendship)
+    this.refreshMailbox()
+    // A packet of what they grow, now and then — the cheapest way for a
+    // neighbour to feel like a person with a farm of their own.
+    const seedId = !first && Math.random() < 0.35 ? this.profile.favourite : null
+    return { coins, friendship, seedId }
+  }
+
+  /** Collect a friendship gift if one is due. */
+  claimGift() {
+    const tier = this.giftTierReady()
+    if (!tier) return null
+    this.claimedTiers++
+    this.refreshMailbox()
+    return { ...tier, seedId: this.profile.favourite }
+  }
+
+  /**
+   * Build or tear down the crop models based on player distance.
+   *
+   * Five neighbours at twenty plots each is a hundred crop models, and each
+   * crop is a dozen small meshes. With every farm on one street several
+   * neighbours are always in view, so the middle band builds half the plots:
+   * enough that a farm across the lane still reads as planted, without paying
+   * for detail nobody can resolve.
+   */
+  setViewer(playerPos: THREE.Vector3) {
+    const dist = Math.hypot(playerPos.x - this.centre.x, playerPos.z - this.centre.z)
+    const level = dist < CLOSE_RANGE ? 2 : dist < DETAIL_RANGE ? 1 : 0
+    this.animate = dist < ANIMATE_RANGE
+
+    // Visibility is cheap to set and independent of the crop level, so it is
+    // updated every call rather than only on a level change.
+    this.group.visible = level > 0 || dist < BUILDING_RANGE
+
+    if (level === this.detailLevel) return
+    this.detailLevel = level
+
+    for (const plot of this.plots) this.rebuildPlot(plot)
+  }
+
+  /** True when this plot's crops should exist at the current detail level. */
+  private wantsModel(plot: NeighbourPlot) {
+    if (this.detailLevel === 2) return true
+    if (this.detailLevel === 0) return false
+    return plot.checker
+  }
+
+  private rebuildPlot(plot: NeighbourPlot) {
+    if (plot.model) {
+      this.cropRoot.remove(plot.model)
+      disposeTree(plot.model)
+      plot.model = null
+    }
+    if (!this.wantsModel(plot)) return
+
+    plot.stage = stageForProgress(plot.progress)
+    const model = createCropModel(plot.def, plot.stage, {
+      seed: plot.seed,
+      rarityColor: RARITY_BY_ID.get(plot.rarity)?.color,
+    })
+    model.position.copy(plot.pos)
+    // On the planter's surface, same as the player's crops.
+    model.position.y += soilSurfaceY()
+    setLayer(model, MINOR_LAYER)
+    this.cropRoot.add(model)
+    plot.model = model
+  }
+
+  update(dt: number, elapsed: number, camera?: THREE.Camera) {
+    // --- the "they need something" marker ----------------------------------
+    // Over the cottage, visible from the lane. A request the player has to open
+    // a panel to discover is a request that goes unanswered — the point of it
+    // is that a neighbour is asking, and asking has to be visible from outside.
+    if (this.requestMarker.visible && camera) {
+      this.requestMarker.position.y = this.markerY + Math.sin(elapsed * 3.2) * 0.16
+      this.requestMarker.quaternion.copy(camera.quaternion)
+    }
+
+    // --- crops ------------------------------------------------------------
+    for (const plot of this.plots) {
+      if (plot.progress >= 1) {
+        // A ripe crop is eventually harvested by its owner and replanted, so a
+        // neighbour's farm is never a static diorama.
+        if (Math.random() < dt * 0.05) this.harvestAndReplant(plot)
+        continue
+      }
+
+      const rate = plot.watered ? 2 : 1
+      plot.progress = Math.min(1, plot.progress + (dt * rate) / growSecondsFor(plot.def))
+
+      // Soil dries out, creating the dry plots the player can help with.
+      if (plot.watered && Math.random() < dt * 0.02) plot.watered = false
+
+      const stage = stageForProgress(plot.progress)
+      if (stage !== plot.stage && plot.model) this.rebuildPlot(plot)
+      else plot.stage = stage
+    }
+
+    // --- the farmer wanders ------------------------------------------------
+    if (!this.group.visible) return
+
+    const dx = this.npcTarget.x - this.npcPos.x
+    const dz = this.npcTarget.y - this.npcPos.y
+    const dist = Math.hypot(dx, dz)
+
+    let moving = false
+    if (this.npcIdle > 0) {
+      this.npcIdle -= dt
+    } else if (dist < 0.25) {
+      this.npcIdle = 1.5 + Math.random() * 3
+      this.npcTarget = this.pickNpcTarget()
+    } else {
+      moving = true
+      const step = Math.min(dist, 1.7 * dt)
+      this.npcPos.x += (dx / dist) * step
+      this.npcPos.y += (dz / dist) * step
+      this.npcFacing = angleLerp(this.npcFacing, Math.atan2(dx, dz), Math.min(1, dt * 8))
+    }
+
+    this.farmer.root.position.set(this.npcPos.x, 0, this.npcPos.y)
+    this.farmer.root.rotation.y = this.npcFacing
+
+    // Same cross-fade the player uses, at the wander pace: villagers stroll,
+    // so the walk clip is slowed to match their actual feet-per-second.
+    const next = moving ? (this.npcWalkAction ?? this.npcIdleAction) : this.npcIdleAction
+    if (next !== this.npcCurrent) {
+      next?.reset().setEffectiveTimeScale(moving ? 0.62 : 1).fadeIn(0.2).play()
+      this.npcCurrent?.fadeOut(0.2)
+      this.npcCurrent = next
+    }
+    if (this.animate) this.mixer.update(dt)
+    void elapsed
+  }
+
+  private harvestAndReplant(plot: NeighbourPlot) {
+    const value = produceValue(plot.def, plot.rarity, [])
+    if (value > this.bestFind.value) {
+      this.bestFind = { label: produceLabel(plot.def, plot.rarity, []), value }
+    }
+
+    plot.def = Math.random() < 0.7 ? cropById(this.profile.favourite) : CROPS[Math.floor(Math.random() * CROPS.length)]
+    plot.rarity = rollRarity(1 + this.profile.level * 0.05)
+    plot.progress = 0
+    plot.seed = Math.floor(Math.random() * 1e6)
+    plot.watered = Math.random() > 0.4
+    this.rebuildPlot(plot)
+  }
+
+  serialize() {
+    return {
+      id: this.profile.id,
+      friendship: this.friendship,
+      tiers: this.claimedTiers,
+      visited: this.lastVisitDay,
+    }
+  }
+
+  deserialize(d: { friendship: number; tiers: number; visited?: number } | undefined) {
+    if (!d) return
+    this.friendship = d.friendship ?? 0
+    this.claimedTiers = d.tiers ?? 0
+    this.lastVisitDay = Number.isFinite(d.visited) ? d.visited! : -1
+    this.refreshMailbox()
+  }
+}
+
+export class Neighbourhood {
+  readonly group = new THREE.Group()
+  readonly all: Neighbour[] = []
+
+  constructor(obstacles: Obstacle[], walls: Wall[]) {
+    // Fences and planters are authored, textured models, so they cannot be baked
+    // into each neighbour's vertex-coloured static mesh. Collected across all
+    // five farms instead and drawn as one instanced batch each.
+    const batches: NeighbourBatches = { fences: [], trays: [], benches: [], cottages: [], scarecrows: [], flowerBeds: [], bushes: [] }
+
+    PROFILES.forEach((profile, i) => {
+      const slot = NEIGHBOUR_SLOTS[i]
+      if (!slot) return
+      const neighbour = new Neighbour(profile, slot, obstacles, walls, batches)
+      this.group.add(neighbour.group)
+      this.all.push(neighbour)
+    })
+
+    const models = getModels()
+    this.group.add(instanceModel(models.plotFence, batches.fences))
+    this.group.add(instanceModel(models.plotTray, batches.trays))
+    this.group.add(instanceModel(models.bench, batches.benches))
+    this.group.add(instanceModel(models.cottage, batches.cottages))
+    this.group.add(instanceModel(models.scarecrow, batches.scarecrows))
+    this.group.add(instanceModel(models.flowerBed, batches.flowerBeds))
+    this.group.add(instanceModel(models.bush, batches.bushes))
+  }
+
+  /** The neighbour and planted plot under a world point, for click-to-inspect. */
+  plotAt(point: THREE.Vector3): { neighbour: Neighbour; plot: NeighbourPlot } | null {
+    for (const neighbour of this.all) {
+      // Cheap reject on the plot's own footprint before walking its tiles.
+      if (Math.abs(point.x - neighbour.centre.x) > PLOT_HX + 1) continue
+      if (Math.abs(point.z - neighbour.centre.z) > PLOT_HZ + 1) continue
+
+      const plot = neighbour.plotNear(point)
+      if (plot) return { neighbour, plot }
+    }
+    return null
+  }
+
+  /** Nearest neighbour whose farm the player is standing in, if any. */
+  nearest(pos: THREE.Vector3, maxDist = 8) {
+    let best: Neighbour | null = null
+    let bestDist = maxDist
+    for (const n of this.all) {
+      const d = Math.hypot(pos.x - n.centre.x, pos.z - n.centre.z)
+      if (d < bestDist) {
+        best = n
+        bestDist = d
+      }
+    }
+    return best
+  }
+
+  update(dt: number, elapsed: number, playerPos: THREE.Vector3, camera?: THREE.Camera) {
+    for (const n of this.all) {
+      n.setViewer(playerPos)
+      n.update(dt, elapsed, camera)
+    }
+  }
+
+  serialize() {
+    return this.all.map((n) => n.serialize())
+  }
+
+  deserialize(data: ReturnType<Neighbourhood['serialize']> | undefined) {
+    if (!Array.isArray(data)) return
+    for (const entry of data) {
+      this.all.find((n) => n.profile.id === entry.id)?.deserialize(entry)
+    }
+  }
+}
+
+function cropById(id: string) {
+  return CROPS.find((c) => c.id === id) ?? CROPS[0]
+}
+
+function hashString(s: string) {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
+  return h >>> 0
+}
+
+function angleLerp(a: number, b: number, t: number) {
+  let diff = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI
+  if (diff < -Math.PI) diff += Math.PI * 2
+  return a + diff * t
+}
+
+function disposeTree(obj: THREE.Object3D) {
+  obj.traverse((o) => {
+    const m = o as THREE.Mesh
+    if (m.isMesh) m.geometry.dispose()
+  })
+}
+
+export { GROWTH_STAGES }

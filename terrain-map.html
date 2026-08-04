@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sprout Valley — terrain map</title>
+    <style>
+      html, body { margin: 0; background: #1d2126; color: #e8e2d4; font: 13px/1.4 system-ui, sans-serif; }
+      #head { padding: 10px 14px; }
+      #head b { color: #9fe8b5; }
+      #wrap { display: flex; gap: 14px; padding: 0 14px 14px; align-items: flex-start; flex-wrap: wrap; }
+      canvas { display: block; image-rendering: pixelated; border-radius: 4px; }
+      #key { max-width: 260px; opacity: 0.8; }
+      #key li { margin-bottom: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="head"></div>
+    <div id="wrap">
+      <canvas id="c"></canvas>
+      <ul id="key">
+        <li>Blue — below the waterline (rivers, lakes)</li>
+        <li>Green — walkable valley floor</li>
+        <li>Grey — cannot stand here (isWalkable says no)</li>
+        <li>White — snowline</li>
+        <li>Red outline — the walk limit</li>
+        <li>Yellow — village flat pads</li>
+        <li>Orange — bridge decks</li>
+      </ul>
+    </div>
+    <script type="module" src="/src/dev/terrain-map.ts"></script>
+  </body>
+</html>

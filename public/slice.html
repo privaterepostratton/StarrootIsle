@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>9-Slice Editor — Sprout Valley</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /*
+   * Standalone tool, deliberately not styled like the game: it should never be
+   * mistaken for a screen a player can reach. Ships in public/ because it needs
+   * to load the same /ui/*.png the game does, from the same origin, with no
+   * build step — open it, drag the handles, copy the CSS out.
+   */
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font: 13px/1.5 'Fredoka', system-ui, sans-serif;
+    background: #14181f;
+    color: #d8e2ea;
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    height: 100vh;
+  }
+  aside {
+    background: #1b212b;
+    border-right: 1px solid #2b3542;
+    padding: 14px;
+    overflow-y: auto;
+  }
+  h1 { font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.65; margin-bottom: 12px; }
+  h2 { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.5; margin: 18px 0 8px; }
+  label { display: grid; grid-template-columns: 62px 1fr 46px; gap: 8px; align-items: center; margin-bottom: 6px; }
+  label span:first-child { opacity: 0.65; }
+  input[type=range] { width: 100%; }
+  input[type=number], select {
+    font: inherit; width: 100%; background: #0f141b; color: #d8e2ea;
+    border: 1px solid #2f3b4a; border-radius: 4px; padding: 3px 6px;
+  }
+  .out {
+    margin-top: 10px; background: #0f141b; border: 1px solid #2f3b4a; border-radius: 6px;
+    padding: 10px; font: 12px/1.6 Consolas, monospace; white-space: pre-wrap; user-select: all;
+    color: #a8e6a0;
+  }
+  button {
+    font: inherit; background: #27405c; color: #d8e2ea; border: 1px solid #3a5b80;
+    border-radius: 5px; padding: 5px 10px; cursor: pointer; margin-top: 8px;
+  }
+  button:hover { background: #32527a; }
+
+  main { display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+  .bar { padding: 10px 14px; border-bottom: 1px solid #2b3542; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .stage { overflow: auto; padding: 24px; display: grid; gap: 26px; align-content: start; }
+
+  /* Source view with draggable slice guides. */
+  .srcWrap { position: relative; display: inline-block; outline: 1px solid #2f3b4a; }
+  .srcWrap img { display: block; image-rendering: pixelated; }
+  .guide { position: absolute; background: #4ad0ff; opacity: 0.9; }
+  .guide.h { left: 0; right: 0; height: 1px; cursor: ns-resize; }
+  .guide.v { top: 0; bottom: 0; width: 1px; cursor: ew-resize; }
+  .guide::after { content: ''; position: absolute; inset: -5px; }
+  .region { position: absolute; background: rgba(74, 208, 255, 0.09); pointer-events: none; }
+
+  /* Live preview at several sizes, so a slice is judged where it is used. */
+  .previews { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .pv { display: grid; gap: 5px; justify-items: start; }
+  .pv .cap { font-size: 11px; opacity: 0.5; }
+  .box {
+    border-style: solid; border-color: transparent; background: none;
+    display: grid; place-items: center; color: #fff; font-weight: 700;
+    font-size: 13px; line-height: 1.2; text-align: center;
+    text-shadow: 0 1px 0 rgba(0,0,0,0.4);
+    resize: both; overflow: auto; min-width: 40px; min-height: 24px;
+  }
+  .box small { display: block; font-size: 10px; font-weight: 400; opacity: 0.8; }
+  .checker {
+    background-image:
+      linear-gradient(45deg, #2a323d 25%, transparent 25%, transparent 75%, #2a323d 75%),
+      linear-gradient(45deg, #2a323d 25%, transparent 25%, transparent 75%, #2a323d 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px;
+    padding: 10px;
+    border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+<aside>
+  <h1>9-Slice Editor</h1>
+
+  <label>
+    <span>asset</span>
+    <select id="asset"></select>
+    <span></span>
+  </label>
+  <label>
+    <span>custom</span>
+    <input id="custom" type="text" placeholder="/ui/foo.png">
+    <span></span>
+  </label>
+
+  <h2>Slice (source px)</h2>
+  <label><span>top</span><input id="tR" type="range" min="0"><input id="tN" type="number" min="0"></label>
+  <label><span>right</span><input id="rR" type="range" min="0"><input id="rN" type="number" min="0"></label>
+  <label><span>bottom</span><input id="bR" type="range" min="0"><input id="bN" type="number" min="0"></label>
+  <label><span>left</span><input id="lR" type="range" min="0"><input id="lN" type="number" min="0"></label>
+  <button id="lock">Link all four</button>
+  <button id="pill">Pill preset (0 / cap / 0 / cap)</button>
+
+  <h2>Border width (screen px)</h2>
+  <label><span>top</span><input id="btR" type="range" min="0" max="80"><input id="btN" type="number" min="0"></label>
+  <label><span>right</span><input id="brR" type="range" min="0" max="80"><input id="brN" type="number" min="0"></label>
+  <label><span>bottom</span><input id="bbR" type="range" min="0" max="80"><input id="bbN" type="number" min="0"></label>
+  <label><span>left</span><input id="blR" type="range" min="0" max="80"><input id="blN" type="number" min="0"></label>
+  <button id="match">Match border to slice (1:1)</button>
+
+  <h2>Power (border × slice)</h2>
+  <label>
+    <span>power</span>
+    <input id="powerR" type="range" min="0.05" max="2" step="0.01" value="1">
+    <input id="powerN" type="number" min="0.05" max="4" step="0.05" value="1">
+  </label>
+  <p style="opacity:.45;font-size:11px;margin-top:2px">
+    One handle for how thick the frame draws. 1.00 = the art at true size;
+    lower shrinks the whole frame without distorting it, because all four
+    borders stay locked to the slice ratio. Touching a border slider directly
+    switches this to <em>custom</em>.
+  </p>
+
+  <h2>Options</h2>
+  <label><span>repeat</span>
+    <select id="repeat">
+      <option value="stretch">stretch</option>
+      <option value="repeat">repeat</option>
+      <option value="round">round</option>
+      <option value="space">space</option>
+    </select><span></span>
+  </label>
+  <label><span>fill</span><input id="fill" type="checkbox" checked><span></span></label>
+  <label><span>outset</span><input id="outset" type="range" min="0" max="20" value="0"><input id="outsetN" type="number" min="0" value="0"></label>
+
+  <h2>Applies to (CSS selectors)</h2>
+  <input id="selectors" type="text" placeholder=".buy, .plot-action">
+  <p style="opacity:.45;font-size:11px;margin-top:6px">
+    Saving writes these selectors into a generated stylesheet the game loads,
+    so the change is live in the game — not just here.
+  </p>
+
+  <h2>CSS</h2>
+  <div class="out" id="css"></div>
+  <button id="copy">Copy CSS</button>
+  <button id="save" style="background:#2c5c34;border-color:#417a4a">💾 Save to game</button>
+  <button id="revert" style="background:#5c2c2c;border-color:#7a4141">Remove this asset's override</button>
+  <div id="saveStatus" style="margin-top:8px;font-size:12px;opacity:.7"></div>
+</aside>
+
+<main>
+  <div class="bar">
+    <span id="dims" style="opacity:.6"></span>
+    <label style="grid-template-columns:auto auto;gap:6px;margin:0">
+      <span>zoom</span><input id="zoom" type="range" min="1" max="6" step="1" value="2" style="width:120px">
+    </label>
+    <span style="opacity:.45">Drag the blue guides. Preview boxes are resizable from their corner.</span>
+  </div>
+
+  <div class="stage">
+    <div>
+      <h2>Source — slice guides</h2>
+      <div class="srcWrap" id="srcWrap">
+        <img id="src" alt="">
+        <div class="region" id="regionMid"></div>
+        <div class="guide h" id="gTop"></div>
+        <div class="guide h" id="gBottom"></div>
+        <div class="guide v" id="gLeft"></div>
+        <div class="guide v" id="gRight"></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Preview — where this asset is used in the game</h2>
+      <div class="checker">
+        <div class="previews" id="previews"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const ASSETS = [
+  'btn-green.png', 'btn-green-pill.png', 'btn-plot.png', 'btn-plot-paid.png',
+  'toast-panel.png', 'chip-bg.png', 'panel-header.png',
+  'btn-square.png', 'slot-frame.png', 'parchment.png', 'btn-close.png',
+  'avatar-frame.png', 'coin.png',
+];
+
+const $ = (id) => document.getElementById(id);
+const img = $('src');
+let W = 0, H = 0, linked = false;
+
+const state = { t: 20, r: 20, b: 20, l: 20, bt: 20, br: 20, bb: 20, bl: 20, outset: 0 };
+
+/**
+ * Border-to-slice ratio, or null when the borders have been set by hand.
+ *
+ * Corners only stay undistorted while every border is the same fraction of its
+ * slice, so the useful control is that single fraction rather than four
+ * independent numbers. Holding it here means changing a *slice* also rescales
+ * its border, which is what keeps a frame correct while the guides are dragged.
+ */
+let power = 1;
+
+function applyPower() {
+  if (power === null) return;
+  state.bt = Math.round(state.t * power);
+  state.br = Math.round(state.r * power);
+  state.bb = Math.round(state.b * power);
+  state.bl = Math.round(state.l * power);
+}
+
+function setPowerLabel() {
+  const custom = power === null;
+  $('powerR').disabled = custom;
+  $('powerN').value = custom ? '' : power.toFixed(2);
+  $('powerN').placeholder = custom ? 'custom' : '';
+}
+
+/**
+ * Which CSS rules each asset drives, so a save can target the real widgets.
+ *
+ * These mirror what styles.css hand-writes today. Editing the field in the
+ * sidebar overrides the default for that asset and is remembered with it.
+ */
+const DEFAULT_SELECTORS = {
+  'btn-green.png': '.buy, .claim, .ftue-next',
+  'btn-green-pill.png': '',
+  'btn-plot.png': '.plot-action',
+  'btn-plot-paid.png': '.plot-action.paid',
+  'toast-panel.png': '.toast',
+  'chip-bg.png': '.chip, .tab',
+  'panel-header.png': '.panel header',
+  'btn-square.png': '.iconbtn, .toolbtn',
+  'slot-frame.png': '.slot, .row .emoji',
+};
+
+const STORE_KEY = 'sv-nine-slice';
+/** file -> full config. Persisted locally *and* posted to the dev server. */
+let configs = {};
+try { configs = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}'); } catch { configs = {}; }
+
+/** Fill gaps from disk so new assets (and last Save) show up with their guides. */
+async function hydrateFromDisk() {
+  try {
+    const res = await fetch('/ui/nine-slice.json', { cache: 'no-store' });
+    if (!res.ok) return;
+    const disk = await res.json();
+    for (const [file, cfg] of Object.entries(disk)) {
+      if (!configs[file]) configs[file] = cfg;
+    }
+  } catch { /* offline / first boot */ }
+}
+
+const currentFile = () => (img.getAttribute('src') || '').split('/').pop();
+
+function captureConfig() {
+  return {
+    ...state,
+    repeat: $('repeat').value,
+    fill: $('fill').checked,
+    selectors: $('selectors').value.trim(),
+    power,
+  };
+}
+
+/** Remember the asset being edited, both in memory and across reloads. */
+function stashCurrent() {
+  const file = currentFile();
+  if (!file) return;
+  configs[file] = captureConfig();
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(configs)); } catch {}
+}
+
+// Populate the asset list.
+for (const a of ASSETS) {
+  const o = document.createElement('option');
+  o.value = '/ui/' + a;
+  o.textContent = a;
+  $('asset').appendChild(o);
+}
+
+function load(src) {
+  img.onload = () => {
+    W = img.naturalWidth; H = img.naturalHeight;
+    $('dims').textContent = `${src}  ${W}×${H}`;
+    for (const k of ['tR','tN','bR','bN']) { $(k).max = Math.floor(H / 2); }
+    for (const k of ['rR','rN','lR','lN']) { $(k).max = Math.floor(W / 2); }
+    const file = currentFile();
+    const saved = configs[file];
+    if (saved) {
+      // Reopen exactly what was last tuned for this asset.
+      Object.assign(state, {
+        t: saved.t, r: saved.r, b: saved.b, l: saved.l,
+        bt: saved.bt, br: saved.br, bb: saved.bb, bl: saved.bl,
+        outset: saved.outset ?? 0,
+      });
+      $('repeat').value = saved.repeat ?? 'stretch';
+      $('fill').checked = saved.fill !== false;
+      $('selectors').value = saved.selectors ?? DEFAULT_SELECTORS[file] ?? '';
+      // Re-derive the ratio if the saved borders are still proportional, so the
+      // slider is usable again instead of opening stuck on "custom".
+      const ratios = [
+        [saved.t, saved.bt], [saved.r, saved.br], [saved.b, saved.bb], [saved.l, saved.bl],
+      ].filter(([sl]) => sl > 0).map(([sl, bw]) => bw / sl);
+      power = ratios.length && ratios.every((x) => Math.abs(x - ratios[0]) < 0.02) ? ratios[0] : null;
+      setPowerLabel();
+    } else {
+      // Sensible opening guess: a quarter in from each edge.
+      state.t = state.b = Math.round(H * 0.25);
+      state.l = state.r = Math.round(W * 0.25);
+      state.bt = state.bb = state.t; state.bl = state.br = state.l;
+      $('selectors').value = DEFAULT_SELECTORS[file] ?? '';
+      power = 1;
+      applyPower(); setPowerLabel();
+    }
+    sync(); render();
+  };
+  img.src = src;
+}
+
+$('asset').addEventListener('change', () => { stashCurrent(); load($('asset').value); });
+$('selectors').addEventListener('input', () => { $('saveStatus').textContent = 'unsaved changes'; });
+$('custom').addEventListener('change', () => { if ($('custom').value) load($('custom').value); });
+$('zoom').addEventListener('input', render);
+
+// Two-way binding between each slider and its number box.
+const pairs = [
+  ['t','tR','tN'], ['r','rR','rN'], ['b','bR','bN'], ['l','lR','lN'],
+  ['bt','btR','btN'], ['br','brR','brN'], ['bb','bbR','bbN'], ['bl','blR','blN'],
+];
+for (const [key, rangeId, numId] of pairs) {
+  const isSlice = ['t','r','b','l'].includes(key);
+  for (const id of [rangeId, numId]) {
+    $(id).addEventListener('input', (e) => {
+      const v = Math.max(0, Number(e.target.value) || 0);
+      if (linked && isSlice) { state.t = state.r = state.b = state.l = v; }
+      else state[key] = v;
+      // Editing a border by hand is an explicit override of the ratio.
+      if (!isSlice) power = null;
+      else applyPower();
+      setPowerLabel(); sync(); render();
+    });
+  }
+}
+
+for (const id of ['powerR', 'powerN']) {
+  $(id).addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (!Number.isFinite(v) || v <= 0) return;
+    power = v;
+    $('powerR').value = String(Math.min(2, v));
+    applyPower(); setPowerLabel(); sync(); render();
+  });
+}
+$('outset').addEventListener('input', (e) => { state.outset = Number(e.target.value); sync(); render(); });
+$('outsetN').addEventListener('input', (e) => { state.outset = Number(e.target.value); sync(); render(); });
+$('repeat').addEventListener('change', render);
+$('fill').addEventListener('change', render);
+
+$('lock').addEventListener('click', () => {
+  linked = !linked;
+  $('lock').textContent = linked ? 'Linked ✓' : 'Link all four';
+});
+
+// Pill preset: no vertical slice at all, so the semicircular caps scale with
+// the box height instead of being squashed into a thin border.
+$('pill').addEventListener('click', () => {
+  state.t = state.b = 0;
+  state.l = state.r = Math.round(H / 2);
+  // Ratio that lands the caps at 1:1 on a 40px-tall widget, which is roughly
+  // every pill in the game.
+  power = 40 / H;
+  applyPower(); setPowerLabel(); sync(); render();
+});
+
+$('match').addEventListener('click', () => {
+  power = 1;
+  applyPower(); setPowerLabel(); sync(); render();
+});
+
+function sync() {
+  for (const [key, rangeId, numId] of pairs) { $(rangeId).value = state[key]; $(numId).value = state[key]; }
+  $('outset').value = state.outset; $('outsetN').value = state.outset;
+}
+
+// --- guide dragging --------------------------------------------------------
+function drag(el, axis, key) {
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    const rect = img.getBoundingClientRect();
+    const z = Number($('zoom').value);
+    const move = (ev) => {
+      const px = axis === 'y'
+        ? (ev.clientY - rect.top) / z
+        : (ev.clientX - rect.left) / z;
+      // "bottom"/"right" guides are measured inward from their own edge.
+      const inward = key === 'b' ? H - px : key === 'r' ? W - px : px;
+      const limit = axis === 'y' ? H / 2 : W / 2;
+      state[key] = Math.round(Math.max(0, Math.min(limit, inward)));
+      applyPower(); setPowerLabel(); sync(); render();
+    };
+    const up = () => { el.releasePointerCapture(e.pointerId); el.removeEventListener('pointermove', move); };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up, { once: true });
+  });
+}
+drag($('gTop'), 'y', 't');
+drag($('gBottom'), 'y', 'b');
+drag($('gLeft'), 'x', 'l');
+drag($('gRight'), 'x', 'r');
+
+function cssText() {
+  const rep = $('repeat').value;
+  const fill = $('fill').checked ? ' fill' : '';
+  const slice = `${state.t} ${state.r} ${state.b} ${state.l}`.replace(/(\b\d+\b)(?= \1 \1 \1$)/, '$1');
+  const src = img.getAttribute('src');
+  const lines = [
+    `border-style: solid;`,
+    `border-color: transparent;`,
+    `border-width: ${state.bt}px ${state.br}px ${state.bb}px ${state.bl}px;`,
+    `border-image: url('${src}') ${state.t} ${state.r} ${state.b} ${state.l}${fill} ${rep};`,
+  ];
+  if (state.outset) lines.push(`border-image-outset: ${state.outset}px;`);
+  return lines.join('\n');
+}
+
+/**
+ * Where each asset actually appears in the game, and at what size.
+ *
+ * Generic boxes were the tool's weak point: a slice can look right at 120x42
+ * and wrong on the widget that ships it. Each entry mirrors a real widget —
+ * same dimensions, same inner content — so a slice is judged where it lives.
+ * `content` is inner HTML; `pad` is the widget's own padding inside the border.
+ */
+const USED_BY = {
+  'btn-green.png': [
+    { w: 96, h: 42, label: 'shop · Buy', content: '<b>🪙 14</b>', pad: '0 6px' },
+    { w: 84, h: 42, label: 'shop · x10', content: '<b>×10</b>', pad: '0 6px' },
+    { w: 260, h: 40, label: 'shop · Sell everything', content: '<b>Sell everything</b>', pad: '0 8px' },
+    { w: 280, h: 56, label: 'level-up · Continue', content: '<b>Continue</b>', pad: '0 8px' },
+  ],
+  'btn-green-pill.png': [
+    { w: 128, h: 48, label: 'tip · Got it', content: '<b>Got it</b>', pad: '0 4px' },
+    { w: 140, h: 48, label: "FTUE · Let's grow", content: "<b>Let's grow</b>", pad: '0 4px' },
+    { w: 120, h: 48, label: 'FTUE · Got it!', content: '<b>Got it!</b>', pad: '0 4px' },
+  ],
+  'btn-plot.png': [
+    { w: 320, h: 96, label: 'plot · Water', content: '<b>Water</b><br><small>Double growth</small>', pad: '0 4px' },
+    { w: 320, h: 96, label: 'plot · Plant', content: '<b>Plant Turnip</b><br><small>No seeds — buy at shop</small>', pad: '0 4px' },
+  ],
+  'btn-plot-paid.png': [
+    { w: 320, h: 96, label: 'neighbour · Finish it', content: '<b>Finish it</b><br><small>🪙 5</small>', pad: '0 4px' },
+  ],
+  'toast-panel.png': [
+    { w: 200, h: 44, label: 'toast · short', content: '<b>Plot bought</b>', pad: '9px 4px' },
+    { w: 330, h: 44, label: 'toast · long', content: '<b>🌙 Moonlit mutation!</b>', pad: '9px 4px' },
+    { w: 330, h: 66, label: 'toast · two lines', content: '<b>+1 Moonlit Chilled Drenched<br>Sundried Carrot · 0.63kg</b>', pad: '9px 4px' },
+  ],
+  'chip-bg.png': [
+    { w: 96, h: 46, label: 'topbar · coins', content: '<b>🪙 348</b>', pad: '0 4px' },
+    { w: 132, h: 46, label: 'topbar · season', content: '<b>❄ Winter 2/7</b>', pad: '0 4px' },
+    { w: 150, h: 44, label: 'shop tab', content: '<b>Seeds</b>', pad: '0 6px' },
+  ],
+  'panel-header.png': [
+    { w: 420, h: 62, label: 'shop header', content: '<b style="font-size:26px">Sprout Seed Shop</b>', pad: '0 18px' },
+    { w: 620, h: 62, label: 'almanac header (wide)', content: '<b style="font-size:26px">Almanac</b>', pad: '0 18px' },
+  ],
+  'btn-square.png': [
+    { w: 70, h: 70, label: 'nav rail button', content: '<span style="font-size:26px">📜</span>', pad: '0' },
+    { w: 56, h: 64, label: 'tool dock button', content: '<span style="font-size:22px">⛏</span>', pad: '0' },
+    { w: 50, h: 50, label: 'menu button', content: '<span style="font-size:22px">☰</span>', pad: '0' },
+  ],
+  'slot-frame.png': [
+    { w: 62, h: 62, label: 'hotbar slot', content: '<span style="font-size:28px">🥕</span>', pad: '0' },
+    { w: 42, h: 42, label: 'shop row icon well', content: '<span style="font-size:20px">🥔</span>', pad: '0' },
+  ],
+  'parchment.png': [
+    { w: 320, h: 200, label: 'panel body (tiled)', content: '', pad: '0' },
+  ],
+};
+
+const GENERIC = [
+  { w: 120, h: 42, label: 'button', content: 'Sample', pad: '0 6px' },
+  { w: 260, h: 44, label: 'wide pill', content: 'Sample', pad: '0 6px' },
+  { w: 300, h: 180, label: 'panel', content: '', pad: '0' },
+  { w: 70, h: 70, label: 'square', content: '', pad: '0' },
+];
+
+function contexts() {
+  const file = (img.getAttribute('src') || '').split('/').pop();
+  return USED_BY[file] ?? GENERIC;
+}
+
+function render() {
+  if (!W) return;
+  const status = $('saveStatus');
+  if (status && !status.textContent.startsWith('saving')) status.textContent = 'unsaved changes';
+  const z = Number($('zoom').value);
+  img.style.width = W * z + 'px';
+  img.style.height = H * z + 'px';
+
+  $('gTop').style.top = state.t * z + 'px';
+  $('gBottom').style.top = (H - state.b) * z + 'px';
+  $('gLeft').style.left = state.l * z + 'px';
+  $('gRight').style.left = (W - state.r) * z + 'px';
+  const mid = $('regionMid');
+  mid.style.left = state.l * z + 'px';
+  mid.style.top = state.t * z + 'px';
+  mid.style.width = Math.max(0, (W - state.l - state.r)) * z + 'px';
+  mid.style.height = Math.max(0, (H - state.t - state.b)) * z + 'px';
+
+  $('css').textContent = cssText();
+
+  const wrap = $('previews');
+  wrap.innerHTML = '';
+  for (const ctx of contexts()) {
+    const pv = document.createElement('div');
+    pv.className = 'pv';
+    const box = document.createElement('div');
+    box.className = 'box';
+    box.style.width = ctx.w + 'px';
+    box.style.height = ctx.h + 'px';
+    box.style.padding = ctx.pad;
+    box.style.borderStyle = 'solid';
+    box.style.borderColor = 'transparent';
+    box.style.borderWidth = `${state.bt}px ${state.br}px ${state.bb}px ${state.bl}px`;
+    box.style.borderImage =
+      `url('${img.getAttribute('src')}') ${state.t} ${state.r} ${state.b} ${state.l}` +
+      `${$('fill').checked ? ' fill' : ''} ${$('repeat').value}`;
+    if (state.outset) box.style.borderImageOutset = state.outset + 'px';
+    box.innerHTML = ctx.content;
+    const cap = document.createElement('span');
+    cap.className = 'cap';
+    cap.textContent = `${ctx.label} — ${ctx.w}×${ctx.h}`;
+    pv.append(box, cap);
+    wrap.appendChild(pv);
+  }
+}
+
+async function postConfigs() {
+  const res = await fetch('/__nine-slice', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(configs),
+  });
+  if (!res.ok) throw new Error('server said ' + res.status);
+  return res.json();
+}
+
+$('save').addEventListener('click', async () => {
+  stashCurrent();
+  const status = $('saveStatus');
+  if (!$('selectors').value.trim()) {
+    status.textContent = '⚠ no selectors — nothing to apply it to';
+    return;
+  }
+  status.textContent = 'saving…';
+  try {
+    const out = await postConfigs();
+    status.textContent = `✓ saved ${out.assets} asset(s) — reload the game to see it`;
+  } catch (err) {
+    status.textContent = '✗ ' + err.message + ' (is the dev server running?)';
+  }
+});
+
+$('revert').addEventListener('click', async () => {
+  const file = currentFile();
+  delete configs[file];
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(configs)); } catch {}
+  const status = $('saveStatus');
+  status.textContent = 'removing…';
+  try {
+    const out = await postConfigs();
+    status.textContent = `✓ ${file} handed back to styles.css (${out.assets} left)`;
+  } catch (err) {
+    status.textContent = '✗ ' + err.message;
+  }
+});
+
+$('copy').addEventListener('click', async () => {
+  await navigator.clipboard.writeText(cssText());
+  $('copy').textContent = 'Copied ✓';
+  setTimeout(() => ($('copy').textContent = 'Copy CSS'), 1200);
+});
+
+hydrateFromDisk().then(() => load('/ui/' + ASSETS[0]));
+</script>
+</body>
+</html>

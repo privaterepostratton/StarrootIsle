@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!--
+    Pinch-zoom is disabled deliberately: the game has its own zoom on the wheel
+    and on two fingers, and a browser zoom on top of it strands the HUD half off
+    the screen with no way back. `viewport-fit=cover` lets the canvas run under
+    a notch, which the safe-area insets in the CSS then keep the UI clear of.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Sprout Valley — Isometric Farming</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  >
+  <link rel="stylesheet" href="/src/ui/styles.css">
+  <!--
+    Written by the 9-slice editor (/slice.html). Loaded *after* styles.css so a
+    saved slice overrides the hand-written one; harmless when empty.
+  -->
+  <link rel="stylesheet" href="./ui/nine-slice.generated.css">
+  <!--
+    Written by the in-game UI editor (F2). Per-*element* rects and slices, all
+    scoped under #ui so they outrank both styles.css and the per-asset sheet
+    above without needing !important. Linked rather than applied by script so a
+    saved layout is on screen before the first frame — a JS pass would show one
+    frame of the un-overridden HUD on every boot.
+  -->
+  <link rel="stylesheet" href="./ui/layout.generated.css">
+  <!--
+    The splash is the first paint, so it is preloaded ahead of everything.
+    Logo is composited on top (not baked into the splash) so it can stay sharp
+    at any aspect ratio.
+  -->
+  <link rel="preload" as="image" href="./ui/loading-splash.webp">
+  <link rel="preload" as="image" href="./ui/loading-logo.png">
+  <!-- CrazyGames SDK v3 — must load before the game module. -->
+  <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!--
+    Loading screen. Lives in the HTML, not the app: it must be on screen while
+    the bundle is still downloading, which is exactly when no script can run.
+    Boot code updates the bar via window.__loading and removes the element when
+    the world is ready.
+  -->
+  <div id="loading">
+    <div class="ld-bg" aria-hidden="true"></div>
+    <div class="ld-veil" aria-hidden="true"></div>
+    <div class="ld-content">
+      <img class="ld-logo" src="./ui/loading-logo.png" alt="Sprout Valley" width="720" height="375" draggable="false">
+      <div class="ld-bar" role="progressbar" aria-label="Loading Sprout Valley" aria-valuemin="0" aria-valuemax="100" aria-valuenow="4">
+        <div class="ld-fill" id="loadingFill"></div>
+        <div class="ld-hint" id="loadingHint">Warming up the soil…</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    window.__loading = function (fraction, hint) {
+      var f = document.getElementById('loadingFill')
+      var h = document.getElementById('loadingHint')
+      var bar = document.querySelector('#loading .ld-bar')
+      var pct = Math.max(0, Math.min(100, Math.round(fraction * 100)))
+      if (f) f.style.width = pct + '%'
+      if (bar) bar.setAttribute('aria-valuenow', String(pct))
+      if (h && hint) h.textContent = hint
+      if (fraction >= 1) {
+        var el = document.getElementById('loading')
+        if (el) {
+          el.classList.add('done')
+          setTimeout(function () { el.remove() }, 550)
+        }
+      }
+    }
+  </script>
+
+  <div id="ui">
+    <!--
+      Township-style edge layout. Every cluster owns one corner or edge and
+      nothing floats loose in the middle:
+
+        top-left     avatar, level star and XP bar
+        top-centre   resource pills in one dark rail
+        top-right    menu button
+        left edge    quest tracker (injected by quest-ui)
+        right edge   panel navigation
+        bottom-right tool dock
+        bottom-centre seed hotbar
+
+      All of it carries the `hud-chrome` class, which is what a full-screen
+      panel hides — see `body.panel-open` in styles.css.
+    -->
+    <div id="playerCard" class="hud-chrome">
+      <div class="pc-avatar">
+        <img class="pc-face" src="./ui/avatar-farmer.png" alt="" draggable="false">
+        <img class="pc-frame" src="./ui/avatar-frame.png" alt="" draggable="false">
+      </div>
+      <div class="pc-level">
+        <span class="lvl-badge" id="lvlNum">1</span>
+        <span class="xp-wrap"><span class="xp-fill" id="xpFill"></span><span class="xp-text" id="xpText">0 / 50</span></span>
+      </div>
+    </div>
+
+    <div id="topbar" class="hud-chrome">
+      <div class="chip" id="coinChip"><img class="ico-img" src="./ui/coin.png" alt="" draggable="false"><span id="coinCount">0</span></div>
+      <div class="chip" id="barnChip" title="Barn space"><img class="ico ico-img" src="./ui/icons/barn.png" alt="" draggable="false"><span id="barnCount">0/60</span></div>
+      <div class="chip" id="dayChip"><img class="ico ico-img" src="./ui/icons/day.png" alt="" draggable="false">Day <span id="dayCount">1</span></div>
+      <div class="chip" id="clockChip"><img class="ico ico-img" id="clockIco" src="./ui/icons/sun.png" alt="" draggable="false"><span id="clockTime">6:00</span></div>
+      <div class="chip" id="seasonChip"><img class="ico ico-img" id="seasonIco" src="./ui/icons/spring.png" alt="" draggable="false"><span id="seasonName">Spring</span></div>
+      <div class="chip" id="weatherChip"><img class="ico ico-img" id="weatherIco" src="./ui/icons/clear.png" alt="" draggable="false"><span id="weatherName">Clear</span></div>
+    </div>
+
+    <button id="menuBtn" class="hud-chrome iconbtn" title="Settings (O)">
+      <img class="nav-ico" src="./ui/icons/settings.png" alt="" draggable="false">
+    </button>
+
+    <!--
+      Opens the rail as a full-screen sheet. Touch only — the rail itself is
+      perfectly usable with a mouse, and a launcher there would be one extra
+      click for every panel.
+    -->
+    <button id="navLauncher" class="iconbtn hud-chrome" title="Menu" aria-label="Menu" aria-expanded="false">
+      <img class="nav-ico" src="./ui/icons/bag.png" alt="" draggable="false">
+      <span class="nav-alert" aria-hidden="true">!</span>
+    </button>
+
+    <!-- right edge: one button per panel -->
+    <div id="navRail" class="hud-chrome">
+      <button class="iconbtn" data-nav="bag" title="Bag (I)" aria-label="Bag">
+        <img class="nav-ico" src="./ui/icons/bag.png" alt="" draggable="false">
+      </button>
+      <button class="iconbtn" data-nav="quests" title="Journal (J)" aria-label="Journal">
+        <img class="nav-ico" src="./ui/icons/journal.png" alt="" draggable="false">
+      </button>
+      <button class="iconbtn" data-nav="valley" title="The Valley (N)" aria-label="Valley">
+        <img class="nav-ico" src="./ui/icons/valley.png" alt="" draggable="false">
+      </button>
+      <button class="iconbtn" data-nav="pets" title="Pets (P)" aria-label="Pets">
+        <img class="nav-ico" src="./ui/icons/pets.png" alt="" draggable="false">
+        <span class="nav-alert" aria-hidden="true">!</span>
+      </button>
+      <button class="iconbtn" data-nav="almanac" title="Almanac (L)" aria-label="Almanac">
+        <img class="nav-ico" src="./ui/icons/almanac.png" alt="" draggable="false">
+      </button>
+      <button class="iconbtn" data-nav="legacy" title="Legacy (Y)" aria-label="Legacy">
+        <img class="nav-ico" src="./ui/icons/legacy.png" alt="" draggable="false">
+      </button>
+    </div>
+
+    <!-- bottom-right: the tools, which are modes rather than screens -->
+    <div id="toolDock" class="hud-chrome">
+      <button class="toolbtn" id="shovelChip" data-tool="shovel" title="Buy plots (B)" aria-label="Buy plots">
+        <img class="ico tool-ico" src="./ui/icons/shovel.png" alt="" draggable="false">
+        <span id="shovelCost" class="tool-badge"></span>
+      </button>
+      <button class="toolbtn" id="sprinklerChip" data-tool="sprinkler" title="Place sprinkler (V)" aria-label="Sprinkler">
+        <img class="ico tool-ico" src="./ui/icons/basic.png" alt="" draggable="false">
+        <span id="sprinklerName" class="tool-badge"></span>
+      </button>
+      <button class="toolbtn" data-tool="decor" title="Place decor (C)" aria-label="Decor">
+        <img class="ico tool-ico" src="./ui/icons/decor.png" alt="" draggable="false">
+      </button>
+      <button class="toolbtn" data-tool="harvest" title="Harvest everything (H)" aria-label="Harvest">
+        <img class="ico tool-ico" src="./ui/icons/harvest.png" alt="" draggable="false">
+      </button>
+    </div>
+
+    <!-- bottom: hotbar -->
+    <div id="hotbar" class="hud-chrome"></div>
+
+    <!-- contextual action prompt -->
+    <div id="prompt" class="hud-chrome"></div>
+
+    <!-- floating toasts -->
+    <div id="toasts"></div>
+
+
+    <!-- shop overlay -->
+    <div id="shop" class="hidden">
+      <div class="panel">
+        <header>
+          <h2><img class="title-ico" src="./ui/icons/shop.png" alt="" draggable="false"> Sprout Seed Shop</h2>
+          <button id="shopClose">✕</button>
+        </header>
+        <div class="tabs shop-tabs">
+          <button class="tab active" data-tab="buy" title="Seeds" aria-label="Seeds">
+            <img class="tab-ico" src="./ui/icons/bag.png" alt="" draggable="false">
+          </button>
+          <button class="tab" data-tab="tools" title="Tools" aria-label="Tools">
+            <img class="tab-ico" src="./ui/icons/shovel.png" alt="" draggable="false">
+          </button>
+          <button class="tab" data-tab="decor" title="Decor" aria-label="Decor">
+            <img class="tab-ico" src="./ui/icons/decor.png" alt="" draggable="false">
+          </button>
+          <button class="tab" data-tab="sell" title="Sell" aria-label="Sell">
+            <img class="tab-ico" src="./ui/icons/cart.png" alt="" draggable="false">
+          </button>
+        </div>
+        <div id="shopList"></div>
+        <footer>
+          <span class="wallet"><img class="ico-img" src="./ui/coin.png" alt="" draggable="false"> <b id="shopCoins">0</b></span>
+        </footer>
+      </div>
+    </div>
+
+    <!--
+      Portrait blocker. The HUD is built as an edge layout for a wide frame and
+      the iso camera frames the street horizontally; in portrait both collapse.
+      Pure CSS (media query) rather than JS so it can never disagree with the
+      actual viewport, and the game keeps running behind it — rotating back
+      resumes instantly with nothing to re-init.
+    -->
+    <div id="rotateGate">
+      <img class="rg-logo" src="./ui/loading-logo.png" alt="Sprout Valley" width="720" height="375" draggable="false">
+      <div class="rg-hint" aria-hidden="true">
+        <img class="rg-phone" src="./ui/rotate-phone.png" alt="" draggable="false">
+        <img class="rg-arrows" src="./ui/rotate-arrows.png" alt="" draggable="false">
+      </div>
+      <h2>Rotate your device</h2>
+      <p>Sprout Valley is played in landscape.</p>
+    </div>
+
+    <!-- help -->
+    <div id="help" class="hud-chrome">
+      <b>WASD</b> move &nbsp;·&nbsp; <b>E</b> interact &nbsp;·&nbsp; <b>1–7</b> seed<br>
+      <b>Right-drag</b> look &nbsp;·&nbsp; <b>Wheel</b> zoom<br>
+      <b>M</b> mute &nbsp;·&nbsp; <b>G</b> graphics
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

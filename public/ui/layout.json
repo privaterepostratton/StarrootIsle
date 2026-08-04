@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "selector": "#questTracker",
+      "label": "#questTracker",
+      "rect": {
+        "x": {
+          "a0": 0,
+          "a1": 0,
+          "p": 0,
+          "s": 12,
+          "e": 0,
+          "size": 264,
+          "auto": false
+        },
+        "y": {
+          "a0": 0,
+          "a1": 0,
+          "p": 0,
+          "s": 110,
+          "e": 0,
+          "size": 66,
+          "auto": true
+        }
+      }
+    }
+  ]
+}

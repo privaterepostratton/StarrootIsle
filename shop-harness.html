@@ -1,0 +1,146 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shop harness</title>
+<!--
+  Static harness for the shop modal's mobile layout.
+
+  The game itself cannot be screenshotted headless — it runs a requestAnimationFrame
+  loop, so Chrome's virtual clock never goes idle. This page is the same markup and
+  the same stylesheet with no script of the game's at all, which does settle, so
+  "how many rows fit at this viewport" becomes a question with a picture for an
+  answer.
+
+  Dev-only; not referenced from the game.
+-->
+<link rel="stylesheet" href="/src/ui/styles.css">
+<style>html,body{margin:0;height:100%;background:#4a7a3a}</style>
+<div id="ui">
+<div id="petPanel" style="position:absolute;left:10px;top:10px">
+  <div class="panel">
+    <header><h2><img class="title-ico" src="/ui/icons/pets.png" alt=""> Pets</h2><button id="petClose">X</button></header>
+    <div id="petBody">
+      <div class="section-head">Incubating</div>
+      <div class="pet-card ready">
+        <div class="pet-emoji"><img class="bag-ico" src="/ui/icons/egg-common.png" alt=""></div>
+        <div class="nb-meta">
+          <div class="nb-name">Common Egg</div>
+          <div class="sub">Hatches in <b>Ready!</b></div>
+        </div>
+        <button class="claim">Hatch!</button>
+      </div>
+      <div class="section-head">Egg shop</div>
+      <div class="row"><div class="emoji"><img class="ico-img" src="/ui/icons/egg-common.png" alt=""></div>
+        <div class="meta"><div class="name">Common Egg</div><div class="sub">Hatches in 2m / 45% bunny, 45% chick</div></div>
+        <button class="buy">600</button></div>
+    </div>
+  </div>
+</div>
+<div class="hud-rail" style="position:absolute;right:20px;top:20px">
+  <button class="iconbtn alert" data-nav="pets"><img class="nav-ico" src="/ui/icons/pets.png" alt=""><span class="nav-alert">!</span></button>
+</div>
+<div id="levelUpScreen">
+  <div class="lvl-card">
+    <div class="lvl-rays"></div>
+    <div class="lvl-eyebrow">Level up!</div>
+    <div class="lvl-badge"><span>7</span></div>
+    <div class="lvl-headline">The orchard is open for business.</div>
+    <div class="lvl-rewards">
+      <div class="lvl-reward"><span class="lvl-reward-emoji"><img class="lvl-reward-ico" src="/ui/icons/apple.png" alt=""></span><span class="lvl-reward-label">Apple seeds unlocked</span></div>
+      <div class="lvl-reward"><span class="lvl-reward-emoji"><img class="lvl-reward-ico" src="/ui/icons/shovel.png" alt=""></span><span class="lvl-reward-label">+4 plots to buy</span></div>
+      <div class="lvl-reward"><span class="lvl-reward-emoji"><img class="lvl-reward-ico" src="/ui/coin.png" alt=""></span><span class="lvl-reward-label">750 coins</span></div>
+    </div>
+    <button class="lvl-continue">Continue</button>
+  </div>
+</div>
+<div id="popups">
+  <div class="popup popup-normal" style="transform:translate(-50%,-50%) translate(300px,250px)"><img class="popup-coin" src="/ui/coin.png" alt="">975</div>
+  <div class="popup popup-good" style="transform:translate(-50%,-50%) translate(300px,205px)">+1 Turnip</div>
+  <div class="popup popup-epic" style="transform:translate(-50%,-50%) translate(300px,150px)">Windswept Moonlit Wet Corn</div>
+</div>
+<div id="stickBase" style="display:block;left:110px;top:255px"><div id="stickKnob" style="transform:translate(18px,-12px)"></div></div>
+<div id="ftueCard">
+  <div class="ftue-emoji"><img class="ftue-ico" src="/ui/icons/shovel.png" alt=""></div>
+  <div class="ftue-text"><b>Till a plot</b><span>Tap any patch of soil to open it, then plant the seed you have selected.</span></div>
+  <div class="ftue-side"><span class="ftue-count">2/8</span><button class="ftue-next">Got it</button><button class="ftue-skip">Skip tour</button></div>
+</div>
+<div id="plotMenu" style="position:absolute;left:16px;top:60px">
+  <div class="panel plot-panel">
+    <header><h2 id="plotTitle"><img class="title-ico" src="/ui/icons/turnip.png" alt=""> Turnip</h2><button id="plotClose">X</button></header>
+    <div id="plotBody">
+      <button class="plot-action"><img class="btn-ico" src="/ui/icons/harvest.png" alt=""><span class="pa-label">Harvest</span><span class="pa-sub">+1 turnip / ~0.3kg / worth ~7.9k</span></button>
+    </div>
+  </div>
+</div>
+    <div id="shop" >
+      <div class="panel">
+        <header>
+          <h2><img class="title-ico" src="./ui/icons/shop.png" alt="" draggable="false"> Sprout Seed Shop</h2>
+          <button id="shopClose">✕</button>
+        </header>
+        <div class="tabs shop-tabs">
+          <button class="tab active" data-tab="buy" title="Seeds" aria-label="Seeds">
+            <img class="tab-ico" src="./ui/icons/bag.png" alt="" draggable="false">
+          </button>
+          <button class="tab" data-tab="tools" title="Tools" aria-label="Tools">
+            <img class="tab-ico" src="./ui/icons/shovel.png" alt="" draggable="false">
+          </button>
+          <button class="tab" data-tab="decor" title="Decor" aria-label="Decor">
+            <img class="tab-ico" src="./ui/icons/decor.png" alt="" draggable="false">
+          </button>
+          <button class="tab" data-tab="sell" title="Sell" aria-label="Sell">
+            <img class="tab-ico" src="./ui/icons/cart.png" alt="" draggable="false">
+          </button>
+        </div>
+        <div id="shopList"></div>
+        <footer>
+          <span class="wallet"><img class="ico-img" src="./ui/coin.png" alt="" draggable="false"> <b id="shopCoins">0</b></span>
+        </footer>
+      </div>
+    </div>
+
+</div>
+<script type="module">
+  const rows = [
+    ['bag', 'Carrot Seed', 'Ready in 45s / sells for 32', '12'],
+    ['bag', 'Strawberry Seed', 'Ready in 2m / sells for 78', '45'],
+    ['bag', 'Blueberry Seed', 'Ready in 3m / sells for 120', '90'],
+    ['bag', 'Tomato Seed', 'Ready in 4m / sells for 190', '150'],
+    ['bag', 'Corn Seed', 'Ready in 6m / sells for 260', '220'],
+    ['bag', 'Watermelon Seed', 'Ready in 9m / sells for 410', '380'],
+  ]
+  // ?sell renders the sell tab instead — the sticky "Sell all" needs a list long
+  // enough to scroll under it.
+  if (location.search.includes('sell')) {
+    const stacks = [
+      ['strawberry', 'Drenched Moonlit Starstruck Strawberry', '2 held', '0.49kg total / 33.7k for all'],
+      ['carrot', 'Bloodlit Wet Windswept Carrot', '5 held', '2.96kg total / 31.6k for all'],
+      ['turnip', 'Gold Chilled Moonlit Sundried Turnip', '1 held', '0.54kg total / 26.5k for all'],
+      ['carrot', 'Bloodlit Drenched Windswept Carrot', '1 held', '0.61kg total / 25.9k for all'],
+      ['strawberry', 'Silver Dawnlit Strawberry', '3 held', '0.9kg total / 19.2k for all'],
+      ['turnip', 'Plain Turnip', '9 held', '2.7kg total / 8.1k for all'],
+    ]
+    document.getElementById('shopList').innerHTML =
+      '<div class="row"><div class="emoji"><img src="/ui/icons/barn.png" alt=""></div>' +
+      '<div class="meta"><div class="name">Barn / 158 / 60 crops</div><div class="sub">Upgrade to 120 for 1.2k</div></div>' +
+      '<button class="buy">Upgrade</button></div>' +
+            stacks.map((s) =>
+        '<div class="row"><div class="emoji"><img src="/ui/icons/' + s[0] + '.png" alt=""></div>' +
+        '<div class="meta"><div class="name">' + s[1] + ' <span class="sub">/ ' + s[2] + '</span></div>' +
+        '<div class="sub">' + s[3] + '</div></div>' +
+        '<button class="buy">Sell 1</button><button class="buy">Sell all</button></div>').join('')
+    const all = document.createElement('button')
+    all.className = 'buy sell-all'
+    all.innerHTML = '<img class="ico-img" src="/ui/coin.png" alt=""> Sell all / 361k'
+    document.querySelector('#shop footer').appendChild(all)
+    document.querySelector('.tab[data-tab="sell"]').classList.add('active')
+    document.querySelector('.tab[data-tab="buy"]').classList.remove('active')
+  } else {
+  const banner = '<div class="restock-banner"><img class="restock-ico" src="/ui/icons/truck.png" alt=""> Restocks in <b>2m 27s</b></div>'
+  document.getElementById('shopList').innerHTML = banner + rows.map(
+    (r) => '<div class="row"><div class="emoji"><img src="/ui/icons/' + r[0] +
+      '.png" alt=""></div><div class="meta"><div class="name">' + r[1] +
+      '</div><div class="sub">' + r[2] + '</div></div><button class="buy">' + r[3] + '</button></div>'
+  ).join('')
+  }
+</script>
