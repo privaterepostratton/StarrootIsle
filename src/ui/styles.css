@@ -469,7 +469,15 @@ body.panel-open #ui #questTracker {
   justify-content: flex-end;
   align-content: flex-start;
   align-items: center;
-  gap: clamp(5px, 0.8vw, 8px);
+  /*
+   * Room between the pills.
+   *
+   * Each one is a dark lozenge on a bright world, and at eight pixels apart the
+   * row read as a single bar with dividers rather than as six separate readouts
+   * — the eye had to work out where one ended. The gap is what separates them,
+   * since they have no border of their own to do it.
+   */
+  gap: clamp(9px, 1.3vw, 14px);
   pointer-events: none;
 }
 
@@ -3688,6 +3696,12 @@ body.panel-open #ui #questTracker {
  * that change slowest, then whole clusters relocate.
  */
 @media (max-width: 1320px) {
+  /* Give some of the new breathing room back before the row wraps — the point
+     of these breakpoints is that space has run out. */
+  #topbar {
+    gap: clamp(7px, 1vw, 10px);
+  }
+
   .chip {
     padding: 5px 9px;
     gap: 5px;

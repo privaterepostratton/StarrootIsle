@@ -175,17 +175,16 @@ const STEPS: Step[] = [
     title: 'Water it',
     body: 'Click your sprout — watered crops grow faster and mutate more often.',
     /*
-     * Absolute, not "one more than when this card appeared".
+     * One is enough, and the test is absolute rather than relative.
      *
-     * A player who waters each bed as they plant it arrives here with the job
-     * already done, and a relative test would sit asking them to water
-     * something that is already wet — the card would only clear when a crop
-     * dried out. Asking whether every planted bed is watered is the same
-     * question and answers correctly however the player got here.
+     * Planting wanted all four because filling the plot is the lesson;
+     * watering does not — the second can teaches nothing the first did not, and
+     * the player has a whole game of watering ahead of them. Absolute because a
+     * player who waters each bed as they plant it arrives here with it already
+     * done, and "one more than when this card appeared" would sit asking them to
+     * water something that is already wet until a crop dried out.
      */
-    done: (s) => s.plantedCount > 0 && s.wateredCount >= s.plantedCount,
-    progress: (s) =>
-      s.plantedCount > 0 ? `${Math.min(s.wateredCount, s.plantedCount)}/${s.plantedCount} watered` : null,
+    done: (s) => s.wateredCount >= 1,
     pointer: 'crop',
   },
 ]

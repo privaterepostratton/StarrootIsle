@@ -817,24 +817,33 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
    * the way everything else in this game's opening arrives, and it costs the
    * village nothing to explain.
    *
-   * Placed by walking out from the farm's beach gate until the ground turns to
-   * sand, so it lands on the tideline wherever the coast happens to run rather
-   * than at a coordinate that has to be re-tuned every time the farm moves.
+   * Placed by walking out to the water and stepping back, rather than by
+   * stopping at the first sand.
+   *
+   * `isSand` turns true well before the beach *looks* like beach — the terrain
+   * blends over several units — so stopping there left the crate parked on the
+   * grass verge under the treeline, which reads as delivered rather than washed
+   * up. Walking to the last dry ground before the sea and backing off a few
+   * paces puts it out on the open sand where the tide would have left it, and
+   * it stays correct wherever the coast happens to run.
    */
   const storeCrate = modelGroup(getModels().storeCrate, PROP_HEIGHT.storeCrate)
   const storeCratePos = new THREE.Vector3()
   {
     const outward = -PLAYER_SLOT.inward
-    let cx = PLAYER_SLOT.x + outward * (FENCE_HX + 2)
     const cz = PLAYER_SLOT.z + 3.5
-    for (let i = 0; i < 30; i++) {
-      if (isSand(cx, cz)) break
-      cx += outward * 0.8
+    let cx = PLAYER_SLOT.x + outward * (FENCE_HX + 2)
+    let furthest = cx
+    for (let i = 0; i < 80; i++) {
+      const nx = cx + outward * 0.6
+      // Stop at the surf, not in it.
+      if (!isWalkable(nx, cz) || heightAt(nx, cz) < WATER_LEVEL + 0.2) break
+      cx = nx
+      if (isSand(cx, cz)) furthest = cx
     }
-    // A pace further onto the sand, so it reads as washed up rather than as
-    // parked on the grass verge.
-    cx += outward * 1.4
-    storeCratePos.set(cx, groundHeight(cx, cz), cz)
+    // Back from the waterline so it is not standing in the wash.
+    const x = furthest - outward * 3.5
+    storeCratePos.set(x, groundHeight(x, cz), cz)
   }
   storeCrate.position.copy(storeCratePos)
   // Turned to face the farm, so the player walks up to its front.
