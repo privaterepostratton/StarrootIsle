@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { createAnimalModel, type AnimalRig } from '../assets/animal'
+import { cloneCreature, type CreatureModel } from '../assets/models'
 import { ANIMALS, type AnimalDef, type AnimalSpecies } from './animals'
-import { groundHeight, isWalkable, WALK_LIMIT } from './terrain'
+import { groundHeight, isWalkable, oceanMask, WALK_LIMIT } from './terrain'
 import { inVillage } from './village'
 
 /**
@@ -60,9 +61,36 @@ const SHY_RANGE = 3.4
 /** Seconds the "walking home" animation lasts before the animal is handed over. */
 const LEAVE_SECONDS = 2.4
 
+/**
+ * Which species have a rigged, animated model rather than a procedural one.
+ *
+ * The paddock's animals are boxes with legs rotated by hand, which is right for
+ * livestock standing in a pen twenty metres away. A wild animal walking out of
+ * the treeline is the thing the camera is pointed at, so it gets a skinned mesh
+ * — and the two are animated so differently that a species either has a rig or
+ * it does not, with no middle ground.
+ */
+const RIGGED: Partial<Record<AnimalSpecies, string>> = { cow: 'cow-wild' }
+
+/**
+ * Seconds an animal spends walking in from the treeline before it behaves
+ * normally. The cutscene runs over the top of this.
+ */
+const EMERGE_SECONDS = 3.2
+
+/** How far inside the treeline an emerging animal walks before it settles. */
+const EMERGE_WALK = 13
+
 interface Wild {
   def: AnimalDef
-  rig: AnimalRig
+  /** Procedural rig, or null when this one is skinned — see RIGGED. */
+  rig: AnimalRig | null
+  /** Skinned model and mixer, or null when this one is procedural. */
+  creature: CreatureModel | null
+  mixer: THREE.AnimationMixer | null
+  action: THREE.AnimationAction | null
+  /** The object in the scene, whichever kind it is. */
+  root: THREE.Object3D
   pos: THREE.Vector2
   target: THREE.Vector2
   facing: number
@@ -72,6 +100,8 @@ interface Wild {
   phase: number
   /** Set when fed. Counts down while the animal trots off, then it is removed. */
   leaving: number
+  /** Counts down while walking in from the treeline. */
+  emerging: number
 }
 
 /** A wild animal the player is standing next to, and whether they can feed it. */
@@ -91,14 +121,23 @@ export class Wildlife {
 
   /** Called when an animal has finished walking off, to hand it to the pasture. */
   onTamed: ((def: AnimalDef, at: THREE.Vector3) => void) | null = null
+  /**
+   * Called the moment one steps out of the trees, for the arrival cutscene.
+   *
+   * Only fires for a *live* emergence, never for the herd created at boot —
+   * opening the game with five cutscenes queued would be unplayable.
+   */
+  onEmerge: ((def: AnimalDef, at: THREE.Vector3) => void) | null = null
   /** Called the moment food is accepted, for the burst and the noise. */
   onFed: ((def: AnimalDef, at: THREE.Vector3) => void) | null = null
 
   constructor(private readonly rng: () => number) {
-    for (let i = 0; i < POPULATION; i++) this.spawn(i)
+    // The opening herd is already out in the valley: they are scenery the player
+    // walks into, not arrivals. Emergence is for everything after that.
+    for (let i = 0; i < POPULATION; i++) this.spawn(i, false)
   }
 
-  private spawn(i: number) {
+  private spawn(i: number, emerge = true) {
     /*
      * Species cycle rather than roll.
      *
@@ -109,20 +148,88 @@ export class Wildlife {
      * question of looking rather than of luck.
      */
     const def = ANIMALS[i % ANIMALS.length]
-    const rig = createAnimalModel(def.id)
-    this.group.add(rig.root)
 
-    const home = this.wanderPoint(new THREE.Vector2(0, 0), WALK_LIMIT * 0.85)
-    this.animals.push({
+    /*
+     * A rigged species gets a skinned clone and a mixer; everything else keeps
+     * the procedural box rig the paddock uses. Both end up behind `root`, so
+     * every movement and placement below is written once.
+     */
+    const riggedId = RIGGED[def.id]
+    const creature = riggedId ? cloneCreature(riggedId) : null
+    const rig = creature ? null : createAnimalModel(def.id)
+    const root = creature ? creature.root : rig!.root
+    this.group.add(root)
+
+    let mixer: THREE.AnimationMixer | null = null
+    let action: THREE.AnimationAction | null = null
+    if (creature) {
+      mixer = new THREE.AnimationMixer(creature.root)
+      const clip = creature.walk ?? creature.idle
+      if (clip) {
+        action = mixer.clipAction(clip)
+        action.play()
+      }
+      // Offset each one's clock so a group never walks in lockstep.
+      mixer.setTime(this.rng() * 3)
+    }
+
+    /*
+     * Where it comes from.
+     *
+     * An emerging animal starts *at* the treeline and walks inward, which is
+     * what makes the arrival read as coming out of the forest rather than
+     * fading in on open grass. The opening herd is placed anywhere walkable
+     * instead — they have always been here.
+     */
+    const home = emerge ? this.treelinePoint() : this.wanderPoint(new THREE.Vector2(0, 0), WALK_LIMIT * 0.85)
+    // Head inward, toward the middle of the valley.
+    const inward = Math.atan2(-home.y, -home.x)
+    const target = emerge
+      ? new THREE.Vector2(home.x + Math.cos(inward) * EMERGE_WALK, home.y + Math.sin(inward) * EMERGE_WALK)
+      : this.wanderPoint(home, 12)
+
+    const wild: Wild = {
       def,
       rig,
+      creature,
+      mixer,
+      action,
+      root,
       pos: home.clone(),
-      target: this.wanderPoint(home, 12),
-      facing: this.rng() * Math.PI * 2,
+      target,
+      facing: emerge ? inward : this.rng() * Math.PI * 2,
       idle: this.rng() * 3,
       phase: this.rng() * Math.PI * 2,
       leaving: 0,
-    })
+      emerging: emerge ? EMERGE_SECONDS : 0,
+    }
+    this.animals.push(wild)
+
+    if (emerge) {
+      this.scratch.set(home.x, groundHeight(home.x, home.y), home.y)
+      this.onEmerge?.(def, this.scratch.clone())
+    }
+  }
+
+  /**
+   * A spot on the treeline: out near the walk limit, on the forested arc.
+   *
+   * The seaward arc is excluded outright — there is no forest on that side to
+   * come out of, and an animal materialising on an open beach is exactly the
+   * pop-in the entrance exists to avoid.
+   */
+  private treelinePoint(): THREE.Vector2 {
+    for (let i = 0; i < 60; i++) {
+      const a = this.rng() * Math.PI * 2
+      const d = WALK_LIMIT * (0.82 + this.rng() * 0.12)
+      const x = Math.cos(a) * d
+      const z = Math.sin(a) * d
+      if (oceanMask(Math.atan2(z, x)) > 0.2) continue
+      if (inVillage(x, z, 6)) continue
+      if (!isWalkable(x, z)) continue
+      return new THREE.Vector2(x, z)
+    }
+    return this.wanderPoint(new THREE.Vector2(0, 0), WALK_LIMIT * 0.8)
   }
 
   /**
@@ -212,6 +319,21 @@ export class Wildlife {
       const toPlayer = Math.hypot(a.pos.x - player.x, a.pos.y - player.z)
 
       let speed = a.def.speed * 0.75
+      let moving = false
+
+      /*
+       * Walking in from the trees.
+       *
+       * Handled before every other behaviour so an arriving animal cannot be
+       * spooked back into the forest by a player who happens to be standing at
+       * the treeline — the entrance plays out first, then it becomes an
+       * ordinary wild animal.
+       */
+      if (a.emerging > 0) {
+        a.emerging -= dt
+        speed = a.def.speed * 0.9
+        if (a.emerging <= 0) a.target = this.wanderPoint(a.pos, 10)
+      }
 
       if (a.leaving > 0) {
         a.leaving -= dt
@@ -220,13 +342,15 @@ export class Wildlife {
         if (a.leaving <= 0) {
           this.scratch.set(a.pos.x, groundHeight(a.pos.x, a.pos.y), a.pos.y)
           this.onTamed?.(a.def, this.scratch.clone())
-          this.group.remove(a.rig.root)
+          this.group.remove(a.root)
           this.animals.splice(i, 1)
           // One leaves, one is born elsewhere: the valley keeps its population
           // without the player watching an animal pop into existence.
           this.spawn(this.animals.length + Math.floor(elapsed))
           continue
         }
+      } else if (a.emerging > 0) {
+        // Nothing extra: the target set at spawn is the walk inward.
       } else if (toPlayer < SHY_RANGE) {
         /*
          * Back off, but only to the edge of the shy range.
@@ -270,18 +394,34 @@ export class Wildlife {
         a.facing = Math.atan2(dx, dz)
         a.phase += dt * speed * 4.5
         // Legs swing only while moving, so a grazing animal stands still
-        // instead of marching on the spot.
-        for (let l = 0; l < a.rig.legs.length; l++) {
-          a.rig.legs[l].rotation.x = Math.sin(a.phase + l * Math.PI * 0.5) * 0.5
+        // instead of marching on the spot. Skinned ones are posed by their own
+        // clip instead — see the mixer below.
+        if (a.rig) {
+          for (let l = 0; l < a.rig.legs.length; l++) {
+            a.rig.legs[l].rotation.x = Math.sin(a.phase + l * Math.PI * 0.5) * 0.5
+          }
         }
-      } else {
+        moving = true
+      } else if (a.rig) {
         for (const leg of a.rig.legs) leg.rotation.x *= 1 - Math.min(1, dt * 6)
       }
 
-      a.rig.root.position.set(a.pos.x, groundHeight(a.pos.x, a.pos.y), a.pos.y)
-      a.rig.root.rotation.y = a.facing
+      a.root.position.set(a.pos.x, groundHeight(a.pos.x, a.pos.y), a.pos.y)
+      a.root.rotation.y = a.facing
       // A slow head bob at rest reads as grazing without a second animation.
-      a.rig.head.rotation.x = Math.sin(elapsed * 1.4 + a.phase) * 0.09
+      if (a.rig) a.rig.head.rotation.x = Math.sin(elapsed * 1.4 + a.phase) * 0.09
+
+      /*
+       * Skinned species: advance the clip, and only while actually walking.
+       *
+       * Scaled by the animal's own speed so a trotting cow's legs keep up with
+       * the ground it is covering — a fixed rate reads as skating the moment
+       * anything moves faster or slower than the clip was authored at.
+       */
+      if (a.mixer) {
+        if (a.action) a.action.paused = !moving
+        a.mixer.update(moving ? dt * (speed / Math.max(0.1, a.def.speed)) : dt * 0.15)
+      }
     }
   }
 }

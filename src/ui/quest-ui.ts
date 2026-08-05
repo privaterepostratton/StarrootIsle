@@ -149,7 +149,7 @@ export class QuestUi {
           ${complete ? `<button class="claim" data-claim="quest">Claim</button>` : ''}
         </div>`
     } else {
-      html += `<div class="empty-msg">Every quest is done. The valley is yours. 🌾</div>`
+      html += `<div class="empty-msg">Every quest is done. The isle is yours. 🌴</div>`
     }
 
     html += `<h3 class="journal-heading">Today's challenges</h3>`

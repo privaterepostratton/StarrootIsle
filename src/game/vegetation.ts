@@ -452,8 +452,27 @@ function createDressing(opts: VegetationOptions, r: () => number): THREE.Group {
 /** Shared time uniform so every grass batch sways in step. */
 const grassTime = { value: 0 }
 
-export function updateGrass(time: number) {
+/**
+ * Where the tuft fade sits, as live uniforms rather than baked constants.
+ *
+ * The fade has to finish *before* fog takes over, or the tufts are the only
+ * crisp thing left in a scene the weather has washed out — which reads as grass
+ * that fog does not apply to. Baked at 38-60 that was true in clear weather and
+ * wrong in every other: rain pulls the fog band in to about forty units and mist
+ * to twenty-five, and the grass went on being sharp well past both.
+ *
+ * Tracking the actual fog near plane keeps the two in step whatever the weather
+ * does, and costs two uniform writes a frame.
+ */
+const grassFadeNear = { value: 0 }
+const grassFadeFar = { value: 0 }
+
+export function updateGrass(time: number, fogNear = GRASS_FADE_FAR) {
   grassTime.value = time
+  // Never further than the clear-weather figure, and never past the fog.
+  const far = Math.min(GRASS_FADE_FAR, fogNear)
+  grassFadeFar.value = far
+  grassFadeNear.value = far * (GRASS_FADE_NEAR / GRASS_FADE_FAR)
 }
 
 /**
@@ -653,8 +672,22 @@ function createGrassField(opts: VegetationOptions, r: () => number): THREE.Group
   // whole material, so the grass still receives scene lighting and fog.
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = grassTime
+    shader.uniforms.uFadeNear = grassFadeNear
+    shader.uniforms.uFadeFar = grassFadeFar
     shader.vertexShader = shader.vertexShader
-      .replace('void main() {', 'uniform float uTime;\nvoid main() {')
+      /*
+       * Every uniform is declared in this one replace, and that is not a style
+       * choice. `void main() {` occurs once, so a *second* `.replace` aimed at
+       * the same anchor silently does nothing — which is exactly how the fade
+       * uniforms ended up used but undeclared. The vertex shader then failed to
+       * compile, the program failed to link, and the entire grass field
+       * vanished from the frame with nothing in the console but a generic
+       * `useProgram: program not valid`.
+       */
+      .replace(
+        'void main() {',
+        'uniform float uTime;\nuniform float uFadeNear;\nuniform float uFadeFar;\nvoid main() {',
+      )
       .replace(
         '#include <begin_vertex>',
         /* glsl */ `
@@ -711,7 +744,7 @@ function createGrassField(opts: VegetationOptions, r: () => number): THREE.Group
            */
           vec3 tuftRoot = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
           float camDist = distance(cameraPosition, tuftRoot);
-          transformed *= 1.0 - smoothstep(${GRASS_FADE_NEAR.toFixed(1)}, ${GRASS_FADE_FAR.toFixed(1)}, camDist);
+          transformed *= 1.0 - smoothstep(uFadeNear, uFadeFar, camDist);
         #endif
         `,
       )

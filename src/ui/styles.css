@@ -58,7 +58,7 @@
   /* Columns the top rail must keep clear: the avatar cluster on its left and the
    * menu button on its right. Named rather than guessed, because the rail used to
    * carry a hardcoded max-width that silently collided the moment either grew. */
-  --avatar-col: clamp(175px, 17vw, 250px);
+  --avatar-col: clamp(210px, 20vw, 290px);
   --menu-col: 65px;
   /*
    * These size against `vmin`, not `vw`, and that is the whole of the mobile
@@ -271,6 +271,75 @@ canvas#game {
   filter: drop-shadow(0 2px 0 rgba(40, 24, 8, 0.4));
 }
 
+/* ---------- cinematic letterbox ----------
+ *
+ * Two bars sliding in from the screen edges while something is being filmed —
+ * currently a creature walking out of the treeline. On the body rather than on
+ * #ui so they sit over the world but above the HUD, which dims underneath via
+ * .hud-chrome.
+ *
+ * This existed for the night raids, went with them, and came back for the
+ * arrivals. Kept short and shallow (7vh, not the old 9) because an arrival is a
+ * recurring accent rather than a once-a-night event, and deep bars for something
+ * that happens every few minutes stops reading as emphasis.
+ */
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 0;
+  background: #14100a;
+  z-index: 30;
+  transition: height 0.35s ease;
+  pointer-events: none;
+}
+
+body::before {
+  top: 0;
+}
+
+body::after {
+  bottom: 0;
+}
+
+body.cinematic::before,
+body.cinematic::after {
+  height: 7vh;
+}
+
+body.cinematic #ui .hud-chrome {
+  opacity: 0;
+  pointer-events: none !important;
+}
+
+/* The caption, riding just above the lower bar. */
+#cineTitle {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(7vh + 16px);
+  text-align: center;
+  font-size: clamp(20px, 3vw, 30px);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fff6e0;
+  text-shadow:
+    0 2px 0 rgba(30, 18, 8, 0.85),
+    0 0 22px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  pointer-events: none;
+  z-index: 31;
+}
+
+body.cinematic #cineTitle {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 /* ---------- HUD chrome, and hiding it ----------
  *
  * A full-screen panel gets the screen to itself. Township never shows its edge
@@ -374,7 +443,9 @@ body.panel-open #ui #questTracker {
 .pc-level {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
+  /* Sit on the avatar's vertical centre so the bigger badge/bar don't hang low. */
+  margin-top: 2px;
 }
 
 /* ---------- top-centre: resource rail ---------- */
@@ -580,8 +651,10 @@ body.panel-open #ui #questTracker {
 
 /* ---------- icon buttons: menu, nav rail ----------
  *
- * Gold-rimmed circular tokens (btn-menu.png), icon only. Labels live in
+ * Cream rounded-square tokens (btn-menu.png), icon only. Labels live in
  * `title` / aria-label so the rail stays a clean column of big glyphs.
+ * Shape comes from the PNG alpha — do not add border-radius: 50% or it
+ * circular-masks the squircle and chops the flat sides.
  */
 .iconbtn {
   display: grid;
@@ -596,7 +669,7 @@ body.panel-open #ui #questTracker {
   height: var(--nav-btn);
   padding: 0;
   border: none;
-  border-radius: 50%;
+  border-radius: 0;
   background-color: transparent;
   background-image: url('/ui/btn-menu.png');
   background-size: contain;
@@ -653,24 +726,20 @@ body.panel-open #ui #questTracker {
 
 .iconbtn .nav-ico {
   /*
-   * Oversized past the button itself, not merely past the cream well.
-   *
-   * At 82% the sprite spilled onto the gold rim and stopped there, which still
-   * read as a glyph fitted into a token. Over 100% it breaks the rim entirely
-   * and the icon becomes an object sitting on the button — the same trick the
-   * top-bar chips use, and the reason both now read as one UI language.
+   * Slightly proud of the cream well so the glyph reads as an object on the
+   * token, without spilling past the rim.
    */
-  width: 112%;
-  height: 112%;
+  width: 101%;
+  height: 101%;
   object-fit: contain;
   pointer-events: none;
   filter: drop-shadow(0 2px 0 rgba(60, 40, 16, 0.22));
 }
 
-/* Settings gear fills the well too tightly — pull it in ~10%. */
+/* Settings gear fills the well tighter than the other glyphs. */
 #menuBtn .nav-ico {
-  width: 74%;
-  height: 74%;
+  width: 67%;
+  height: 67%;
 }
 
 .sr-only {
@@ -757,7 +826,7 @@ body.panel-open #ui #questTracker {
   color: var(--ink);
   cursor: pointer;
   border: none;
-  border-radius: 50%;
+  border-radius: 0;
   background-color: transparent;
   background-image: url('/ui/btn-menu.png');
   background-size: contain;
@@ -1592,33 +1661,37 @@ body.panel-open #ui #questTracker {
   font-weight: 700;
 }
 
-/* ---------- level + XP ---------- */
+/* ---------- level + XP ----------
+ *
+ * Sized to sit with the avatar, not as a tiny caption beside it. Same gold-rim
+ * painted chrome language as the portrait frame and the XP capsule art.
+ */
 .lvl-badge {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
-  width: 32px;
-  height: 32px;
+  flex: 0 0 auto;
+  min-width: clamp(44px, 5.8vw, 56px);
+  width: clamp(44px, 5.8vw, 56px);
+  height: clamp(44px, 5.8vw, 56px);
   padding: 0;
   border-radius: 50%;
   background: url('/ui/hud-level-badge.png') center / contain no-repeat;
   border: none;
-  font-size: 14px;
+  font-size: clamp(18px, 2.2vw, 24px);
   font-weight: 900;
   color: #3d2a16;
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
-  box-shadow: none;
-  /* No drop-shadow: it layerised the badge and softened the level number, which
-     is two characters at 14px and cannot afford it. The badge art carries its
-     own shading, so nothing is lost. */
+  /* Hard offset, not filter — filter softens the level digits. */
+  box-shadow: 0 3px 0 rgba(90, 55, 25, 0.28);
+  line-height: 1;
 }
 
 .xp-wrap {
   position: relative;
   display: block;
-  width: 128px;
-  height: 22px;
+  width: clamp(150px, 18vw, 200px);
+  height: clamp(36px, 4.8vw, 44px);
   border-radius: 99px;
   background-color: #efe2c4;
   background-image: url('/ui/xp-bar.png');
@@ -1626,19 +1699,21 @@ body.panel-open #ui #questTracker {
   background-repeat: no-repeat;
   border: none;
   overflow: hidden;
-  box-shadow: 0 3px 0 rgba(90, 55, 25, 0.22);
+  box-shadow: 0 4px 0 rgba(90, 55, 25, 0.28);
 }
 
 .xp-fill {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
-  left: 5px;
+  top: 18%;
+  bottom: 18%;
+  left: 7%;
   width: 0;
-  max-width: calc(100% - 10px);
+  max-width: 86%;
   border-radius: 99px;
-  background: linear-gradient(180deg, #b6f06a 0%, #5fad38 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  background: linear-gradient(180deg, #c8f87a 0%, #6bc03e 55%, #4a9a28 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(40, 80, 20, 0.25);
   transition: width 0.35s ease;
 }
 
@@ -1648,11 +1723,12 @@ body.panel-open #ui #questTracker {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: clamp(13px, 1.4vw, 16px);
   font-weight: 800;
   color: #3d2a16;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.65);
   z-index: 1;
+  letter-spacing: 0.2px;
 }
 
 .levelup {
@@ -3577,10 +3653,6 @@ body.panel-open #ui #questTracker {
  * order the clusters can least afford to lose it: type first, then the pills
  * that change slowest, then whole clusters relocate.
  */
-.xp-wrap {
-  width: clamp(72px, 12vw, 116px);
-}
-
 @media (max-width: 1320px) {
   .chip {
     padding: 5px 9px;
@@ -3593,14 +3665,15 @@ body.panel-open #ui #questTracker {
   }
 
   .xp-wrap {
-    width: clamp(60px, 7vw, 92px);
+    width: clamp(130px, 16vw, 170px);
+    height: clamp(32px, 4.2vw, 40px);
   }
 
   .lvl-badge {
-    min-width: 28px;
-    width: 28px;
-    height: 28px;
-    font-size: 12px;
+    min-width: clamp(40px, 5.2vw, 50px);
+    width: clamp(40px, 5.2vw, 50px);
+    height: clamp(40px, 5.2vw, 50px);
+    font-size: clamp(16px, 2vw, 21px);
   }
 }
 
@@ -3678,7 +3751,7 @@ body.panel-open #ui #questTracker {
   }
 
   .xp-text {
-    font-size: 9px;
+    font-size: clamp(12px, 1.3vw, 14px);
   }
 
   #questTracker {
@@ -4402,8 +4475,8 @@ body:has(#devPanel:not([style*='display: none'])) #help {
   }
 
   #navRail .iconbtn .nav-ico {
-    width: 62%;
-    height: 62%;
+    width: 56%;
+    height: 56%;
   }
 
   /*

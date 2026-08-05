@@ -654,6 +654,102 @@ export async function loadFarmgirlModel(targetHeight: number): Promise<Shopkeepe
   return farmgirl
 }
 
+/**
+ * A rigged wild animal: live scene graph plus its clips.
+ *
+ * Same contract and the same rules as the villager — no baking, no instancing,
+ * no re-orienting at runtime. Separate from the procedural `AnimalRig` the
+ * paddock uses because the two are animated in completely different ways: the
+ * paddock's animals are boxes whose legs are rotated by hand each frame, and
+ * this is a skinned mesh posed by a mixer.
+ */
+export interface CreatureModel {
+  root: THREE.Object3D
+  idle?: THREE.AnimationClip
+  walk?: THREE.AnimationClip
+}
+
+const creatures = new Map<string, CreatureModel>()
+
+/**
+ * Load a rigged creature: one body file plus one clip file.
+ *
+ * The exporter writes a whole copy of the mesh per animation, so the walk is
+ * stripped to its channels before it ships (scripts/extract-anim.mjs takes the
+ * cow's from 33MB to 40KB) and played on the body from the idle file. Works
+ * because a clip binds to bones by name and both exports carry the same rig.
+ */
+export async function loadCreatureModel(
+  id: string,
+  bodyPath: string,
+  walkPath: string,
+  targetHeight: number,
+): Promise<CreatureModel> {
+  const existing = creatures.get(id)
+  if (existing) return existing
+
+  const loader = new GLTFLoader()
+  const [body, walk] = await Promise.all([
+    loader.loadAsync(asset(bodyPath)),
+    loader.loadAsync(asset(walkPath)),
+  ])
+
+  const root = body.scene
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh) return
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      makeLit(m as THREE.MeshStandardMaterial)
+    }
+  })
+
+  // Bone span, not a Box3 — see loadFarmerModel for why a SkinnedMesh's vertex
+  // bounds are meaningless.
+  root.updateMatrixWorld(true)
+  let lo = Infinity
+  let hi = -Infinity
+  const p = new THREE.Vector3()
+  root.traverse((o) => {
+    if (!(o as THREE.Bone).isBone) return
+    o.getWorldPosition(p)
+    lo = Math.min(lo, p.y)
+    hi = Math.max(hi, p.y)
+  })
+  // A quadruped's topmost joint is its spine, not the top of its head, so the
+  // allowance is larger than the biped's.
+  const span = (hi - lo) * 1.45
+  if (span > 1e-3) root.scale.multiplyScalar(targetHeight / span)
+
+  const byName = (clips: THREE.AnimationClip[], re: RegExp) => clips.find((c) => re.test(c.name))
+  const model: CreatureModel = {
+    root,
+    idle: byName(body.animations, /idle|clip/i),
+    walk: byName(walk.animations, /walk|take|run/i),
+  }
+  creatures.set(id, model)
+  return model
+}
+
+export function getCreatureModel(id: string): CreatureModel | null {
+  return creatures.get(id) ?? null
+}
+
+/** Independent copy — see cloneFarmer for why SkeletonUtils is required. */
+export function cloneCreature(id: string): CreatureModel | null {
+  const src = creatures.get(id)
+  if (!src) return null
+  const root = cloneSkinned(src.root)
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh) return
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+  })
+  return { root, idle: src.idle, walk: src.walk }
+}
+
 export function getFarmgirlModel(): ShopkeeperModel {
   if (!farmgirl) throw new Error('Farmgirl not loaded — call loadFarmgirlModel() first')
   return farmgirl

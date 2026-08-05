@@ -27,6 +27,7 @@ const VOLATILE = new Set([
   'visible',
   'shown',
   'panel-open',
+  'cinematic',
   'sv-ui-edit-hover',
   'sv-ui-edit-sel',
 ])

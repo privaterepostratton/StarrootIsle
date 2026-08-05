@@ -1,10 +1,11 @@
+import * as THREE from 'three'
 import { Engine } from './core/engine'
 import { Input } from './core/input'
 import { pickGround, pickObjects, rayDistanceToPoint } from './core/picking'
 import { worldClicksSwallowed, swallowBackdropClick } from './core/click-guard'
 import { loadGroundTextures, loadParticleTextures } from './assets/textures'
 import { loadSkyTexture, Skybox } from './assets/skybox'
-import { loadModels, loadFarmerModel, loadShopkeeperModel, loadFarmgirlModel } from './assets/models'
+import { loadModels, loadFarmerModel, loadCreatureModel, loadShopkeeperModel, loadFarmgirlModel } from './assets/models'
 import { createWorld, SHOP_POS, FARM_CENTRE, BARN_POS } from './game/world'
 import { inPlayerPlot, SPAWN } from './game/village'
 import { GuidePath } from './game/guide-path'
@@ -123,11 +124,14 @@ window.__loading?.(0.15, 'Loading the valley…')
 // Both must be resident before anything is built: the world reads ground
 // textures at construction, and the farm reads the planter model the first time
 // a plot is tilled — including while deserialising a save.
-const [, , , , , , skyTex] = await Promise.all([
+const [, , , , , , , skyTex] = await Promise.all([
   loadGroundTextures(),
   loadParticleTextures(),
   loadModels(),
   loadFarmerModel(PLAYER_HEIGHT),
+  // The wild cow: rigged, unlike the paddock's procedural livestock. Sized to
+  // the shoulder rather than the spine — see loadCreatureModel.
+  loadCreatureModel('cow-wild', 'models/cow-wild.glb', 'models/cow-wild-walk.glb', 1.55),
   // A head taller than the player: an adult behind the counter, and it keeps
   // them visible over the stall's awning from the lane.
   loadShopkeeperModel(PLAYER_HEIGHT * 1.15),
@@ -725,6 +729,48 @@ clearing.onOpened = () => {
 const wildlife = new Wildlife(rng(0x5eed11fe))
 engine.scene.add(wildlife.group)
 
+/*
+ * The arrival: a short hold on whatever just stepped out of the trees.
+ *
+ * Letterbox in, camera swings to the treeline, letterbox out — the same shape
+ * the old raid cutscene had, kept deliberately short. It is an event that will
+ * happen many times over a session, so it has to be an accent rather than an
+ * interruption: no input lock beyond what the letterbox already implies, and it
+ * yields entirely if a panel is open.
+ */
+const ARRIVAL_SECONDS = 2.4
+let arrivalTimer = 0
+const arrivalAt = new THREE.Vector3()
+let arrivalPrevPitch = 0
+let arrivalPrevYaw = 0
+let arrivalYaw = 0
+
+wildlife.onEmerge = (def, at) => {
+  // Never steal the screen from a menu; the animal arrives unfilmed.
+  if (modalOpen()) return
+  arrivalTimer = ARRIVAL_SECONDS
+  /*
+   * Hold short of the treeline, not on it.
+   *
+   * The spawn point *is* the tree line, so parking the focus there puts the
+   * camera boom in the canopy and the engine's obstacle avoidance then drags it
+   * trunk to trunk. Pulling the hold a few units inward puts it on open ground
+   * with the animal walking toward it.
+   */
+  arrivalAt.copy(at)
+  const ring = Math.hypot(at.x, at.z)
+  if (ring > 1) arrivalAt.multiplyScalar(Math.max(0, ring - 7) / ring)
+  arrivalPrevPitch = engine.pitch
+  arrivalPrevYaw = engine.targetYaw
+  // Aim outward from the valley centre, so the camera looks *at* the forest the
+  // animal is coming out of rather than from behind it.
+  arrivalYaw = Math.atan2(-at.x, -at.z)
+  document.body.classList.add('cinematic')
+  const title = document.getElementById('cineTitle')
+  if (title) title.textContent = `A wild ${def.name} appears`
+  audio.play('rare')
+}
+
 wildlife.onFed = (def, at) => {
   bursts.emit(at, 14, [0xfff0a0, 0xffd24a], { kind: 'spark', speed: 3.2, life: 0.7 })
   bursts.emit(at, 8, [0xc7ad85], { kind: 'puff', speed: 0.9, scale: 0.16 })
@@ -1048,6 +1094,7 @@ const neighbourPlotUi = new NeighbourPlotUi({
 
 /** Anything that swallows input: movement, picking and prompts all stand down. */
 const modalOpen = () =>
+  arrivalTimer > 0 ||
   // The UI editor covers the screen with its own click catcher, so letting the
   // game keep reading input would have the farmer walking around underneath a
   // drag gesture. This is the one choke point that already gates movement,
@@ -2185,7 +2232,25 @@ function frame() {
 
   // Camera trails the player slightly rather than locking to them — a rigid
   // lock makes the whole world appear to jitter when walking.
-  engine.focus.lerp(player.position, Math.min(1, dt * 6))
+  if (arrivalTimer > 0) {
+    arrivalTimer -= dt
+    // Faster pull than the walk-follow: this should read as a cut to the
+    // treeline, not as the camera wandering off.
+    engine.focus.lerp(arrivalAt, Math.min(1, dt * 3.2))
+    engine.pitch += (0.52 - engine.pitch) * Math.min(1, dt * 4)
+    const yawDiff = ((arrivalYaw - engine.targetYaw + Math.PI) % (Math.PI * 2)) - Math.PI
+    engine.targetYaw += (yawDiff < -Math.PI ? yawDiff + Math.PI * 2 : yawDiff) * Math.min(1, dt * 3.5)
+    if (arrivalTimer <= 0) {
+      document.body.classList.remove('cinematic')
+      // A hard cut home. Cuts are cinematic language; a slow lerp back is just
+      // seasickness.
+      engine.pitch = arrivalPrevPitch
+      engine.targetYaw = arrivalPrevYaw
+      engine.yaw = arrivalPrevYaw
+    }
+  } else {
+    engine.focus.lerp(player.position, Math.min(1, dt * 6))
+  }
   engine.focus.add(shake.update(dt, elapsed))
   engine.update(dt)
 
@@ -2208,7 +2273,15 @@ function frame() {
     (tile) => placeables.isPollinated(tile.pos.x, tile.pos.z),
     (crop) => growthMultiplier(season, crop),
   )
-  updateGrass(elapsed)
+  // Fed the live fog plane so the tufts always fade out ahead of the haze —
+  // see updateGrass.
+  {
+    // `Fog` has a near plane; `FogExp2` does not, and the scene's type is the
+    // union of both. Narrowed rather than cast so swapping fog models later is
+    // a compile error rather than an undefined.
+    const fog = engine.scene.fog
+    updateGrass(elapsed, fog && 'near' in fog ? fog.near : undefined)
+  }
   pasture.update(dt, elapsed, engine.camera)
   wildlife.update(dt, elapsed, player.position)
   beachSeeds.update(dt, elapsed, player.position)
