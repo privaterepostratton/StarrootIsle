@@ -1777,7 +1777,16 @@ function updateChopping(dt: number) {
  * them nothing. The stall has no feature of its own: seeds are the whole game
  * from minute one, so its arrival *is* the unlock.
  */
-const ARRIVAL_LEVEL = { shop: 2, lane: featureLevel('valley'), barn: featureLevel('animals') } as const
+/*
+ * The seed stall moved from level 2 to level 4.
+ *
+ * It used to open at the same level the garden upgrade is taught, which left
+ * the washed-up crate — see the store crate in world.ts — with no gap to cover:
+ * it would have appeared and been made redundant in the same breath. Four gives
+ * the crate a couple of levels of work and gives the stall an arrival of its
+ * own to be, instead of one more thing happening at level 2.
+ */
+const ARRIVAL_LEVEL = { shop: 4, lane: featureLevel('valley'), barn: featureLevel('animals') } as const
 
 /**
  * Show whatever the player's level has earned.
@@ -1794,6 +1803,28 @@ function applyArrivals() {
   // The street arrives with the first neighbour to walk down it.
   world.setArrivalVisible('lane', progression.level >= ARRIVAL_LEVEL.lane)
   hood.setArrivedFor(progression.level)
+}
+
+/**
+ * The crate is out while the player has outgrown their first garden and the
+ * stall has not opened yet. Driven from state rather than from an event, so a
+ * loaded save lands in the right condition without replaying anything.
+ */
+function syncStoreCrate() {
+  const wanted = upgradeTour.finished && !world.hasArrived('shop')
+  if (wanted === storeCrateOut) return
+  storeCrateOut = wanted
+  world.setStoreCrateVisible(wanted)
+  if (wanted) hud.toast('📦 A trader’s crate washed up behind the farm', 'good')
+  else hud.toast('📦 The crate is gone — the stall has opened', 'info')
+}
+let storeCrateOut = false
+
+/** Standing at the crate, while it is trading. */
+function crateInRange() {
+  if (modalOpen() || !storeCrateOut) return false
+  const at = world.storeCratePos
+  return Math.hypot(player.position.x - at.x, player.position.z - at.z) < SHOP_RANGE
 }
 
 function shopInRange() {
@@ -1878,6 +1909,7 @@ function handleInput() {
     const tameable = tameTarget()
     if (fellable) fellTree()
     else if (mailboxInRange()) buyGardenUpgrade()
+    else if (crateInRange()) shopUi.show()
     else if (shopInRange()) shopUi.show()
     else if (tameable) feedWildAnimal(tameable)
     else {
@@ -2674,6 +2706,7 @@ function frame() {
     const tameable = tameTarget()
     if (fellable) hud.setPrompt('tame', clearPromptText())
     else if (mailboxInRange()) hud.setPrompt('tame', mailboxPromptText())
+    else if (crateInRange()) hud.setPrompt('tame', '📦 Trade at the crate')
     else if (shopInRange()) hud.setPrompt('shop')
     else if (tameable) hud.setPrompt('tame', tamePromptText(tameable))
     else if (tile?.placed) hud.setPrompt('menu')
@@ -2711,6 +2744,7 @@ function frame() {
   }
   ftue.update(ftueStats)
   startUpgradeTour()
+  syncStoreCrate()
   upgradeTour.update(ftueStats)
   updateFtuePointer()
   tips.enabled = settingsUi.settings.showTips && !ftue.active && !upgradeTour.active

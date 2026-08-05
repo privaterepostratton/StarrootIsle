@@ -12,8 +12,9 @@
 
 import { asset } from './assets'
 
-const MUSIC_DAY = asset('audio/harvest-path.mp3')
-const MUSIC_NIGHT = asset('audio/moonlit-turnip-row.mp3')
+/* A matched pair: the day theme, and its own after-dark version. */
+const MUSIC_DAY = asset('audio/lagoon-lanterns.mp3')
+const MUSIC_NIGHT = asset('audio/moonlit-lagoon-loop.mp3')
 /** Seconds to crossfade when day/night flips. */
 const MUSIC_XFADE = 1.6
 

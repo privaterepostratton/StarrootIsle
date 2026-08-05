@@ -53,6 +53,8 @@ interface ModelCache {
   /** Replaced the procedural three-sphere blob. See game/vegetation.ts. */
   bush: LoadedModel
   barrel: LoadedModel
+  /** Washed-up crate that trades seeds until the real stall opens. */
+  storeCrate: LoadedModel
   haybale: LoadedModel
   haypile: LoadedModel
   /** The coin doobers burst out of a harvest as. See game/doobers.ts. */
@@ -221,7 +223,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -262,6 +264,7 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/barrel.glb')),
       gltf.loadAsync(asset('models/haybale.glb')),
       gltf.loadAsync(asset('models/haypile.glb')),
+      gltf.loadAsync(asset('models/store-crate.glb')),
     ])
 
   cache = {
@@ -302,6 +305,7 @@ export async function loadModels(): Promise<ModelCache> {
     stump: extractMesh(stump.scene),
     bush: extractMesh(bush.scene),
     barrel: extractMesh(barrel.scene),
+    storeCrate: extractMesh(storeCrate.scene),
     haybale: extractMesh(haybale.scene),
     haypile: extractMesh(haypile.scene),
   }
@@ -366,6 +370,7 @@ export const PROP_HEIGHT = {
      barrel to the hip, a bale to mid-thigh, a loose pile slumping wider and
      lower than the bale it came from. */
   barrel: 0.95,
+  storeCrate: 1.9,
   haybale: 0.8,
   haypile: 1.15,
 } as const

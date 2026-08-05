@@ -183,6 +183,9 @@ export interface World {
   setGardenLevel(level: number): void
   /** Where the upgrade mailbox is standing, for the interaction prompt. */
   readonly mailboxPos: THREE.Vector3
+  /** The washed-up seed crate: where it is, and whether it is trading. */
+  readonly storeCratePos: THREE.Vector3
+  setStoreCrateVisible(on: boolean): void
   /** Reveal or hide a building that arrives with the player's level. */
   setArrivalVisible(id: ArrivalId, on: boolean): void
   hasArrived(id: ArrivalId): boolean
@@ -804,6 +807,43 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   group.add(sign)
   obstacles.push({ x: sign.position.x, z: sign.position.z, r: 0.3 })
 
+  /*
+   * The store crate, washed up on the sand behind the farm.
+   *
+   * It trades seeds for the stretch between the player outgrowing their first
+   * garden and the real stall opening on the square — a gap that otherwise has
+   * them expanding a farm they cannot buy anything to fill. A crate on the
+   * beach is the right shape for that: it is obviously temporary, it arrives
+   * the way everything else in this game's opening arrives, and it costs the
+   * village nothing to explain.
+   *
+   * Placed by walking out from the farm's beach gate until the ground turns to
+   * sand, so it lands on the tideline wherever the coast happens to run rather
+   * than at a coordinate that has to be re-tuned every time the farm moves.
+   */
+  const storeCrate = modelGroup(getModels().storeCrate, PROP_HEIGHT.storeCrate)
+  const storeCratePos = new THREE.Vector3()
+  {
+    const outward = -PLAYER_SLOT.inward
+    let cx = PLAYER_SLOT.x + outward * (FENCE_HX + 2)
+    const cz = PLAYER_SLOT.z + 3.5
+    for (let i = 0; i < 30; i++) {
+      if (isSand(cx, cz)) break
+      cx += outward * 0.8
+    }
+    // A pace further onto the sand, so it reads as washed up rather than as
+    // parked on the grass verge.
+    cx += outward * 1.4
+    storeCratePos.set(cx, groundHeight(cx, cz), cz)
+  }
+  storeCrate.position.copy(storeCratePos)
+  // Turned to face the farm, so the player walks up to its front.
+  storeCrate.rotation.y = PLAYER_SLOT.inward * (Math.PI / 2)
+  storeCrate.visible = false
+  group.add(storeCrate)
+  const crateObstacle: Obstacle = { x: storeCratePos.x, z: storeCratePos.z, r: 0.9, off: true }
+  obstacles.push(crateObstacle)
+
   // --- street furniture ----------------------------------------------------
   // Lanterns down both verges, offset half a row so the two sides alternate
   // rather than lining up in pairs.
@@ -1189,6 +1229,11 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     shopkeeper,
     farmgirl,
     mailboxPos,
+    storeCratePos,
+    setStoreCrateVisible(on: boolean) {
+      storeCrate.visible = on
+      crateObstacle.off = !on
+    },
     setGardenLevel(level: number) {
       const index = level > 0 ? Math.min(gardenFences.length, level) - 1 : -1
       gardenFences.forEach((ring, i) => {

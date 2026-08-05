@@ -390,7 +390,15 @@ export class Ftue {
   /** Tell the stylesheet how tall the card currently is. See LIFT_VAR. */
   private publishHeight() {
     const shown = !this.root.classList.contains('hidden')
-    const lift = shown ? this.root.offsetHeight + 12 : 0
+    /*
+     * Twelve was not enough clearance.
+     *
+     * The prompt has its own padding and shadow below its text box, so a gap
+     * measured to the card's edge still left the two touching by a few pixels
+     * at the mailbox. Measured, not guessed: at the widest card the overlap was
+     * seven pixels, and this leaves a comfortable margin at every size.
+     */
+    const lift = shown ? this.root.offsetHeight + 26 : 0
     document.documentElement.style.setProperty(LIFT_VAR, `${lift}px`)
   }
 
@@ -460,7 +468,6 @@ export class Ftue {
   private show() {
     const step = this.steps[this.step]
     this.root.classList.remove('hidden')
-    this.publishHeight()
     // Re-trigger the entrance spring per step.
     this.root.classList.remove('ftue-in')
     void this.root.offsetWidth
@@ -477,6 +484,17 @@ export class Ftue {
         ${step.button ? `<button class="ftue-next">${step.button}</button>` : ''}
         <button class="ftue-skip">Skip tour</button>
       </div>`
+    /*
+     * Measured *after* the content is in, which is the whole point of it.
+     *
+     * This ran before the innerHTML assignment, so every card published the
+     * height of the one before it — an empty box on the first step, and one
+     * step stale thereafter. The interaction prompt lifts by that number, so
+     * on a tall card it sat squarely underneath it: at the mailbox the "Extend
+     * the garden" prompt was entirely inside the tutorial telling you to go and
+     * press it.
+     */
+    this.publishHeight()
     // Re-found per step: show() rewrites the card wholesale, so the previous
     // step's node is detached by the time this runs.
     this.progress = this.root.querySelector('.ftue-prog')
