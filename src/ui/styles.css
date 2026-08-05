@@ -82,7 +82,7 @@
   --rail-edge: 22px;
   /* Width of the bottom-right tool dock, so the hotbar can reserve it on both
    * sides and stay genuinely centred instead of sliding under the dock. */
-  --dock-w: calc(4 * var(--nav-btn) + 28px);
+  --dock-w: calc(3 * var(--nav-btn) + 28px);
   --slot-size: clamp(56px, 13vmin, 76px);
   --panel-pad: clamp(10px, 3vmin, 18px);
 
@@ -1218,11 +1218,32 @@ body.panel-open #ui #questTracker {
   border-width: 4px;
   border-color: #8a6042;
   border-radius: var(--r-xl);
-  background-color: #fffaf0;
-  background-image: url('/ui/parchment.png');
-  background-size: 220px 220px;
-  background-repeat: repeat;
-  box-shadow: var(--shadow-lg), inset 0 0 0 2px rgba(255, 248, 230, 0.65);
+  /*
+   * Lit from the top: cream at the header, warm tan by the footer.
+   *
+   * The parchment tile is still under there — the gradient is laid over it at
+   * ~95% rather than replacing it, so the grain reads through and the card keeps
+   * looking like paper instead of like a CSS panel. A flat fill was what made
+   * the taller panels (shop, almanac) look like a wall of cream: with nothing
+   * varying down 600px of card there is no form to it.
+   */
+  background-color: var(--paper-2);
+  background-image:
+    linear-gradient(180deg, rgba(255, 251, 242, 0.96) 0%, rgba(246, 233, 204, 0.94) 50%, rgba(226, 202, 158, 0.95) 100%),
+    url('/ui/parchment.png');
+  background-size: auto, 220px 220px;
+  background-repeat: no-repeat, repeat;
+  /*
+   * Hard ledge first, then a wide ambient blur — house rule 2 with the volume
+   * up. The blur is what lifts the card off a busy 3D scene; the ledge is what
+   * keeps it card stock rather than a web modal. The two inset lines are the
+   * lip: white along the top edge, a shadow along the bottom.
+   */
+  box-shadow:
+    0 10px 0 rgba(110, 78, 40, 0.34),
+    0 26px 48px rgba(52, 34, 12, 0.42),
+    inset 0 2px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -3px 0 rgba(168, 129, 74, 0.35);
   animation: panelIn 0.32s var(--spring);
 }
 
@@ -1647,9 +1668,15 @@ body.panel-open #ui #questTracker {
 .panel footer {
   padding: 12px 18px;
   border-top: 3px solid #8a6042;
-  background-color: #f6ead0;
-  background-image: url('/ui/parchment.png');
-  background-size: 180px 180px;
+  /* Carries on down from where the panel gradient has got to by its last rows,
+     so the wallet bar reads as the bottom of the card and not as a strip
+     glued under it. */
+  background-color: var(--paper-3);
+  background-image:
+    linear-gradient(180deg, rgba(236, 218, 182, 0.94), rgba(222, 199, 156, 0.96)),
+    url('/ui/parchment.png');
+  background-size: auto, 180px 180px;
+  background-repeat: no-repeat, repeat;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4307,6 +4334,40 @@ body:has(#devPanel:not([style*='display: none'])) #help {
 @keyframes ftuePoke {
   0%, 100% { margin-top: 0; }
   50% { margin-top: -12px; }
+}
+
+/*
+ * The hotbar slot the tutorial is asking for.
+ *
+ * The world gets a gold ring around the thing to click; this is the same idea
+ * for the one target that is not in the world. Deliberately nothing on
+ * `transform`: the slot already spends it on hover, on `.active` and on the
+ * press, and an animation there would flatten the row's whole feel while the
+ * glow runs. The halo is an `::after` ring instead, which owns its own
+ * transform and cannot collide.
+ */
+.slot.ftue-glow {
+  animation: ftueSlotPulse 1.4s ease-in-out infinite;
+}
+
+.slot.ftue-glow::after {
+  content: '';
+  position: absolute;
+  inset: -9px;
+  border-radius: calc(var(--r-lg) + 6px);
+  border: 3px solid rgba(255, 214, 120, 0.9);
+  pointer-events: none;
+  animation: ftueSlotRing 1.4s ease-out infinite;
+}
+
+@keyframes ftueSlotPulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.16) saturate(1.15) drop-shadow(0 0 10px rgba(255, 210, 110, 0.85)); }
+}
+
+@keyframes ftueSlotRing {
+  0% { opacity: 0.95; transform: scale(0.94); }
+  70%, 100% { opacity: 0; transform: scale(1.2); }
 }
 
 

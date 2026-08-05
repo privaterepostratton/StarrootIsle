@@ -18,7 +18,7 @@ const KNOWN = new Set([
   // livestock + products
   'chicken', 'sheep', 'cow', 'pig', 'egg', 'wool', 'milk', 'truffle',
   // tools / sprinklers
-  'harvester', 'basic', 'quality', 'deluxe',
+  'basic', 'quality', 'deluxe',
   // placeables
   'path', 'flowerbed', 'bench', 'lamp', 'scarecrow', 'hive',
   // topbar / status

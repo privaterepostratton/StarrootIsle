@@ -71,6 +71,11 @@ export class BeachSeeds {
     return this.remaining === 0
   }
 
+  /** Where the uncollected crates are, for the tutorial's rings and trail. */
+  standing(): { x: number; z: number }[] {
+    return this.crates.filter((c) => !c.taken).map((c) => ({ x: c.x, z: c.z }))
+  }
+
   /**
    * Put every crate back on the sand.
    *

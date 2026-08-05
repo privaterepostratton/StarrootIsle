@@ -188,7 +188,6 @@ describe('save restore hardening', () => {
       produce,
       materials: [],
       sprinklers: [],
-      tools: [],
       selected: 0,
     } as never)
     return inv
@@ -247,14 +246,12 @@ describe('save restore hardening', () => {
     inv.coins = 1234
     inv.addProduce(melon, 2, 'gold', ['wet'], 13)
     inv.giveSeed('carrot', 7)
-    inv.buyTool('harvester', 0)
 
     const restored = new Inventory()
     restored.deserialize(JSON.parse(JSON.stringify(inv.serialize())))
 
     expect(restored.coins).toBe(1234)
     expect(restored.seedCount('carrot')).toBe(7)
-    expect(restored.hasTool('harvester')).toBe(true)
 
     const a = inv.produceStacks()[0]
     const b = restored.produceStacks()[0]
@@ -271,14 +268,5 @@ describe('spending', () => {
     inv.coins = 50
     expect(inv.spend(51)).toBe(false)
     expect(inv.coins).toBe(50)
-  })
-
-  it('buying a tool twice does not charge twice', () => {
-    const inv = new Inventory()
-    inv.coins = 1000
-    expect(inv.buyTool('harvester', 400)).toBe(true)
-    expect(inv.coins).toBe(600)
-    expect(inv.buyTool('harvester', 400)).toBe(false)
-    expect(inv.coins).toBe(600)
   })
 })

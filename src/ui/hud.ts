@@ -13,7 +13,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 /** Panels the right-hand rail can open. */
 export type NavTarget = 'quests' | 'valley' | 'pets' | 'almanac' | 'legacy' | 'menu' | 'bag'
 /** Modes the bottom-right dock arms. */
-export type ToolTarget = 'shovel' | 'sprinkler' | 'decor' | 'harvest'
+export type ToolTarget = 'shovel' | 'sprinkler' | 'decor'
 
 export interface HudActions {
   nav(target: NavTarget): void

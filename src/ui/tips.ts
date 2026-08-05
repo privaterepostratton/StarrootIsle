@@ -28,8 +28,6 @@ export interface TipContext {
   /** Late enough in the day that the raid window is coming. */
   isRaining: boolean
   petCount: number
-  hasHarvester: boolean
-  ripeAtOnce: number
 }
 
 interface Tip {
@@ -116,12 +114,6 @@ const TIPS: Tip[] = [
     when: (c) => c.level >= 3 && c.petCount === 0,
   },
   {
-    id: 'harvester',
-    title: 'This is getting tedious',
-    body: 'Buy the <b>Harvest Scythe</b> from the stall’s Tools tab. It reaps every ripe plot at once with <b>H</b>.',
-    when: (c) => c.ripeAtOnce >= 5 && !c.hasHarvester,
-  },
-  {
     id: 'neighbours',
     title: 'You have neighbours',
     body: 'Press <b>N</b> for the valley roster. Visit their farms, water their crops for XP, and climb the leaderboard.',
@@ -181,9 +173,9 @@ export class Tips {
 
   /**
    * Force a tip on screen for QA. Does not mark it seen, so the real trigger
-   * can still fire later. Defaults to the harvester tip (short "Got it" label).
+   * can still fire later. Defaults to whichever tip is first in the list.
    */
-  forceShow(id = 'harvester') {
+  forceShow(id?: string) {
     const tip = TIPS.find((t) => t.id === id) ?? TIPS[0]
     this.sticky = true
     this.cooldown = 0

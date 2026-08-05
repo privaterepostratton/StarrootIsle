@@ -9,6 +9,7 @@ import { loadModels, loadFarmerModel, loadCreatureModel, loadShopkeeperModel, lo
 import { createWorld, SHOP_POS, FARM_CENTRE, BARN_POS } from './game/world'
 import { inPlayerPlot, SPAWN } from './game/village'
 import { GuidePath } from './game/guide-path'
+import { TargetRings, type RingTarget } from './game/target-rings'
 import { preloadImages } from './ui/preload-images'
 import { groundHeight } from './game/terrain'
 import { updateGrass } from './game/vegetation'
@@ -74,8 +75,19 @@ import { enableAutoFullscreen } from './ui/fullscreen'
 import { coinIconHtml, mutationIconHtml } from './ui/icons'
 import * as Save from './game/save'
 
-// `?new` starts a fresh farm. Needed because the unload autosave means simply
-// clearing storage and reloading writes the old state straight back.
+/*
+ * `?new` starts a genuinely fresh farm, and it is the only thing that can.
+ *
+ * Clearing storage and *then* reloading does not work and never did: the
+ * beforeunload autosave fires on the way out and writes the farm that was just
+ * wiped straight back, so the next boot finds a save, restores it, and — since
+ * the tutorial only starts on a farm with no save — silently skips the FTUE.
+ * That is the "wipe sometimes doesn't retrigger the tour" bug, and the reason
+ * every wipe below navigates to `?new` instead of calling clear() itself.
+ *
+ * The clear happens here, at the top of the *next* page's life, where no unload
+ * handler is registered yet and nothing can undo it.
+ */
 const freshStart = new URLSearchParams(location.search).has('new')
 if (freshStart) history.replaceState(null, '', location.pathname)
 
@@ -88,7 +100,13 @@ enableAutoFullscreen()
 
 const audio = new Audio()
 
-if (freshStart) Save.clear()
+if (freshStart) {
+  Save.clear()
+  // The tour's progress lives in its own key, so a wiped farm that still
+  // remembers a finished tutorial opens on an empty beach with no guidance at
+  // all — the one state a fresh start must never produce.
+  forgetFtue()
+}
 declare global {
   interface Window {
     __loading?: (fraction: number, hint?: string) => void
@@ -217,7 +235,6 @@ const hud = new Hud(inventory, {
       case 'shovel': setPlaceMode(placeMode === 'shovel' ? 'none' : 'shovel'); break
       case 'sprinkler': if (requireFeature('sprinkler')) toggleSprinklerMode(); break
       case 'decor': if (requireFeature('decor')) setPlaceMode(placeMode === 'decor' ? 'none' : 'decor'); break
-      case 'harvest': harvestEverything(); break
     }
   },
 })
@@ -832,102 +849,14 @@ const neighbourUi = new NeighbourUi(hood, progression, inventory, trading, reque
 // --- settings + onboarding ---------------------------------------------------
 const settingsUi = new SettingsUi(audio, postfx, {
   resetFarm: () => {
-    Save.clear()
-    location.href = location.pathname
+    // Hand the wipe to the fresh-start boot path — see the `?new` note at the
+    // top of this file for why clearing from here cannot work.
+    location.href = `${location.pathname}?new`
   },
 })
 
 const tips = new Tips((id) => audio.play(id))
 tips.enabled = settingsUi.settings.showTips
-
-/** Harvest every ripe plot at once. Requires the Harvest Scythe. */
-function harvestEverything() {
-  if (!inventory.hasTool('harvester')) {
-    hud.toast('Buy the 🌾 Harvest Scythe from the stall’s Tools tab', 'bad')
-    audio.play('error')
-    return
-  }
-
-  const ripeBefore = farm.ripeTiles.length
-  const petBonus = pets.bonuses()
-  const picked = farm.harvestAll(
-    elapsed,
-    { weight: petBonus.weight, duplicate: petBonus.duplicate },
-    inventory.storageSpace,
-  )
-  if (picked.length === 0) {
-    const full = ripeBefore > 0
-    hud.toast(full ? 'Barn is full — sell at the seed shop' : 'Nothing is ripe yet', full ? 'bad' : 'info')
-    audio.play('error')
-    return
-  }
-  // Anything left standing was left on purpose — say so, or a scythe that
-  // stopped halfway reads as broken.
-  if (picked.length < ripeBefore) {
-    hud.toast(`Barn filled up — ${ripeBefore - picked.length} plots left ripe`, 'bad')
-  }
-
-  let totalValue = 0
-  let totalUnits = 0
-  let best = { label: '', value: 0 }
-
-  for (const { tile, result } of picked) {
-    inventory.addProduce(result.def, result.amount, result.rarity, result.mutations, result.weightKg)
-    const value = produceValue(result.def, result.rarity, result.mutations, result.weightKg)
-    totalValue += value
-    totalUnits += result.amount
-    if (value > best.value) {
-      best = { label: produceLabel(result.def, result.rarity, result.mutations), value }
-    }
-
-    quests.record('harvest', result.amount, {
-      cropId: result.def.id,
-      rarityId: result.rarity,
-      mutated: result.mutations.length > 0,
-    })
-    grantXp(
-      Math.round(
-        result.def.xp * result.amount * Math.min(8, valueMultiplier(result.rarity, result.mutations)),
-      ),
-    )
-
-    /*
-     * The reap cascades outward from the farmer instead of firing at once.
-     *
-     * Every plot popping on the same frame is a strobe that reads as one event
-     * with no shape to it. Staggering by distance turns the same harvest into a
-     * visible wave rolling across the field — and it thins the peak particle
-     * load for free. Capped so a hundred-plot farm still finishes promptly.
-     */
-    const delay = Math.min(
-      0.85,
-      Math.hypot(tile.pos.x - player.position.x, tile.pos.z - player.position.z) * 0.055,
-    )
-    const fruitColor = result.def.fruitColor
-    const leafColor = result.def.leafColor
-    const at = tile.pos.clone()
-    schedule(delay, () => {
-      bursts.emit(at, 8, [fruitColor], { kind: 'shard', speed: 3 })
-      bursts.emit(at, 4, [leafColor], { kind: 'petal', speed: 2 })
-    })
-  }
-
-  for (const pet of pets.addXp(Math.max(1, picked.length * 3))) {
-    hud.toast(`${pet.species.emoji} ${pet.species.name} reached level ${pet.level}!`, 'good')
-  }
-
-  popups.spawn(`+🪙${formatCoins(totalValue)}`, player.position, 'rare', 2)
-  hud.toast(
-    `🌾 Reaped ${picked.length} plot${picked.length === 1 ? '' : 's'} · ${totalUnits} items · 🪙${formatCoins(totalValue)}`,
-    'good',
-  )
-  if (best.value > 0 && picked.length > 1) hud.toast(`Best: ${best.label}`, 'good')
-
-  player.playAction('hoe')
-  audio.play('harvest')
-  audio.play('coin')
-  if (settingsUi.settings.shake) shake.add(Math.min(0.7, 0.15 * picked.length))
-}
 
 // --- almanac, legacy, decor --------------------------------------------------
 engine.scene.add(placeables.group)
@@ -1684,7 +1613,6 @@ function handleInput() {
   if (Input.justPressed('KeyV') && requireFeature('sprinkler')) {
     toggleSprinklerMode()
   }
-  if (Input.justPressed('KeyH')) harvestEverything()
   if (Input.justPressed('KeyO')) settingsUi.toggle()
   if (Input.justPressed('KeyL') && requireFeature('almanac')) almanacUi.toggle()
   if (Input.justPressed('KeyY') && requireFeature('legacy')) prestigeUi.toggle()
@@ -1914,6 +1842,123 @@ let wasBarnFull = false
 const guidePath = new GuidePath()
 engine.scene.add(guidePath.group)
 
+/** Rings around whatever the tutorial is currently asking the player to touch. */
+const ftueRings = new TargetRings()
+engine.scene.add(ftueRings.group)
+
+/*
+ * The trail and the rings, both read off the active tutorial step.
+ *
+ * They answer different questions and so they are gated on different distances.
+ * The trail answers "where is it" and is worth nothing once you are standing on
+ * the thing — a line of arrows pointing at a barrel two paces away reads as the
+ * game having lost track of the player. The rings answer "which one", which
+ * only means anything within sight of them. The band where both show is the
+ * approach, and that is exactly where a player wants to see both.
+ */
+const ftueRingBuf: RingTarget[] = []
+const ftueDest = new THREE.Vector3()
+
+/**
+ * Ring the first seed slot while the tutorial wants it clicked.
+ *
+ * The element is cached but re-found whenever it leaves the document, because
+ * the hotbar is rebuilt wholesale on a level-up or a loadout change — holding a
+ * stale node would leave the glow on an element nobody can see, with the live
+ * row unmarked.
+ */
+let glowSlot: Element | null = null
+function glowHotbarSlot(on: boolean) {
+  if (on && (!glowSlot || !glowSlot.isConnected)) {
+    glowSlot = document.querySelector('#hotbar .slot:not(.vacant)')
+  }
+  glowSlot?.classList.toggle('ftue-glow', on)
+}
+/**
+ * Nearer than this and the trail is put away — you are already there.
+ *
+ * Short on purpose. The three seed crates are barely four metres from where the
+ * player wakes, and that is the one moment in the game where they have never
+ * seen the trail before: a threshold generous enough to suppress it there would
+ * teach the arrows by never showing them.
+ */
+const TRAIL_MIN = 3
+/** Past this the rings are a gold speck on the horizon; the trail has it. */
+const RINGS_MAX_RANGE = 18
+
+function ftueGuideTargets(): THREE.Vector3 | null {
+  ftueRingBuf.length = 0
+  // Every panel hides the guides: a ring behind an open shop is decoration, and
+  // the finger already stands down for the same reason.
+  const hint = modalOpen() ? null : ftue.pointerHint()
+  /*
+   * The seed is picked off the hotbar before any bed can be planted, so the
+   * step's first target is a DOM element rather than anything in the scene.
+   * Glowing it is the difference between "click a bed" and "click *that*, then
+   * a bed" for a player who has not yet noticed the row exists.
+   */
+  glowHotbarSlot(hint === 'plot' && !plotUi.open)
+  if (!hint) return null
+
+  if (hint === 'seeds') {
+    for (const crate of beachSeeds.standing()) ftueRingBuf.push({ x: crate.x, z: crate.z, radius: 0.9 })
+  } else if (hint === 'trees') {
+    // Every tree still standing, because all of them have to come down and the
+    // player is free to start with whichever they like.
+    for (const tree of clearing.standing()) ftueRingBuf.push({ x: tree.x, z: tree.z, radius: 1.25 })
+  } else if (hint === 'plot') {
+    const tile = farm.tiles.find((t) => t.placed && t.state === 'tilled' && !t.crop && !t.sprinkler)
+    // Clear of the planter's rim: a ring at ground level is swallowed by the
+    // tray it is supposed to be drawing attention to.
+    if (tile) ftueRingBuf.push({ x: tile.pos.x, z: tile.pos.z, y: tile.pos.y + 0.3, radius: TILE_SIZE * 0.62 })
+  } else if (hint === 'crop') {
+    const tile = farm.tiles.find((t) => t.crop)
+    if (tile) ftueRingBuf.push({ x: tile.pos.x, z: tile.pos.z, y: tile.pos.y + 0.3, radius: TILE_SIZE * 0.62 })
+  }
+
+  /*
+   * Where to send them.
+   *
+   * For the trees it is the middle of the stand, not the nearest trunk — from
+   * the beach the four are one distant clump, and a trail that re-aims at
+   * whichever tree is marginally closer swings across the sand as the player
+   * walks. For everything else the marked thing *is* the destination.
+   */
+  if (hint === 'trees') return ftueDest.copy(FARM_CENTRE)
+  if (hint === 'shop') return ftueDest.copy(SHOP_POS)
+  if (ftueRingBuf.length === 0) return null
+
+  let best = ftueRingBuf[0]
+  let bestDist = Infinity
+  for (const target of ftueRingBuf) {
+    const d = Math.hypot(target.x - player.position.x, target.z - player.position.z)
+    if (d < bestDist) {
+      bestDist = d
+      best = target
+    }
+  }
+  return ftueDest.set(best.x, best.y ?? 0, best.z)
+}
+
+/**
+ * Point the trail somewhere, without re-solving the route every frame.
+ *
+ * `setTarget` throws the walked route away, and the tutorial hands over a fresh
+ * vector each frame — so the guard is on the *position*, not on the object.
+ */
+let guideTarget: THREE.Vector3 | null = null
+function setGuideTarget(target: THREE.Vector3 | null) {
+  if (!target) {
+    if (!guideTarget) return
+    guideTarget = null
+    guidePath.setTarget(null)
+    return
+  }
+  if (guideTarget && guideTarget.distanceToSquared(target) < 0.25) return
+  guideTarget = target.clone()
+  guidePath.setTarget(target)
+}
+
 // Ghost preview follows the mouse while the shovel is out.
 let pointerX = innerWidth / 2
 let pointerY = innerHeight / 2
@@ -1973,7 +2018,7 @@ const devUi = new DevUi({
     player.cancelMove()
     engine.focus.copy(player.position)
   },
-  showTip: () => tips.forceShow('harvester'),
+  showTip: () => tips.forceShow(),
   restartFtue: () => {
     ftue.restart()
     hud.toast('Dev: FTUE restarted', 'info')
@@ -1991,10 +2036,12 @@ const devUi = new DevUi({
      * carry one-way progress, and half-resetting them is exactly the sort of
      * inconsistent state a dev tool is supposed to help find, not create. The
      * reload is the only honest "new game" button.
+     *
+     * Navigated rather than reloaded: the boot path does the wiping, because a
+     * wipe on this side of the unload is undone by the autosave that unload
+     * fires. See the `?new` note at the top of this file.
      */
-    Save.clear()
-    forgetFtue()
-    location.reload()
+    location.href = `${location.pathname}?new`
   },
   openClearing: () => {
     clearing.restoreOpened()
@@ -2036,27 +2083,6 @@ const DIRT_STEPS = ['step-dirt-1', 'step-dirt-2'] as const
 let footstepTimer = 0
 let footstepFlip = 0
 
-/**
- * Deferred one-shot effects.
- *
- * A mass action resolves in a single frame, but showing it in a single frame is
- * a strobe. Queueing the visuals lets one press cascade — see the harvest wave,
- * which radiates outward from the farmer rather than flashing the whole field.
- */
-const scheduled: { at: number; run: () => void }[] = []
-
-function schedule(delay: number, run: () => void) {
-  scheduled.push({ at: elapsed + delay, run })
-}
-
-function runScheduled() {
-  for (let i = scheduled.length - 1; i >= 0; i--) {
-    if (scheduled[i].at > elapsed) continue
-    const entry = scheduled[i]
-    scheduled.splice(i, 1)
-    entry.run()
-  }
-}
 
 // --- loop -------------------------------------------------------------------
 function frame() {
@@ -2220,7 +2246,6 @@ function frame() {
     }
   }
   ambience.update(dt, elapsed, engine, weather, day.hour)
-  runScheduled()
   // Manual because autoReset is off (see the dev panel block). Reset *before*
   // the frame's renders so the counters cover exactly one frame.
   engine.renderer.info.reset()
@@ -2266,16 +2291,32 @@ function frame() {
    * says where.
    *
    * Polled rather than pushed for the same reason the coin objectives are:
-   * produce enters the barn from harvests, the scythe, pets and neighbour
+   * produce enters the barn from harvests, pets and neighbour
    * trades, and watching the one piece of state beats threading a callback
    * through all of them.
    */
   if (inventory.storageFull !== wasBarnFull) {
     wasBarnFull = inventory.storageFull
     world.shopMarkers.setUrgent('shop', wasBarnFull)
-    guidePath.setTarget(wasBarnFull ? SHOP_POS : null)
   }
+
+  /*
+   * The tutorial owns the trail while it is running.
+   *
+   * A new player can fill the barn during the opening — five turnips is not
+   * many — and the two guides pointing opposite ways would leave them following
+   * a trail to a stall that does not exist until level 2. The full barn still
+   * has its beacon and its toast; it just does not get the arrows until the
+   * tutorial is done with them.
+   */
+  const ftueTarget = ftueGuideTargets()
+  const trailTo = ftueTarget ?? (wasBarnFull ? SHOP_POS : null)
+  const range = trailTo ? Math.hypot(trailTo.x - player.position.x, trailTo.z - player.position.z) : Infinity
+  setGuideTarget(range > TRAIL_MIN ? trailTo : null)
   guidePath.update(dt, player.position)
+
+  ftueRings.set(ftueTarget && range < RINGS_MAX_RANGE ? ftueRingBuf : [])
+  ftueRings.update(dt)
 
   // Grade toward the night look across dusk rather than snapping at a threshold.
   const h = day.hour
@@ -2399,7 +2440,6 @@ function frame() {
     tilledCount: farm.tiles.filter((t) => t.state === 'tilled').length,
     plantedCount: farm.tiles.filter((t) => t.crop).length,
     ripeCount: farm.ripeTiles.length,
-    ripeAtOnce: farm.ripeTiles.length,
     seedsHeld: [...inventory.seeds.values()].reduce((a, b) => a + b, 0),
     produceStacks: inventory.produce.size,
     hasHarvested: inventory.produce.size > 0,
@@ -2407,7 +2447,6 @@ function frame() {
     nearShop: shopInRange(),
     isRaining: weather.isRaining,
     petCount: pets.owned.length,
-    hasHarvester: inventory.hasTool('harvester'),
   })
 
   saveTimer += dt
@@ -2453,7 +2492,7 @@ frame()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, wildlife, clearing, beachSeeds,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds,
   }
 
   /**

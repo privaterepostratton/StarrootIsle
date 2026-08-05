@@ -441,20 +441,6 @@ export class Inventory {
     return true
   }
 
-  /** One-off tools the player owns permanently. */
-  readonly tools = new Set<string>()
-
-  hasTool(id: string) {
-    return this.tools.has(id)
-  }
-
-  buyTool(id: string, price: number) {
-    if (this.tools.has(id) || !this.spend(price)) return false
-    this.tools.add(id)
-    this.emit()
-    return true
-  }
-
   sprinklerCount(id: string) {
     return this.sprinklers.get(id) ?? 0
   }
@@ -512,11 +498,7 @@ export class Inventory {
     return total
   }
 
-  /**
-   * Wipe for a new run after retirement. Tools are kept deliberately — they
-   * are quality-of-life the player already paid for, and making them re-buy a
-   * Harvest Scythe every prestige would make retiring feel like a punishment.
-   */
+  /** Wipe for a new run after retirement. */
   reset(startCoins: number) {
     this.coins = startCoins
     this.seeds.clear()
@@ -552,7 +534,6 @@ export class Inventory {
       produce: [...this.produce.values()],
       materials: [...this.materials],
       sprinklers: [...this.sprinklers],
-      tools: [...this.tools],
       selected: this.selected,
       storageLevel: this.storageLevel,
     }
@@ -585,8 +566,6 @@ export class Inventory {
     for (const [k, v] of d.materials ?? []) this.materials.set(k, v)
     this.sprinklers.clear()
     for (const [k, v] of d.sprinklers ?? []) this.sprinklers.set(k, v)
-    this.tools.clear()
-    for (const id of d.tools ?? []) this.tools.add(id)
     this.selected = d.selected ?? 0
     // Saves from before the barn existed load at level 0. Those farms can be
     // holding more than the starting cap, which is why every capacity check is

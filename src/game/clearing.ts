@@ -122,6 +122,11 @@ export class Clearing {
     return this.trees.filter((t) => !t.cut).length
   }
 
+  /** Where the trees still standing are, for the tutorial's rings and trail. */
+  standing(): { x: number; z: number }[] {
+    return this.trees.filter((t) => !t.cut).map((t) => ({ x: t.x, z: t.z }))
+  }
+
   /** The tree the player is standing next to, or null. */
   targetNear(pos: THREE.Vector3): Standing | null {
     let best: Standing | null = null

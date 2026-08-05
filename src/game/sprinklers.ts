@@ -67,31 +67,3 @@ export const SPRINKLER_TIERS: SprinklerTier[] = [
 
 export const SPRINKLER_BY_ID = new Map(SPRINKLER_TIERS.map((t) => [t.id, t]))
 
-/**
- * One-off tools. Unlike sprinklers these are not placed and there is only ever
- * one — buying it flips a permanent flag on the inventory.
- */
-export interface ToolDef {
-  id: string
-  name: string
-  emoji: string
-  price: number
-  unlockLevel: number
-  blurb: string
-  /** Key that activates it, shown in the shop and the help text. */
-  key: string
-}
-
-export const TOOLS: ToolDef[] = [
-  {
-    id: 'harvester',
-    name: 'Harvest Scythe',
-    emoji: '🌾',
-    price: 1500,
-    unlockLevel: 4,
-    blurb: 'Reap every ripe plot on the farm at once.',
-    key: 'H',
-  },
-]
-
-export const TOOL_BY_ID = new Map(TOOLS.map((t) => [t.id, t]))

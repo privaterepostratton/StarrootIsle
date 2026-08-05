@@ -1,7 +1,7 @@
 import { CROPS, growSecondsFor, type CropDef } from '../game/crops'
 import { unlockLevelFor, type Progression } from '../game/progression'
 import { MATERIALS } from '../game/materials'
-import { SPRINKLER_TIERS, TOOLS } from '../game/sprinklers'
+import { SPRINKLER_TIERS } from '../game/sprinklers'
 import { PLACEABLES } from '../game/placeables'
 import { stackValue, type Inventory } from '../game/inventory'
 import type { Stock } from '../game/stock'
@@ -122,50 +122,6 @@ export class ShopUi {
       ? 'Sprinklers keep nearby plots watered forever and raise your odds of rare crops.<br>Tap the sprinkler button in the corner to place one.'
       : 'Sprinklers keep nearby plots watered forever and raise your odds of rare crops.<br>Press <b>V</b> to place one.'
     this.list.appendChild(intro)
-
-    // One-off tools first — they are permanent upgrades, not consumables.
-    for (const tool of TOOLS) {
-      const locked = this.progression.level < tool.unlockLevel
-      const owned = this.inventory.hasTool(tool.id)
-      const affordable = this.inventory.coins >= tool.price
-
-      const row = document.createElement('div')
-      row.className = `row${locked || (!affordable && !owned) ? ' locked' : ''}`
-      row.innerHTML = `
-        <div class="emoji">${locked ? iconHtml('locked', '🔒') : iconHtml(tool.id, tool.emoji)}</div>
-        <div class="meta">
-          <div class="name">${tool.name}${owned ? ' <span class="sub">· owned</span>' : ''}</div>
-          <div class="sub">${
-            locked
-              ? `Unlocks at level ${tool.unlockLevel}`
-              : this.touch
-                ? tool.blurb
-                : `${tool.blurb} Press <b>${tool.key}</b>.`
-          }</div>
-        </div>`
-
-      if (!locked && !owned) {
-        const buy = document.createElement('button')
-        buy.className = 'buy'
-        buy.textContent = `🪙 ${formatCoins(tool.price)}`
-        buy.disabled = !affordable
-        buy.addEventListener('click', () => {
-          if (this.inventory.buyTool(tool.id, tool.price)) {
-            this.onSfx('buy')
-            this.onToast(
-              this.touch ? `Bought the ${tool.name}` : `Bought the ${tool.name} — press ${tool.key} to use it`,
-              'good',
-            )
-          } else {
-            this.onSfx('error')
-            this.onToast('Not enough coins', 'bad')
-          }
-        })
-        row.appendChild(buy)
-      }
-
-      this.list.appendChild(row)
-    }
 
     for (const tier of SPRINKLER_TIERS) {
       const locked = this.progression.level < tier.unlockLevel

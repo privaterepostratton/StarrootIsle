@@ -1029,42 +1029,6 @@ export class Farm {
     return this.tiles.filter((t) => t.crop && t.crop.progress >= 1)
   }
 
-  /**
-   * Harvest every ripe plot at once.
-   *
-   * This exists because clicking plots one at a time scales badly — a
-   * fifty-plot farm is fifty menu round-trips for what is conceptually a
-   * single decision. Results come back per-tile rather than aggregated so the
-   * caller can still place a burst on each plot and total up the value itself.
-   */
-  /**
-   * Pick everything ripe, up to `unitLimit` units of produce.
-   *
-   * The limit is the barn's remaining space, and it is enforced *before* each
-   * plant is picked rather than after: harvesting is destructive, so a plant
-   * picked into a full barn is produce deleted. Stopping early leaves the rest
-   * ripe in the ground, which is exactly where the player wants them until they
-   * have sold something.
-   */
-  harvestAll(
-    elapsed: number,
-    bonuses: { weight?: number; duplicate?: number } = {},
-    unitLimit = Infinity,
-  ): { tile: Tile; result: HarvestResult }[] {
-    const picked: { tile: Tile; result: HarvestResult }[] = []
-    let room = unitLimit
-    for (const tile of this.ripeTiles) {
-      // The yield is known from the crop before picking; duplicate pets can beat
-      // it, so this is a floor, and the storage clamp catches the overshoot.
-      if (room < (tile.crop?.def.yield ?? 1)) break
-      const result = this.harvest(tile, elapsed, bonuses)
-      if (!result) continue
-      picked.push({ tile, result })
-      room -= result.amount
-    }
-    return picked
-  }
-
   private clearSparkle(crop: PlantedCrop) {
     if (!crop.sparkle) return
     crop.model.remove(crop.sparkle.object)
