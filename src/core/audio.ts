@@ -105,10 +105,6 @@ export class Audio {
   private raining = false
 
   muted = false
-  /** Portal mute (CrazyGames settings) — overrides the in-game toggle. */
-  private portalSuspended = false
-  /** Ad playback mute — separate so portal mute still wins after the ad. */
-  private adSuspended = false
   private hiddenSuspended = false
   private started = false
 
@@ -123,36 +119,18 @@ export class Audio {
 
   /** True when the game must be silent regardless of the Sound toggle. */
   private isSilent() {
-    return this.muted || this.portalSuspended || this.adSuspended || this.hiddenSuspended
+    return this.muted || this.hiddenSuspended
   }
 
   private refreshMaster() {
     this.applyGain(this.master, this.isSilent() ? 0 : this.masterVolume)
   }
 
-  /** CrazyGames / Playgama portal mute — hard silence; in-game toggle cannot override. */
-  suspendForPortal() {
-    this.portalSuspended = true
-    this.refreshMaster()
-    this.syncSoundtrack()
-    void this.ctx?.suspend()
-  }
-
-  resumeFromPortal() {
-    this.portalSuspended = false
-    this.refreshMaster()
-    if (!this.adSuspended && !this.isSilent()) void this.ctx?.resume()
-    this.syncSoundtrack()
-  }
-
   /**
    * The tab went to the background.
    *
-   * Its own flag rather than reusing the portal's, because the reasons are
-   * independent and can overlap: a portal can mute the game while it is
-   * foreground, and the player can tab away during an ad. Combining them in
-   * `isSilent` means whichever ends last is the one that decides, and nothing
-   * has to remember what the others were doing.
+   * Its own flag rather than folding into `muted`, so restoring silence on the
+   * way back cannot clobber whatever the player had the Sound toggle set to.
    *
    * The game itself keeps running — `visibilitychange` in main.ts credits the
    * time away as offline growth — but a farming game singing to an empty tab is
@@ -176,21 +154,6 @@ export class Audio {
     this.hiddenSuspended = false
     this.refreshMaster()
     if (!this.isSilent()) void this.ctx?.resume()
-    this.syncSoundtrack()
-  }
-
-  /** Mute + suspend around interstitial / rewarded ads. */
-  suspendForAd() {
-    this.adSuspended = true
-    this.refreshMaster()
-    this.syncSoundtrack()
-    void this.ctx?.suspend()
-  }
-
-  resumeFromAd() {
-    this.adSuspended = false
-    this.refreshMaster()
-    if (!this.portalSuspended && !this.isSilent()) void this.ctx?.resume()
     this.syncSoundtrack()
   }
 
@@ -224,7 +187,7 @@ export class Audio {
     this.master = this.ctx.createGain()
     this.master.gain.value = this.isSilent() ? 0 : this.masterVolume
     this.master.connect(this.ctx.destination)
-    if (this.portalSuspended || this.adSuspended) void this.ctx.suspend()
+    if (this.hiddenSuspended) void this.ctx.suspend()
 
     // Music sits well under SFX — it is background, and the player needs to
     // hear the coin chime over it without ducking.
@@ -404,7 +367,7 @@ export class Audio {
     }
   }
 
-  /** Pause/resume loops to match mute / portal / ad state. */
+  /** Pause/resume loops to match mute / hidden-tab state. */
   private syncSoundtrack() {
     if (!this.dayEl || !this.nightEl) return
     if (this.isSilent()) {
@@ -426,7 +389,7 @@ export class Audio {
 
   setMuted(muted: boolean) {
     this.muted = muted
-    // Portal/ad hard-mute still wins — the toggle only stores preference.
+    // A hidden tab still wins — the toggle only stores the preference.
     this.refreshMaster()
     this.syncSoundtrack()
     this.syncRain(this.raining && !this.isSilent())

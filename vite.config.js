@@ -152,10 +152,10 @@ function publicUrlsRelative() {
 export default defineConfig({
   plugins: [uiToolServer(), publicUrlsRelative()],
   /*
-   * Relative, not absolute. A portal serves the build from a subdirectory on its
-   * own CDN, so `/assets/index.js` resolves against the CDN root and 404s —
-   * every zip uploaded to Playgama or CrazyGames has to reference its assets
-   * relative to index.html. build-web.bat fails the build if this regresses.
+   * Relative, not absolute. A host that serves the build from a subdirectory or
+   * a CDN resolves `/assets/index.js` against its own root and 404s — the zip
+   * has to reference its assets relative to index.html, and it must also run
+   * straight off the filesystem. build-web.bat fails the build if this regresses.
    */
   base: './',
   server: {
@@ -164,8 +164,8 @@ export default defineConfig({
   },
   build: {
     /*
-     * Boot uses top-level await (platform init, asset preload, save restore),
-     * which is an ES2022 feature. Vite's default es2020 target refuses it at
+     * Boot uses top-level await (asset preload, save restore), which is an
+     * ES2022 feature. Vite's default es2020 target refuses it at
      * build time even though every browser this game targets (and the dev
      * server) runs it fine.
      */

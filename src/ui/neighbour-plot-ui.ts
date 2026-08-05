@@ -23,9 +23,6 @@ export interface NeighbourPlotActions {
   /** Finish the crop for them, for coins. */
   ripen(neighbour: Neighbour, plot: NeighbourPlot, cost: number): void
   coins(): number
-  /** Rewarded-ad ripen (free). Hidden when ads unavailable. */
-  canWatchAd?: () => boolean
-  watchRipen?: (neighbour: Neighbour, plot: NeighbourPlot) => void
 }
 
 /**
@@ -244,15 +241,5 @@ export class NeighbourPlotUi {
       () => this.actions.ripen(neighbour, plot, cost),
       { paid: true },
     )
-
-    if (this.actions.canWatchAd?.() && this.actions.watchRipen) {
-      this.button(
-        iconHtml('bolt', '⚡', 'btn-ico'),
-        'Watch & finish',
-        'Free favour — watch a short video',
-        true,
-        () => this.actions.watchRipen!(neighbour, plot),
-      )
-    }
   }
 }

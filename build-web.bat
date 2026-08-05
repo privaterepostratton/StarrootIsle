@@ -58,7 +58,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [build-web] Vite production build (CrazyGames / Playgama / offline client)...
+echo [build-web] Vite production build (web / offline client)...
 echo.
 
 call npm run build

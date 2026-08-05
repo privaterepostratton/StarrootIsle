@@ -20,9 +20,6 @@ export interface PlotActions {
   water(tile: Tile): void
   harvest(tile: Tile): void
   instantGrow(tile: Tile, cost: number): void
-  /** Rewarded-ad instant grow (free). Hidden when ads unavailable. */
-  canWatchAd?: () => boolean
-  watchInstantGrow?: (tile: Tile) => void
 }
 
 /** Coins to skip the remaining growth on a crop. Scales with what is left, so
@@ -301,15 +298,5 @@ export class PlotUi {
       () => this.actions.instantGrow(tile, cost),
       { paid: true },
     )
-
-    if (this.actions.canWatchAd?.() && this.actions.watchInstantGrow) {
-      this.button(
-        iconHtml('bolt', '⚡', 'btn-ico'),
-        'Watch & grow',
-        'Free — watch a short video',
-        true,
-        () => this.actions.watchInstantGrow!(tile),
-      )
-    }
   }
 }

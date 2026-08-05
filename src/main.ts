@@ -73,11 +73,9 @@ import { TouchControls } from './ui/touch'
 import { enableAutoFullscreen } from './ui/fullscreen'
 import { coinIconHtml, mutationIconHtml } from './ui/icons'
 import * as Save from './game/save'
-import { platform } from './platform/platform'
 
 // `?new` starts a fresh farm. Needed because the unload autosave means simply
-// clearing storage and reloading writes the old state straight back. Cleared
-// *after* platform.init so CrazyGames cloud data is wiped too, not only local.
+// clearing storage and reloading writes the old state straight back.
 const freshStart = new URLSearchParams(location.search).has('new')
 if (freshStart) history.replaceState(null, '', location.pathname)
 
@@ -88,31 +86,9 @@ const engine = new Engine(canvas)
 // a tap on the splash still counts as the user gesture.
 enableAutoFullscreen()
 
-// Audio + portal hooks need to exist before assets finish so CrazyGames can
-// apply the initial mute setting as soon as init resolves.
 const audio = new Audio()
-let portalPaused = false
 
-await platform.init({
-  onAudioSuspend: () => audio.suspendForPortal(),
-  onAudioResume: () => audio.resumeFromPortal(),
-  onGamePause: () => {
-    portalPaused = true
-  },
-  onGameResume: () => {
-    portalPaused = false
-  },
-})
-platform._onAdStart = () => {
-  audio.suspendForAd()
-  portalPaused = true
-}
-platform._onAdEnd = () => {
-  audio.resumeFromAd()
-  portalPaused = false
-}
 if (freshStart) Save.clear()
-platform.setLoadingProgress(0.15)
 declare global {
   interface Window {
     __loading?: (fraction: number, hint?: string) => void
@@ -149,12 +125,9 @@ const [, , , , , , , skyTex] = await Promise.all([
  */
 window.__loading?.(0.75, 'Unpacking the toolshed…')
 await preloadImages((f) => {
-  const p = 0.75 + f * 0.1
-  platform.setLoadingProgress(p)
-  window.__loading?.(p)
+  window.__loading?.(0.75 + f * 0.1)
 })
 
-platform.setLoadingProgress(0.85)
 window.__loading?.(0.85, 'Planting the forest…')
 const world = createWorld(engine.renderer)
 engine.scene.add(world.group)
@@ -368,9 +341,6 @@ function grantXp(amount: number) {
       featureNote ? `${featureNote.emoji} ${featureNote.name} unlocked!` : unlocked.length ? note : (reward?.note ?? 'Keep going!'),
       rewards,
     )
-    platform.happytime()
-    platform.setGameContext({ level })
-
     hud.rebuildHotbar(progression.level)
     // Whatever this level brings to the village — the stall, the barn, the next
     // neighbour — turns up as part of the level-up rather than on the next load.
@@ -594,20 +564,6 @@ const plotUi = new PlotUi(inventory, {
     farm.instantGrow(tile, elapsed)
     audio.play('instant-grow')
     hud.toast('⚡ Grown instantly', 'good')
-  },
-  canWatchAd: () => platform.rewardedAvailable(),
-  watchInstantGrow: (tile) => {
-    platform.showRewarded(
-      () => {
-        farm.instantGrow(tile, elapsed)
-        audio.play('instant-grow')
-        hud.toast('⚡ Grown instantly', 'good')
-        if (plotUi.open) plotUi.refresh()
-      },
-      (ok) => {
-        if (!ok) hud.toast('Ad unavailable — try again later', 'info')
-      },
-    )
   },
 })
 
@@ -1073,23 +1029,6 @@ const neighbourPlotUi = new NeighbourPlotUi({
     grantXp(12)
     hud.toast(`${neighbour.profile.name} will not forget that`, 'good')
   },
-  canWatchAd: () => platform.rewardedAvailable(),
-  watchRipen: (neighbour, plot) => {
-    platform.showRewarded(
-      () => {
-        if (!neighbour.forceRipen(plot)) return
-        bursts.emit(plot.pos, 20, [0x8ef27a, 0xfff0a0], { kind: 'spark', speed: 3.4 })
-        popups.spawn('Grown!', plot.pos, 'rare', 1.8)
-        audio.play('levelup')
-        grantXp(12)
-        hud.toast(`${neighbour.profile.name} will not forget that`, 'good')
-        if (neighbourPlotUi.open) neighbourPlotUi.refresh()
-      },
-      (ok) => {
-        if (!ok) hud.toast('Ad unavailable — try again later', 'info')
-      },
-    )
-  },
 })
 
 /** Anything that swallows input: movement, picking and prompts all stand down. */
@@ -1114,43 +1053,7 @@ const modalOpen = () =>
 const panelOpen = () =>
   levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || questUi.open || animalUi.open || neighbourUi.open || petUi.open || bagUi.open
 
-/** True when the player is actively farming (not in a menu / ad pause). */
-const inGameplay = () => !portalPaused && !modalOpen()
-
-let gameplayActive = false
-function syncGameplayLifecycle() {
-  const playing = inGameplay()
-  if (playing && !gameplayActive) {
-    gameplayActive = true
-    platform.gameplayStart()
-  } else if (!playing && gameplayActive) {
-    gameplayActive = false
-    platform.gameplayStop()
-  }
-}
-
-// Ad callbacks need the lifecycle helpers above — rebind after they exist.
-platform._onAdStart = () => {
-  audio.suspendForAd()
-  portalPaused = true
-  if (gameplayActive) {
-    gameplayActive = false
-    platform.gameplayStop()
-  }
-}
-platform._onAdEnd = () => {
-  audio.resumeFromAd()
-  portalPaused = false
-  syncGameplayLifecycle()
-}
-
-// Midgame interstitial after the level-up celebration — a natural break.
-levelUpScreen.onDismissed = () => {
-  platform.showInterstitial('level_up')
-}
-
 // --- restore ----------------------------------------------------------------
-platform.setLoadingProgress(0.9)
 window.__loading?.(0.9, 'Waking the neighbours…')
 const saved = await Save.load()
 // FTUE starts only on a genuinely fresh farm; see ftue.ts for the resume rules.
@@ -2159,19 +2062,11 @@ function runScheduled() {
 function frame() {
   requestAnimationFrame(frame)
 
-  // Portal / ad pause: freeze simulation, keep the last frame on screen.
-  if (portalPaused) {
-    engine.render()
-    Input.endFrame()
-    return
-  }
-
   const dt = engine.tick()
   elapsed += dt
   const petBonuses = pets.bonuses()
 
   handleInput()
-  syncGameplayLifecycle()
 
   player.update(dt, engine, world.obstacles, world.walls, modalOpen())
 
@@ -2550,20 +2445,15 @@ function frame() {
  */
 applyArrivals()
 
-platform.setLoadingProgress(1)
 window.__loading?.(1)
-platform.loadComplete()
-platform.setGameContext({ level: progression.level })
 frame()
-// First gameplay signal once the loop is live and no modal is up.
-syncGameplayLifecycle()
 
 // Dev-only inspection handle. Vite folds import.meta.env.DEV to false in a
 // production build, so this whole block is dropped by tree-shaking.
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, platform, guidePath, wildlife, clearing, beachSeeds,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, wildlife, clearing, beachSeeds,
   }
 
   /**

@@ -1,4 +1,4 @@
-# Mirror dist/ -> builds/ and create a Playgama-safe zip (index.html at archive root, forward slashes only).
+# Mirror dist/ -> builds/ and create a hosting-safe zip (index.html at archive root, forward slashes only).
 param(
   [Parameter(Mandatory = $true)]
   [string]$ProjectRoot,
@@ -15,7 +15,7 @@ $builds = Join-Path $root 'builds'
 $zipPath = Join-Path $builds ("Build-{0}.zip" -f $Version)
 
 if (-not (Test-Path -LiteralPath $dist)) {
-  Write-Error 'Missing dist folder - run npm run build:playgama first.'
+  Write-Error 'Missing dist folder - run npm run build first.'
 }
 
 if (-not (Test-Path -LiteralPath $builds)) {

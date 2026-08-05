@@ -13,7 +13,6 @@ import type { Prestige } from './prestige'
 import type { Trading } from './trading'
 import type { Requests } from './requests'
 import type { Placeables } from './placeables'
-import { platform } from '../platform/platform'
 
 const KEY = 'sprout-valley-save-v1'
 
@@ -136,29 +135,15 @@ export function save(
     requests,
     placeables,
   )
-  /*
-   * CrazyGames Data module must be the sole progress store on portal builds.
-   * Dual-writing to window.localStorage fights guest→account sync (CG docs).
-   * Standalone keeps localStorage only.
-   */
-  if (platform.usesCloudSave()) {
-    platform.persistSave(KEY, data)
-  } else {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(data))
-    } catch {
-      // Private-browsing / quota. Losing a save is not worth killing the frame.
-    }
+  try {
+    localStorage.setItem(KEY, JSON.stringify(data))
+  } catch {
+    // Private-browsing / quota. Losing a save is not worth killing the frame.
   }
 }
 
 /**
  * Load and migrate.
- *
- * On CrazyGames / Playgama, the portal Data module is canonical. If it is empty
- * but a legacy localStorage save exists, that save is copied into the portal
- * once so returning players keep progress — then all further writes stay on
- * the Data module only.
  *
  * Every sub-system's `deserialize` already tolerates missing fields, and
  * produce stacks are rebuilt from the crop table rather than trusted, so an
@@ -172,21 +157,6 @@ export function save(
  */
 export async function load(): Promise<SaveData | null> {
   try {
-    if (platform.usesCloudSave()) {
-      const cloud = await platform.loadSave(KEY)
-      if (cloud && typeof cloud === 'object') {
-        const ok = validate(cloud as SaveData)
-        if (ok) return ok
-      }
-      const local = readLocal()
-      if (local) {
-        // One-time migrate into the portal data module.
-        platform.persistSave(KEY, local)
-        return local
-      }
-      return null
-    }
-
     return readLocal()
   } catch {
     return null
@@ -194,7 +164,6 @@ export async function load(): Promise<SaveData | null> {
 }
 
 export function clear() {
-  if (platform.usesCloudSave()) platform.clearSave(KEY)
   try {
     localStorage.removeItem(KEY)
   } catch {

@@ -2684,8 +2684,8 @@ body.panel-open #ui #questTracker {
    *
    * This clamp used to live in the touch block, which is the one place it was
    * not needed: a phone in landscape is short, but so is a desktop browser with
-   * a portal's chrome around it — the CrazyGames embed is about 570px tall. With
-   * no clamp the card simply overflowed and `overflow: hidden` on the container
+   * site chrome around the game — an embed can be under 600px tall. With no
+   * clamp the card simply overflowed and `overflow: hidden` on the container
    * ate the Continue button, which is the card's only control. Height is the
    * thing that matters here, so height is what it keys on.
    */
