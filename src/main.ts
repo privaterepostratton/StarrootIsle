@@ -13,7 +13,7 @@ import { TargetRings, type RingTarget } from './game/target-rings'
 import { preloadImages } from './ui/preload-images'
 import { groundHeight } from './game/terrain'
 import { updateGrass } from './game/vegetation'
-import { Farm, TILE_SIZE, type Tile } from './game/farm'
+import { Farm, GARDEN_LEVELS, TILE_SIZE, type Tile } from './game/farm'
 import { CROPS, CROP_BY_ID } from './game/crops'
 import { rng } from './assets/style'
 import { Player, PLAYER_HEIGHT } from './game/player'
@@ -40,8 +40,9 @@ import { PlotUi } from './ui/plot-ui'
 import { AnimalUi } from './ui/animal-ui'
 import { Pasture, type AnimalDef } from './game/animals'
 import { Wildlife, type TameTarget } from './game/wildlife'
-import { Clearing, CLEAR_COST } from './game/clearing'
+import { Clearing, CLEAR_COST, type Standing } from './game/clearing'
 import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
+import { Flotsam, type FlotsamPrize } from './game/flotsam'
 import { Stock } from './game/stock'
 import { Audio } from './core/audio'
 import { Pets, type EggDef } from './game/pets'
@@ -56,7 +57,7 @@ import { Popups, Shake } from './ui/popups'
 import { RARITY_BY_ID } from './game/mutations'
 import { SettingsUi } from './ui/settings-ui'
 import { BagUi } from './ui/bag-ui'
-import { Ftue, forgetFtue } from './ui/ftue'
+import { Ftue, createUpgradeTour, forgetFtue, forgetUpgradeTour } from './ui/ftue'
 import { DevUi } from './ui/dev-ui'
 import { isEditingUi } from './ui/layout/editing'
 import { Tips } from './ui/tips'
@@ -106,6 +107,7 @@ if (freshStart) {
   // remembers a finished tutorial opens on an empty beach with no guidance at
   // all — the one state a fresh start must never produce.
   forgetFtue()
+  forgetUpgradeTour()
 }
 declare global {
   interface Window {
@@ -668,6 +670,60 @@ beachSeeds.onEmptied = () => {
   hud.toast('🥬 Turnip seeds — now you need somewhere to plant them', 'good')
 }
 
+// --- the tide keeps giving -------------------------------------------------
+/**
+ * What is in a barrel that washes up.
+ *
+ * Rolled here rather than inside Flotsam because the answer depends on the run:
+ * seeds are worthless if they are for a crop the player has not unlocked, and a
+ * sprinkler before level 3 is a trophy they cannot place. The weights are
+ * deliberately dull — coins most of the time — so the rarer finds still land.
+ */
+function rollFlotsam(): FlotsamPrize {
+  const roll = Math.random()
+  const unlocked = CROPS.filter((c) => c.unlockLevel <= progression.level)
+
+  if (roll < 0.12 && progression.level >= SPRINKLER_TIERS[0].unlockLevel) {
+    const tier = SPRINKLER_TIERS[0]
+    return { kind: 'sprinkler', amount: 1, id: tier.id, label: `+${tier.emoji} ${tier.name}` }
+  }
+
+  if (roll < 0.55 && unlocked.length > 0) {
+    // Weighted to the back of the unlocked list: the crop they just earned is a
+    // better find than another handful of the turnips they started with.
+    const pick = unlocked[Math.floor(Math.pow(Math.random(), 0.6) * unlocked.length)]
+    const amount = 2 + Math.floor(Math.random() * 3)
+    return { kind: 'seeds', amount, id: pick.id, label: `+${amount} ${pick.emoji}` }
+  }
+
+  // Scaled by level so a barrel stays worth crossing the beach for later on,
+  // without ever being the reason a player can afford anything.
+  const amount = Math.round((25 + Math.random() * 55) * (1 + progression.level * 0.35))
+  return { kind: 'coins', amount, label: `+${formatCoins(amount)} 🪙` }
+}
+
+const flotsam = new Flotsam(rollFlotsam)
+engine.scene.add(flotsam.group)
+
+flotsam.onWashUp = (at) => {
+  // Splash where it grounds, and a line in the log: the player is usually
+  // inland when this happens, and a barrel nobody is told about is a barrel
+  // nobody finds.
+  bursts.emit(at, 14, [0xdff2ff, 0x9fd8ff], { kind: 'shard', speed: 2.2, life: 0.8, scale: 0.12 })
+  hud.toast('🛢️ Something washed up on the beach', 'info')
+}
+
+flotsam.onCollect = (at, prize) => {
+  if (prize.kind === 'coins') inventory.coins += prize.amount
+  else if (prize.kind === 'seeds' && prize.id) inventory.giveSeed(prize.id, prize.amount)
+  else if (prize.kind === 'sprinkler' && prize.id) inventory.giveSprinkler(prize.id, prize.amount)
+
+  bursts.emit(at, 14, [0xfff0a0, 0x9fe8b5], { kind: 'spark', speed: 2.6, life: 0.7 })
+  popups.spawn(prize.label, at, prize.kind === 'sprinkler' ? 'rare' : 'good', 1.6)
+  audio.play('collect')
+  grantXp(4)
+}
+
 // --- the opening clearing ----------------------------------------------------
 /*
  * The stand of trees on the ground the farm will occupy. Felling the last one
@@ -676,16 +732,40 @@ beachSeeds.onEmptied = () => {
 const clearing = new Clearing(world.obstacles, rng(0xc1ea21))
 engine.scene.add(clearing.group)
 
+/*
+ * Two beats, two effects.
+ *
+ * The axe landing throws chips — small, fast, and from the cut itself, at waist
+ * height where the blade went in. The trunk hitting the ground a second later
+ * is the heavy one: a wall of dust off the ground and the crown's leaves
+ * shaken loose. Firing everything on the cut, which is what this used to do,
+ * spends the whole effect on the quieter of the two moments.
+ */
 clearing.onCut = (at) => {
-  bursts.emit(at, 16, [0x7ec850, 0x4a7a2c], { kind: 'petal', speed: 3, life: 1.2, jitter: 0.3 })
-  bursts.emit(at, 10, [0xc7ad85, 0x8a6238], { kind: 'puff', speed: 1.2, scale: 0.22 })
+  const cutHeight = at.clone()
+  cutHeight.y += 0.9
+  bursts.emit(cutHeight, 14, [0xc7ad85, 0x8a6238, 0xe0cba0], {
+    kind: 'shard',
+    speed: 3.4,
+    life: 0.9,
+    scale: 0.1,
+    jitter: 0.35,
+  })
+  audio.play('till')
+  shake.add(0.16)
+}
+
+clearing.onLanded = (at) => {
+  bursts.emit(at, 22, [0x7ec850, 0x4a7a2c, 0x9ad86a], { kind: 'petal', speed: 3.2, life: 1.6, jitter: 0.45 })
+  bursts.emit(at, 18, [0xc9b48e, 0xa8894f], { kind: 'puff', speed: 1.6, life: 1.1, scale: 0.32 })
   audio.play('harvest')
-  shake.add(0.22)
+  shake.add(0.34)
 }
 
 clearing.onOpened = () => {
-  farm.openClearing()
-  world.setPlayerFenceVisible(true)
+  // `true` asks the beds to grow in rather than appear — see Farm.openClearing.
+  farm.openClearing(true)
+  world.setGardenLevel(farm.gardenLevel)
   hud.toast('🌱 The ground is clear — your farm is yours', 'good')
   audio.play('levelup')
   grantXp(20)
@@ -896,6 +976,11 @@ const prestigeUi = new PrestigeUi(prestige, progression, () => {
     if (tile) farm.placePlot(tile)
   }
 
+  // Retiring hands back the land as well as the crops, so the fence has to come
+  // back in to match — otherwise the rails stay out at the size of a farm that
+  // no longer exists, and the mailbox with them.
+  world.setGardenLevel(farm.gardenLevel)
+
   hud.rebuildHotbar(1)
   hud.updateLevel(progression)
   hud.updateShovel(shovelMode(), farm.nextPlotCost)
@@ -987,6 +1072,48 @@ window.__loading?.(0.9, 'Waking the neighbours…')
 const saved = await Save.load()
 // FTUE starts only on a genuinely fresh farm; see ftue.ts for the resume rules.
 const ftue = new Ftue(!saved, (id) => audio.play(id))
+
+/**
+ * The second tour, and the coin to follow it with.
+ *
+ * Teaching the upgrade without funding it would be an advert: the player would
+ * walk to the mailbox, read a price they cannot meet and walk away, and the one
+ * time the game had their attention on the mechanic would be spent telling them
+ * no. Topped up to exactly the asking price — enough to do the thing once, and
+ * not a coin of head start beyond it.
+ */
+const UPGRADE_TOUR_LEVEL = 2
+const upgradeTour = createUpgradeTour((id) => audio.play(id))
+
+function startUpgradeTour() {
+  /*
+   * One tutorial at a time.
+   *
+   * The opening tour can still be running at level 2 — a player who skips
+   * ahead, or simply levels fast — and two cards on screen fight over the same
+   * corner of the HUD while both fingers point at different things. The
+   * upgrade tour waits its turn; this is checked from the frame loop, so it
+   * starts the moment the opening one is out of the way.
+   */
+  if (ftue.active) return
+  if (upgradeTour.finished || upgradeTour.active || !farm.canUpgrade) return
+  if (progression.level < UPGRADE_TOUR_LEVEL) return
+  const cost = farm.nextUpgradeCost
+  if (inventory.coins < cost) {
+    /*
+     * Paid as doobers, not by setting the number.
+     *
+     * They credit their own value when they land, so assigning the balance as
+     * well would hand over twice the money — and a bare assignment does not
+     * emit, so the coin chip would sit on the old figure until something else
+     * happened to change it. Flying them in is also simply how every other
+     * payout in the game arrives.
+     */
+    doobers.spawn(player.position, 'coin', 14, cost - inventory.coins)
+    hud.toast('📮 A letter, and the coin to answer it', 'good')
+  }
+  upgradeTour.begin()
+}
 if (saved) {
   inventory.deserialize(saved.inventory)
   day.deserialize(saved.day)
@@ -1004,12 +1131,12 @@ if (saved) {
   placeables.deserialize(saved.placeables)
   farm.deserialize(saved.farm, elapsed)
   // The clearing is implied by the farm: if any ground is owned, it was cut.
-  if (farm.plotSpan > 0) {
+  if (farm.exists) {
     clearing.restoreOpened()
-    world.setPlayerFenceVisible(true)
+    world.setGardenLevel(farm.gardenLevel)
   }
   // Any seeds at all, or any progress, means the beach was already combed.
-  if (farm.plotSpan > 0 || inventory.seedCount(BEACH_SEED_CROP) > 0) beachSeeds.restoreEmptied()
+  if (farm.exists || inventory.seedCount(BEACH_SEED_CROP) > 0) beachSeeds.restoreEmptied()
 
   const away = Save.offlineSeconds(saved.savedAt)
   if (away > 20) catchUp(away, 'while you were away')
@@ -1112,10 +1239,23 @@ function keepFtuePossible() {
   const step = ftue.stepId
   if (!step || ftueRescued.has(step)) return
 
+  /*
+   * Out of seeds with beds still empty.
+   *
+   * Topped up to exactly the number of bare beds left, because the step now
+   * asks for the whole plot: a fixed handful was enough when one plant finished
+   * it, and would strand a player one bed short. The crates carry five for four
+   * beds, so this only fires for someone who planted, harvested and ate the
+   * difference — but that player is otherwise stuck on a step they cannot
+   * complete and cannot skip past.
+   */
   if (step === 'plant' && inventory.seedCount('turnip') === 0 && inventory.produce.size === 0) {
-    ftueRescued.add(step)
-    inventory.giveSeed('turnip', 3)
-    hud.toast('You find a few more turnip seeds in a pocket', 'good')
+    const bare = farm.tiles.filter((t) => t.placed && !t.crop && !t.sprinkler).length
+    if (bare > 0) {
+      ftueRescued.add(step)
+      inventory.giveSeed('turnip', bare)
+      hud.toast('You find a few more turnip seeds in a pocket', 'good')
+    }
     return
   }
 
@@ -1533,13 +1673,99 @@ function clearPromptText() {
     : `🪓 Clearing costs 🪙${formatCoins(CLEAR_COST)}`
 }
 
+/**
+ * The swing in flight: which tree it is aimed at, and how long until it lands.
+ *
+ * The tree used to come down on the same frame the button was pressed, with the
+ * farmer standing there unmoved — the one action in the opening that is supposed
+ * to feel like effort was the only one with no animation at all. The cut is now
+ * deferred to the frame the axe actually connects, so the swing causes it.
+ */
+let chopTimer = 0
+let chopTarget: Standing | null = null
+/** Where in the 0.45s swing the blade meets the trunk. */
+const CHOP_CONNECT = 0.2
+
 function fellTree() {
+  // One swing at a time, and the coins go with the swing that started it.
+  if (chopTimer > 0) return
+  const tree = clearTarget()
+  if (!tree) return
   if (!inventory.spend(CLEAR_COST)) {
     audio.play('error')
     hud.toast('Not enough coins to clear it', 'bad')
     return
   }
-  clearing.cutNear(player.position)
+  player.setTool('axe')
+  player.playAction('axe')
+  chopTarget = tree
+  chopTimer = CHOP_CONNECT
+}
+
+/**
+ * Claiming the parcel you are standing on.
+ *
+ * Bought where it is, rather than from a menu: the whole point of a board is
+ * that the parcels differ — this one runs along the treeline, that one catches
+ * the afternoon light — and a list of identical rows called "Parcel 4" throws
+ * away the only thing that makes the choice interesting. Walking onto the
+ * ground and being told what it costs is the shortest path between wanting it
+ * and owning it.
+ */
+const MAILBOX_REACH = 2.4
+
+function mailboxInRange() {
+  if (modalOpen() || !farm.exists) return false
+  const at = world.mailboxPos
+  return Math.hypot(at.x - player.position.x, at.z - player.position.z) <= MAILBOX_REACH
+}
+
+function mailboxPromptText() {
+  if (!farm.canUpgrade) return '📮 The garden is as big as it gets'
+  const cost = farm.nextUpgradeCost
+  const size = GARDEN_LEVELS[farm.gardenLevel]
+  return inventory.coins >= cost
+    ? `📮 Extend the garden to ${size}×${size} — ${coinIconHtml('inline-ico')}${formatCoins(cost)}`
+    : `📮 Extending to ${size}×${size} costs ${coinIconHtml('inline-ico')}${formatCoins(cost)}`
+}
+
+function buyGardenUpgrade() {
+  if (!farm.canUpgrade) {
+    audio.play('error')
+    hud.toast('The garden cannot grow any further', 'bad')
+    return
+  }
+  const cost = farm.nextUpgradeCost
+  if (!inventory.spend(cost)) {
+    audio.play('error')
+    hud.toast('Not enough coins for more land', 'bad')
+    return
+  }
+
+  farm.upgradeGarden()
+  world.setGardenLevel(farm.gardenLevel)
+
+  // The rails have just moved outward; fire the burst from the middle of the
+  // garden so the eye goes to the ground rather than to the mailbox.
+  const centre = FARM_CENTRE.clone()
+  bursts.emit(centre, 24, [0xfff0a0, 0x9fe8b5], { kind: 'spark', speed: 3.6, life: 1.3 })
+  popups.spawn(`${farm.gardenSize}×${farm.gardenSize} garden!`, world.mailboxPos, 'rare', 2)
+  audio.play('levelup')
+  shake.add(0.28)
+  hud.toast(`🌱 The garden is now ${farm.gardenSize}×${farm.gardenSize}`, 'good')
+  grantXp(20)
+}
+
+/** Land the pending swing, then drive whatever is falling. */
+function updateChopping(dt: number) {
+  if (chopTimer > 0) {
+    chopTimer -= dt
+    if (chopTimer <= 0 && chopTarget) {
+      clearing.cut(chopTarget, player.position)
+      chopTarget = null
+    }
+  }
+  clearing.update(dt)
 }
 
 /**
@@ -1651,6 +1877,7 @@ function handleInput() {
     const fellable = clearTarget()
     const tameable = tameTarget()
     if (fellable) fellTree()
+    else if (mailboxInRange()) buyGardenUpgrade()
     else if (shopInRange()) shopUi.show()
     else if (tameable) feedWildAnimal(tameable)
     else {
@@ -1740,10 +1967,15 @@ function updateHeldTool() {
  * nothing it can't see is a guide that shrugs.
  */
 const ftueProj = SPAWN.clone()
+/** Whichever tour is on screen. Only ever one of them is. */
+function activeTour() {
+  return upgradeTour.active ? upgradeTour : ftue
+}
 function updateFtuePointer() {
-  const hint = ftue.pointerHint()
+  const tour = activeTour()
+  const hint = tour.pointerHint()
   if (!hint) {
-    ftue.hidePointer()
+    tour.hidePointer()
     return
   }
 
@@ -1766,31 +1998,34 @@ function updateFtuePointer() {
     if (button) {
       const r = button.getBoundingClientRect()
       // Anchor on the button's left edge so the finger doesn't cover the text.
-      ftue.setPointer(r.left + 26, r.top - 2, 0)
+      tour.setPointer(r.left + 26, r.top - 2, 0)
     } else {
-      ftue.hidePointer()
+      tour.hidePointer()
     }
     return
   }
   if (modalOpen()) {
-    ftue.hidePointer()
+    tour.hidePointer()
     return
   }
 
   if (hint === 'plot') {
     const tile = farm.tiles.find((t) => t.placed && t.state === 'tilled' && !t.crop && !t.sprinkler)
-    if (!tile) return ftue.hidePointer()
+    if (!tile) return tour.hidePointer()
     ftueProj.copy(tile.pos)
     ftueProj.y += 0.4
   } else if (hint === 'crop') {
     const tile = farm.tiles.find((t) => t.crop)
-    if (!tile) return ftue.hidePointer()
+    if (!tile) return tour.hidePointer()
     ftueProj.copy(tile.pos)
     ftueProj.y += 1.0
+  } else if (hint === 'mailbox') {
+    ftueProj.copy(world.mailboxPos)
+    ftueProj.y += 1.2
   } else if (hint === 'seeds') {
     // The nearest crate still on the sand.
     const crate = beachSeeds.group.children[0]
-    if (!crate) return ftue.hidePointer()
+    if (!crate) return tour.hidePointer()
     ftueProj.copy(crate.position)
     ftueProj.y += 1.0
   } else if (hint === 'trees') {
@@ -1823,9 +2058,9 @@ function updateFtuePointer() {
     const py = (-ny * 0.5 + 0.5) * innerHeight
     // Screen-space direction from centre out is where the target lies.
     const angle = Math.atan2(px - innerWidth / 2, -(py - innerHeight / 2))
-    ftue.setPointer(px, py, angle)
+    tour.setPointer(px, py, angle)
   } else {
-    ftue.setPointer((nx * 0.5 + 0.5) * innerWidth, (-ny * 0.5 + 0.5) * innerHeight, 0)
+    tour.setPointer((nx * 0.5 + 0.5) * innerWidth, (-ny * 0.5 + 0.5) * innerHeight, 0)
   }
 }
 
@@ -1857,7 +2092,9 @@ engine.scene.add(ftueRings.group)
  * approach, and that is exactly where a player wants to see both.
  */
 const ftueRingBuf: RingTarget[] = []
-const ftueDest = new THREE.Vector3()
+/** Destinations for this frame's trails. Reused vectors — never held onto. */
+const ftueDests = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
+const ftueTrailBuf: THREE.Vector3[] = []
 
 /**
  * Ring the first seed slot while the tutorial wants it clicked.
@@ -1886,11 +2123,16 @@ const TRAIL_MIN = 3
 /** Past this the rings are a gold speck on the horizon; the trail has it. */
 const RINGS_MAX_RANGE = 18
 
-function ftueGuideTargets(): THREE.Vector3 | null {
+/**
+ * Resolve the active step into rings (`ftueRingBuf`) and trails
+ * (`ftueTrailBuf`), and answer whether the step wants anything at all.
+ */
+function ftueGuideTargets(): boolean {
   ftueRingBuf.length = 0
+  ftueTrailBuf.length = 0
   // Every panel hides the guides: a ring behind an open shop is decoration, and
   // the finger already stands down for the same reason.
-  const hint = modalOpen() ? null : ftue.pointerHint()
+  const hint = modalOpen() ? null : activeTour().pointerHint()
   /*
    * The seed is picked off the hotbar before any bed can be planted, so the
    * step's first target is a DOM element rather than anything in the scene.
@@ -1898,9 +2140,11 @@ function ftueGuideTargets(): THREE.Vector3 | null {
    * a bed" for a player who has not yet noticed the row exists.
    */
   glowHotbarSlot(hint === 'plot' && !plotUi.open)
-  if (!hint) return null
+  if (!hint) return false
 
-  if (hint === 'seeds') {
+  if (hint === 'mailbox') {
+    ftueRingBuf.push({ x: world.mailboxPos.x, z: world.mailboxPos.z, radius: 1.1 })
+  } else if (hint === 'seeds') {
     for (const crate of beachSeeds.standing()) ftueRingBuf.push({ x: crate.x, z: crate.z, radius: 0.9 })
   } else if (hint === 'trees') {
     // Every tree still standing, because all of them have to come down and the
@@ -1919,45 +2163,36 @@ function ftueGuideTargets(): THREE.Vector3 | null {
   /*
    * Where to send them.
    *
-   * For the trees it is the middle of the stand, not the nearest trunk — from
-   * the beach the four are one distant clump, and a trail that re-aims at
-   * whichever tree is marginally closer swings across the sand as the player
-   * walks. For everything else the marked thing *is* the destination.
+   * For the trees it is the middle of the stand, not one trail per trunk — from
+   * the beach the four are a single distant clump, and four trails into it fan
+   * out into a starburst that says less than one arrow does. The crates are the
+   * opposite case: they are scattered along the tideline, they must *all* be
+   * collected, and a single trail to the nearest one is an instruction to
+   * collect that one.
    */
-  if (hint === 'trees') return ftueDest.copy(FARM_CENTRE)
-  if (hint === 'shop') return ftueDest.copy(SHOP_POS)
-  if (ftueRingBuf.length === 0) return null
-
-  let best = ftueRingBuf[0]
-  let bestDist = Infinity
-  for (const target of ftueRingBuf) {
-    const d = Math.hypot(target.x - player.position.x, target.z - player.position.z)
-    if (d < bestDist) {
-      bestDist = d
-      best = target
-    }
+  if (hint === 'trees') {
+    pushTrail(FARM_CENTRE.x, FARM_CENTRE.z)
+  } else if (hint === 'shop') {
+    pushTrail(SHOP_POS.x, SHOP_POS.z)
+  } else {
+    for (const target of ftueRingBuf) pushTrail(target.x, target.z)
   }
-  return ftueDest.set(best.x, best.y ?? 0, best.z)
+  return ftueRingBuf.length > 0 || ftueTrailBuf.length > 0
 }
 
 /**
- * Point the trail somewhere, without re-solving the route every frame.
+ * Queue a trail to this spot, unless the player is already standing on it.
  *
- * `setTarget` throws the walked route away, and the tutorial hands over a fresh
- * vector each frame — so the guard is on the *position*, not on the object.
+ * The per-destination distance test is what lets the crate trails wink out one
+ * at a time as they are collected, rather than the whole set vanishing when the
+ * player reaches the first one.
  */
-let guideTarget: THREE.Vector3 | null = null
-function setGuideTarget(target: THREE.Vector3 | null) {
-  if (!target) {
-    if (!guideTarget) return
-    guideTarget = null
-    guidePath.setTarget(null)
-    return
-  }
-  if (guideTarget && guideTarget.distanceToSquared(target) < 0.25) return
-  guideTarget = target.clone()
-  guidePath.setTarget(target)
+function pushTrail(x: number, z: number) {
+  if (ftueTrailBuf.length >= ftueDests.length) return
+  if (Math.hypot(x - player.position.x, z - player.position.z) < TRAIL_MIN) return
+  ftueTrailBuf.push(ftueDests[ftueTrailBuf.length].set(x, 0, z))
 }
+
 
 // Ghost preview follows the mouse while the shovel is out.
 let pointerX = innerWidth / 2
@@ -2045,8 +2280,9 @@ const devUi = new DevUi({
   },
   openClearing: () => {
     clearing.restoreOpened()
-    farm.openClearing()
-    world.setPlayerFenceVisible(true)
+    // Animated here too: this button is how the grow-in gets looked at.
+    farm.openClearing(true)
+    world.setGardenLevel(farm.gardenLevel)
     hud.toast('Dev: clearing opened', 'info')
   },
   respawnCrates: () => {
@@ -2054,14 +2290,39 @@ const devUi = new DevUi({
     hud.toast('Dev: crates back on the sand', 'info')
   },
   expandPlot: () => {
-    if (farm.expandPlot()) hud.toast(`Dev: plot is now ${farm.plotSpan}x${farm.plotSpan}`, 'info')
-    else hud.toast('Dev: plot is already at maximum', 'bad')
+    // Free, and without the walk to the mailbox — for QA the point is to get a
+    // bigger garden quickly, not to rehearse the purchase.
+    if (!farm.upgradeGarden()) {
+      hud.toast('Dev: the garden is already at its largest', 'bad')
+      return
+    }
+    world.setGardenLevel(farm.gardenLevel)
+    hud.toast(`Dev: garden level ${farm.gardenLevel} — ${farm.gardenSize}×${farm.gardenSize}`, 'info')
   },
   revealAll: () => {
     world.setArrivalVisible('shop', true)
     world.setArrivalVisible('barn', true)
     hood.setArrivedFor(99)
     hud.toast('Dev: everything revealed', 'info')
+  },
+  washUpBarrel: () => {
+    if (flotsam.forceWashUp()) hud.toast(`Dev: ${flotsam.ashore} barrel(s) on the sand`, 'info')
+    else hud.toast('Dev: the beach is already full', 'bad')
+  },
+  spawnWildlife: () => {
+    /*
+     * Unfilmed.
+     *
+     * Each emergence normally cuts the camera to the treeline, and a wave would
+     * queue one cutscene per animal — several seconds of the screen being taken
+     * away from whoever pressed a QA button. They still *walk* in; nobody
+     * films it.
+     */
+    const filming = wildlife.onEmerge
+    wildlife.onEmerge = null
+    wildlife.spawnWave()
+    wildlife.onEmerge = filming
+    hud.toast(`Dev: ${wildlife.count} wild animals in the valley`, 'info')
   },
   stats: () => ({
     fps: fpsEma,
@@ -2206,6 +2467,8 @@ function frame() {
   pasture.update(dt, elapsed, engine.camera)
   wildlife.update(dt, elapsed, player.position)
   beachSeeds.update(dt, elapsed, player.position)
+  // Only once the farm exists — the opening owns this beach until then.
+  flotsam.update(dt, elapsed, player.position, farm.exists)
   placeables.update(dt, elapsed, farm)
   pets.update(dt, elapsed, player.position, () => {
     // A pet watering something should feel like a small gift, not a silent stat.
@@ -2246,6 +2509,7 @@ function frame() {
     }
   }
   ambience.update(dt, elapsed, engine, weather, day.hour)
+  updateChopping(dt)
   // Manual because autoReset is off (see the dev panel block). Reset *before*
   // the frame's renders so the counters cover exactly one frame.
   engine.renderer.info.reset()
@@ -2309,13 +2573,22 @@ function frame() {
    * has its beacon and its toast; it just does not get the arrows until the
    * tutorial is done with them.
    */
-  const ftueTarget = ftueGuideTargets()
-  const trailTo = ftueTarget ?? (wasBarnFull ? SHOP_POS : null)
-  const range = trailTo ? Math.hypot(trailTo.x - player.position.x, trailTo.z - player.position.z) : Infinity
-  setGuideTarget(range > TRAIL_MIN ? trailTo : null)
+  const guiding = ftueGuideTargets()
+  if (!guiding && wasBarnFull) {
+    // Fallback: no tutorial, but a full barn the player has to walk off.
+    ftueTrailBuf.length = 0
+    pushTrail(SHOP_POS.x, SHOP_POS.z)
+  }
+  guidePath.setTargets(ftueTrailBuf)
   guidePath.update(dt, player.position)
 
-  ftueRings.set(ftueTarget && range < RINGS_MAX_RANGE ? ftueRingBuf : [])
+  // Rings only within sight of the marked things — past that they are specks
+  // and the trail is doing the work.
+  const nearest = ftueRingBuf.reduce(
+    (min, t) => Math.min(min, Math.hypot(t.x - player.position.x, t.z - player.position.z)),
+    Infinity,
+  )
+  ftueRings.set(guiding && nearest < RINGS_MAX_RANGE ? ftueRingBuf : [])
   ftueRings.update(dt)
 
   // Grade toward the night look across dusk rather than snapping at a threshold.
@@ -2400,6 +2673,7 @@ function frame() {
     const fellable = clearTarget()
     const tameable = tameTarget()
     if (fellable) hud.setPrompt('tame', clearPromptText())
+    else if (mailboxInRange()) hud.setPrompt('tame', mailboxPromptText())
     else if (shopInRange()) hud.setPrompt('shop')
     else if (tameable) hud.setPrompt('tame', tamePromptText(tameable))
     else if (tile?.placed) hud.setPrompt('menu')
@@ -2422,17 +2696,24 @@ function frame() {
 
   // Onboarding reads real game state, so a tip only fires when the player is
   // genuinely in the situation it describes.
-  ftue.update({
+  const ftueStats = {
     plantedCount: farm.tiles.filter((t) => t.crop).length,
+    // Beds that could hold a crop. A sprinkler standing on one is not something
+    // the player can plant, so the step must not wait for it.
+    plotCount: farm.tiles.filter((t) => t.placed && !t.sprinkler).length,
     wateredCount: farm.tiles.filter((t) => t.water > 0).length,
     nearShop: shopInRange(),
     seedsBought: inventory.purchases,
     cratesLeft: beachSeeds.remaining,
     treesLeft: clearing.remaining,
-    hasFarm: farm.plotSpan > 0,
-  })
+    hasFarm: farm.exists,
+    gardenLevel: farm.gardenLevel,
+  }
+  ftue.update(ftueStats)
+  startUpgradeTour()
+  upgradeTour.update(ftueStats)
   updateFtuePointer()
-  tips.enabled = settingsUi.settings.showTips && !ftue.active
+  tips.enabled = settingsUi.settings.showTips && !ftue.active && !upgradeTour.active
   tips.update(dt, {
     level: progression.level,
     coins: inventory.coins,
@@ -2492,7 +2773,7 @@ frame()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp,
   }
 
   /**

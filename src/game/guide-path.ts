@@ -20,8 +20,8 @@ import { containingSlot, exitWaypoint, routeToPoint } from './village-router'
  * the player to stop trusting it.
  */
 
-/** Distance between chevrons along the path. */
-const SPACING = 0.95
+/** Distance between chevrons along the path. Tracks SIZE — they must not touch. */
+const SPACING = 1.05
 /** How far along the route the trail is drawn. Enough to commit to a direction. */
 const LENGTH = 16
 /** How far ahead of the player the trail starts, so it is not under their feet. */
@@ -33,34 +33,82 @@ const Y = 0.075
 
 const COUNT = Math.ceil(LENGTH / SPACING)
 
+/** How big one mark on the ground is, in world units. */
+const SIZE = 1.25
+
 /**
- * A fat chevron pointing along +Z, lying in the XY plane so it can be laid flat.
+ * The arrow, painted once into a canvas and worn by every chevron in the trail.
  *
- * The same shape as the home marker, deliberately: the game already teaches that
- * a gold chevron means "here", so a line of them means "this way" without
- * needing to teach anything new.
+ * Painted rather than built out of geometry, and that is a deliberate second
+ * attempt. The look wanted here — a chunky arrow with a white keyline, a dark
+ * inner edge and a bright face, corners rounded like a sticker — is three
+ * nested shapes, and three nested shapes on a *fading* mesh blend into each
+ * other: at 40% alpha the face reaches the screen as a third gold, a third
+ * brown and a third white, which is exactly the pale mush that produced. A
+ * pre-composited texture has its layers resolved before the fade ever sees
+ * them, so fading changes how much of the arrow you can see and never what
+ * colour it is. Rounded joins come free here and are fiddly in a triangulator.
+ */
+const CHEVRON_TEXTURE = (() => {
+  const S = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = S
+  canvas.height = S
+  const ctx = canvas.getContext('2d')!
+
+  // The outline, in canvas pixels, tip toward the top of the image. Inset from
+  // the edges by the width of the fattest stroke, or the keyline clips.
+  const outline: [number, number][] = [
+    [0.12, 0.84],
+    [0.5, 0.38],
+    [0.88, 0.84],
+    [0.88, 0.56],
+    [0.5, 0.1],
+    [0.12, 0.56],
+  ]
+  const path = new Path2D()
+  outline.forEach(([x, y], i) => (i === 0 ? path.moveTo(x * S, y * S) : path.lineTo(x * S, y * S)))
+  path.closePath()
+
+  /*
+   * Widest stroke first, then narrower, then the fill.
+   *
+   * Each stroke straddles the outline, so the next one over-paints its inner
+   * half and the fill over-paints what is left inside: what survives is a
+   * keyline, a shade band and a clean face, from one path drawn three times.
+   * Round joins are what make the corners chunky rather than mitred to points.
+   */
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  ctx.strokeStyle = '#fffdf2'
+  ctx.lineWidth = S * 0.15
+  ctx.stroke(path)
+  ctx.strokeStyle = '#a2670f'
+  ctx.lineWidth = S * 0.08
+  ctx.stroke(path)
+  ctx.fillStyle = '#ffd062'
+  ctx.fill(path)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
+})()
+
+/**
+ * The quad it is painted on.
+ *
+ * Lay it flat, then spin it half a turn. Both steps are needed and neither is
+ * optional. `rotateX(-90°)` is the one that leaves the face normal pointing
+ * *up* — the opposite sign lays it just as flat but face-down, and a FrontSide
+ * material then draws nothing at all from a camera above it. That rotation also
+ * carries the texture's top edge round to -Z, so every arrow pointed back the
+ * way the player had come; the half turn about Y puts the tip on +Z without
+ * touching the normal, which is what makes a mesh's `rotation.y` simply its
+ * heading.
  */
 const CHEVRON = (() => {
-  const s = new THREE.Shape()
-  s.moveTo(-0.34, -0.30)
-  s.lineTo(0, 0.24)
-  s.lineTo(0.34, -0.30)
-  s.lineTo(0.34, -0.02)
-  s.lineTo(0, 0.5)
-  s.lineTo(-0.34, -0.02)
-  s.closePath()
-  const geo = new THREE.ShapeGeometry(s)
-  /*
-   * Lay it flat, then spin it half a turn.
-   *
-   * Both steps are needed and neither is optional. `rotateX(-90°)` is the one
-   * that leaves the face normal pointing *up* — the opposite sign lays it just as
-   * flat but face-down, and a FrontSide material then draws nothing at all from
-   * a camera above it. That rotation also carries the shape's +Y tip round to
-   * -Z, so every arrow pointed back the way the player had come; the half turn
-   * about Y puts the tip on +Z without touching the normal, which is what makes
-   * a mesh's `rotation.y` simply its heading.
-   */
+  const geo = new THREE.PlaneGeometry(SIZE, SIZE)
   geo.rotateX(-Math.PI / 2)
   geo.rotateY(Math.PI)
   return geo
@@ -68,16 +116,33 @@ const CHEVRON = (() => {
 
 const scratch = new THREE.Vector3()
 
+/**
+ * Trails drawn at once.
+ *
+ * The opening asks for three — one per seed crate — because "collect all of
+ * these" is a different instruction from "go here", and drawing only the trail
+ * to the nearest crate says the wrong one: the player follows it, picks the
+ * barrel up, and the guide then jumps to a barrel behind them. Four is that
+ * case plus a spare.
+ */
+const LANES = 4
+
+/** One trail: its own destination, its own solved route, its own arrows. */
+class Lane {
+  target: THREE.Vector3 | null = null
+  route: THREE.Vector3[] = []
+  routeAge = 0
+  /** Where the player was when this route was last solved. */
+  readonly solvedAt = new THREE.Vector3(1e9, 0, 0)
+  readonly arrows: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>[] = []
+}
+
 export class GuidePath {
   readonly group = new THREE.Group()
 
-  private readonly arrows: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>[] = []
-  private target: THREE.Vector3 | null = null
-  /** The walked route, as a polyline starting near the player. */
-  private route: THREE.Vector3[] = []
-  private routeAge = 0
-  /** Where the player was when the route was last solved. */
-  private readonly solvedAt = new THREE.Vector3(1e9, 0, 0)
+  private readonly lanes: Lane[] = []
+  /* Shared by every lane, so the arrows flow in step. Three trails scrolling at
+     their own offsets read as three unrelated effects. */
   private phase = 0
 
   constructor() {
@@ -85,37 +150,65 @@ export class GuidePath {
     // Drawn after the ground and its decals, and writing no depth of its own, so
     // it never fights the quads it lies on.
     this.group.renderOrder = 3
-    for (let i = 0; i < COUNT; i++) {
-      const mesh = new THREE.Mesh(
-        CHEVRON,
-        // Unlit and pushed past white, the same trick the "!" marker uses: at a
-        // night grade a flat mid-gold reads as dull brown, and blowing through
-        // the tone map is what makes this look like it is glowing rather than
-        // painted on the grass.
-        new THREE.MeshBasicMaterial({
-          color: 0xffd062,
-          transparent: true,
-          depthWrite: false,
-          toneMapped: false,
-        }),
-      )
-      mesh.material.color.multiplyScalar(1.9)
-      mesh.renderOrder = 3
-      this.arrows.push(mesh)
-      this.group.add(mesh)
+    for (let l = 0; l < LANES; l++) {
+      const lane = new Lane()
+      for (let i = 0; i < COUNT; i++) {
+        const mesh = new THREE.Mesh(
+          CHEVRON,
+          // Unlit and pushed past white, the same trick the "!" marker uses: at a
+          // night grade a flat mid-gold reads as dull brown, and blowing through
+          // the tone map is what makes this look like it is glowing rather than
+          // painted on the grass. The boost lifts every band of the sticker
+          // together, so the keyline stays a keyline.
+          new THREE.MeshBasicMaterial({
+            map: CHEVRON_TEXTURE,
+            color: 0xffffff,
+            transparent: true,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        )
+        mesh.material.color.multiplyScalar(1.45)
+        mesh.renderOrder = 3
+        mesh.visible = false
+        lane.arrows.push(mesh)
+        this.group.add(mesh)
+      }
+      this.lanes.push(lane)
     }
   }
 
   /** Point somewhere, or pass null to put the trail away. */
   setTarget(target: THREE.Vector3 | null) {
-    this.target = target ? target.clone() : null
-    this.group.visible = target !== null
-    // Force a re-solve: the old route led somewhere else entirely.
-    this.solvedAt.set(1e9, 0, 0)
+    this.setTargets(target ? [target] : [])
+  }
+
+  /** Run a trail to each of these, up to LANES of them. */
+  setTargets(targets: readonly THREE.Vector3[]) {
+    this.group.visible = targets.length > 0
+    for (let i = 0; i < this.lanes.length; i++) {
+      const lane = this.lanes[i]
+      const target = targets[i] ?? null
+      // Same destination as last frame: keep the solved route. The caller hands
+      // over fresh vectors every frame, so this compares position, not identity.
+      if (target && lane.target && lane.target.distanceToSquared(target) < 0.25) continue
+
+      lane.target = target ? target.clone() : null
+      lane.route = []
+      // Force a re-solve: the old route led somewhere else entirely.
+      lane.solvedAt.set(1e9, 0, 0)
+      if (!target) for (const arrow of lane.arrows) arrow.visible = false
+    }
   }
 
   update(dt: number, playerPos: THREE.Vector3) {
-    if (!this.target) return
+    if (!this.group.visible) return
+    this.phase = (this.phase + dt * FLOW * SPACING) % SPACING
+    for (const lane of this.lanes) this.updateLane(lane, dt, playerPos)
+  }
+
+  private updateLane(lane: Lane, dt: number, playerPos: THREE.Vector3) {
+    if (!lane.target) return
 
     /*
      * Re-solve on movement, not every frame.
@@ -124,29 +217,27 @@ export class GuidePath {
      * of them; at sixty frames a second that is real work to produce the same
      * answer, since the route only changes when the player walks somewhere new.
      */
-    this.routeAge += dt
-    if (this.routeAge > 0.35 && this.solvedAt.distanceToSquared(playerPos) > 0.36) {
-      this.routeAge = 0
-      this.solvedAt.copy(playerPos)
-      this.route = this.solve(playerPos, this.target)
+    lane.routeAge += dt
+    if (lane.routeAge > 0.35 && lane.solvedAt.distanceToSquared(playerPos) > 0.36) {
+      lane.routeAge = 0
+      lane.solvedAt.copy(playerPos)
+      lane.route = this.solve(playerPos, lane.target)
     }
-    if (this.route.length === 0) return
-
-    this.phase = (this.phase + dt * FLOW * SPACING) % SPACING
+    if (lane.route.length === 0) return
 
     // Total walkable length, so the trail can fade out where the route ends
     // rather than stopping dead in the middle of the square.
     let total = 0
-    for (let i = 1; i < this.route.length; i++) total += this.route[i - 1].distanceTo(this.route[i])
+    for (let i = 1; i < lane.route.length; i++) total += lane.route[i - 1].distanceTo(lane.route[i])
 
-    for (let i = 0; i < this.arrows.length; i++) {
-      const arrow = this.arrows[i]
+    for (let i = 0; i < lane.arrows.length; i++) {
+      const arrow = lane.arrows[i]
       const along = LEAD + i * SPACING + this.phase
       if (along > Math.min(LENGTH, total)) {
         arrow.visible = false
         continue
       }
-      const heading = this.sample(along, scratch)
+      const heading = this.sample(lane.route, along, scratch)
       arrow.visible = true
       arrow.position.set(scratch.x, groundHeight(scratch.x, scratch.z) + Y, scratch.z)
       arrow.rotation.y = heading
@@ -194,12 +285,12 @@ export class GuidePath {
     return pts
   }
 
-  /** Position at `along` metres down the route, and the heading there. */
-  private sample(along: number, out: THREE.Vector3) {
+  /** Position at `along` metres down a route, and the heading there. */
+  private sample(route: THREE.Vector3[], along: number, out: THREE.Vector3) {
     let left = along
-    for (let i = 1; i < this.route.length; i++) {
-      const a = this.route[i - 1]
-      const b = this.route[i]
+    for (let i = 1; i < route.length; i++) {
+      const a = route[i - 1]
+      const b = route[i]
       const len = a.distanceTo(b)
       if (len < 1e-4) continue
       if (left <= len) {
@@ -208,8 +299,8 @@ export class GuidePath {
       }
       left -= len
     }
-    const last = this.route[this.route.length - 1]
-    const prev = this.route[Math.max(0, this.route.length - 2)]
+    const last = route[route.length - 1]
+    const prev = route[Math.max(0, route.length - 2)]
     out.copy(last)
     return Math.atan2(last.x - prev.x, last.z - prev.z)
   }

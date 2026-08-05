@@ -28,15 +28,53 @@ import {
 } from './crops'
 
 export const TILE_SIZE = 1.2
+
 /**
- * Maximum extent of the farm. Only tiles the player has bought are usable, and
- * only those inside the cleared span (see `Farm.span`) can be bought at all.
+ * How big the garden is at each of its three levels, in tiles per side.
  *
- * Odd on both axes so the span below is symmetrical about the centre — an even
- * grid cannot hold a centred 5x5 without favouring one side by half a tile.
+ * The garden is not the plot. The plot is a fixed piece of the world the player
+ * owns; the garden is how much of it has been broken and fenced, and it is
+ * bought a level at a time at the mailbox by the gate. Starting at a quarter of
+ * the final size is what gives the first hour a visible goal that is about the
+ * *ground* rather than about another row of turnips.
  */
-export const GRID_W = 13
-export const GRID_H = 13
+export const GARDEN_LEVELS = [4, 7, 10]
+export const GARDEN_MAX = GARDEN_LEVELS[GARDEN_LEVELS.length - 1]
+
+/**
+ * The whole yard, in tiles — the garden at its largest.
+ *
+ * Every plot in the village is sized from this: `FENCE_HX/HZ` in village.ts are
+ * derived from it, so the neighbours' farms are exactly the size of a
+ * fully-grown player garden, which is the point.
+ */
+export const GRID_W = GARDEN_MAX
+export const GRID_H = GARDEN_MAX
+
+/**
+ * Tile bounds of the garden at each level, inclusive.
+ *
+ * Written out rather than computed from a centre and a half-width, because the
+ * grid is ten wide and one of the levels is seven: no centred odd block sits on
+ * an even grid without landing on a half tile. Listing the bounds makes the
+ * one-tile asymmetry at level 2 a deliberate choice that can be looked at,
+ * instead of a rounding artefact that has to be reverse-engineered.
+ */
+export const GARDEN_BOUNDS: { lo: number; hi: number }[] = [
+  { lo: 3, hi: 6 },
+  { lo: 2, hi: 8 },
+  { lo: 0, hi: 9 },
+]
+
+/**
+ * Cost of the next garden level.
+ *
+ * Only two of these are ever bought in a run, so they can be real money — the
+ * second one is meant to be a week's saving, not an afternoon's.
+ */
+export function upgradeCost(level: number) {
+  return [0, 900, 4200][level] ?? 0
+}
 
 /**
  * The clearing you cut out of the forest, in tiles per side.
@@ -51,17 +89,6 @@ export const GRID_H = 13
  * farm is too small". Collapsing them into a single per-tile purchase is what
  * made expansion read as a formality once coins started flowing.
  */
-export const PLOT_SPAN_START = 5
-export const PLOT_SPAN_MAX = Math.min(GRID_W, GRID_H)
-/** Each upgrade adds a ring — one tile on every side. */
-export const PLOT_SPAN_STEP = 2
-
-/** Cost of widening the clearing from `span` to the next size up. */
-export function expansionCost(span: number) {
-  const steps = Math.max(0, (span - PLOT_SPAN_START) / PLOT_SPAN_STEP)
-  return Math.round(600 * Math.pow(2.15, steps))
-}
-
 /** Plots the player owns once the first clearing is cut. */
 export const STARTING_PLOTS = 4
 
@@ -398,8 +425,16 @@ export class Farm {
   private placeStartingPlots() {
     const w = 2
     const h = Math.ceil(STARTING_PLOTS / w)
-    const x0 = Math.floor((GRID_W - w) / 2)
-    const z0 = Math.floor((GRID_H - h) / 2)
+    /*
+     * Centred on the level-1 garden, not on the whole grid.
+     *
+     * The grid is the garden at its *largest*; at level 1 only the middle
+     * sixteen tiles of it exist. Placing the opening block on the grid centre
+     * would hand the player beds outside the ground they have.
+     */
+    const bounds = GARDEN_BOUNDS[0]
+    const x0 = Math.round((bounds.lo + bounds.hi - (w - 1)) / 2)
+    const z0 = Math.round((bounds.lo + bounds.hi - (h - 1)) / 2)
 
     let placed = 0
     for (let gz = z0; gz < z0 + h && placed < STARTING_PLOTS; gz++) {
@@ -464,39 +499,35 @@ export class Farm {
      * move. The caller then adds whatever legacy bonus plots are owed on top.
      */
     // A retirement returns the farm to its opening state: the clearing is still
-    // cut — that was the tutorial, not a purchase — but every expansion bought
-    // on top of it is gone with the rest of the run.
-    this.span = PLOT_SPAN_START
+    // cut — that was the tutorial, not a purchase — but the garden levels bought
+    // on top of it go with the rest of the run.
+    this.level = 1
     this.placeStartingPlots()
   }
 
   /**
-   * Work out how much ground is cleared from the beds that are on it.
+   * Work out the garden level from the beds standing on the ground.
    *
-   * Deliberately not a saved field. The span is a bounding box around land the
-   * player already owns, so it can always be recovered from the tiles — and
-   * recovering it keeps every save written before clearings existed loadable,
-   * where adding a field would have needed a migration and a default that was
-   * wrong for one of the two cases.
-   *
-   * Rounded up to the next odd size, because the clearing is symmetrical about
-   * the grid centre and an even span cannot be.
+   * For saves written before levels existed, which have placed tiles and no
+   * stored level: whichever level's bounds contain every bed is the level the
+   * player had. Beds cannot exist outside the garden, so the outermost one is
+   * the answer, and a save from the 13-wide era simply comes back at the top
+   * level rather than losing ground it had paid for.
    */
-  private recoverSpan() {
-    const cx = (GRID_W - 1) / 2
-    const cz = (GRID_H - 1) / 2
-    let reach = -1
+  private recoverLevel() {
+    let lo = GRID_W
+    let hi = -1
     for (const tile of this.tiles) {
       if (!tile.placed) continue
-      reach = Math.max(reach, Math.abs(tile.gx - cx), Math.abs(tile.gz - cz))
+      lo = Math.min(lo, tile.gx, tile.gz)
+      hi = Math.max(hi, tile.gx, tile.gz)
     }
-    if (reach < 0) {
-      // Nothing owned: the opening trees are still standing.
-      this.span = 0
+    if (hi < 0) {
+      this.level = 0
       return
     }
-    const needed = Math.ceil(reach) * 2 + 1
-    this.span = Math.min(PLOT_SPAN_MAX, Math.max(PLOT_SPAN_START, needed))
+    const found = GARDEN_BOUNDS.findIndex((b) => lo >= b.lo && hi <= b.hi)
+    this.level = found >= 0 ? found + 1 : GARDEN_LEVELS.length
   }
 
   get nextPlotCost() {
@@ -521,6 +552,21 @@ export class Farm {
   }
 
   /** Nearest tile to a world position, or null if outside the plot + margin. */
+  /**
+   * World-space half-extents of the garden at its current level.
+   *
+   * The fence is built from this, so the rails follow the ground the player has
+   * actually broken rather than standing at the full size around three-quarters
+   * of nothing.
+   */
+  gardenExtents() {
+    const b = GARDEN_BOUNDS[Math.max(0, this.level - 1)]
+    const half = ((b.hi - b.lo + 1) * TILE_SIZE) / 2
+    // Centre of the band, in world space, relative to the plot's own centre.
+    const mid = (b.lo + b.hi) / 2 - (GRID_W - 1) / 2
+    return { offset: mid * TILE_SIZE, half }
+  }
+
   tileNear(world: THREE.Vector3, maxDist = TILE_SIZE * 1.1): Tile | null {
     const gx = Math.round((world.x - this.origin.x) / TILE_SIZE + (GRID_W - 1) / 2)
     const gz = Math.round((world.z - this.origin.z) / TILE_SIZE + (GRID_H - 1) / 2)
@@ -564,31 +610,43 @@ export class Farm {
   /** New plots must touch an existing one, so the farm stays a single field
    *  instead of a scatter of disconnected squares. */
   /**
-   * The cleared ground, in tiles per side. Beds may only be built inside it.
+   * How far the garden has been upgraded: 0 before the opening trees come down,
+   * then 1, 2 or 3.
    *
-   * Starts at zero rather than at PLOT_SPAN_START: before the opening trees are
-   * cleared the player owns no land at all, and a farm that exists from the
-   * first frame would give the clearing nothing to do.
+   * Zero rather than one at the start, because before the clearing is cut the
+   * player owns no ground at all — a garden that existed from the first frame
+   * would give the opening nothing to do.
    */
-  private span = 0
+  private level = 0
 
-  get plotSpan() {
-    return this.span
+  /** True once the opening clearing has been cut. */
+  get exists() {
+    return this.level > 0
   }
 
-  get nextExpansionCost() {
-    return expansionCost(this.span)
+  /** 1..3 once the farm exists, 0 before it does. */
+  get gardenLevel() {
+    return this.level
   }
 
-  get canExpand() {
-    return this.span > 0 && this.span < PLOT_SPAN_MAX
+  /** Tiles per side at the current level. */
+  get gardenSize() {
+    return this.level > 0 ? GARDEN_LEVELS[this.level - 1] : 0
   }
 
-  /** Widen the clearing by a ring. Returns false at the maximum. */
-  expandPlot() {
-    if (!this.canExpand) return false
-    this.span += PLOT_SPAN_STEP
-    // The buyable-spot markers are cached; the new ring would not appear until
+  get canUpgrade() {
+    return this.level > 0 && this.level < GARDEN_LEVELS.length
+  }
+
+  get nextUpgradeCost() {
+    return upgradeCost(this.level)
+  }
+
+  /** Buy the next garden level. The caller has already taken the coins. */
+  upgradeGarden() {
+    if (!this.canUpgrade) return false
+    this.level++
+    // The buyable-spot markers are cached; the new ground would not appear until
     // the shovel was put away and taken out again without this.
     this.buySpotsAge = 0
     return true
@@ -600,20 +658,84 @@ export class Farm {
    * Idempotent, because the FTUE and a restored save can both reach it and
    * neither should be able to reset a farm that already exists.
    */
-  openClearing() {
-    if (this.span > 0) return false
-    this.span = PLOT_SPAN_START
+  openClearing(animate = false) {
+    if (this.exists) return false
+    this.level = 1
     this.placeStartingPlots()
+    if (animate) this.sproutBeds()
     return true
   }
 
-  /** Inside the cleared square, which is centred on the grid. */
+  /**
+   * Push every bed under the ground and let it grow back out.
+   *
+   * The farm arriving is the payoff for the whole opening, and appearing on one
+   * frame is the one presentation guaranteed to waste it — a block of beds
+   * simply existing where a moment ago there was grass reads as a level being
+   * swapped, not as ground being broken. They come up out of the soil instead,
+   * from the middle outward, which is also the order the player's eye travels.
+   *
+   * Not used on load: a restored farm has always been there.
+   */
+  private sproutBeds() {
+    for (const tile of this.tiles) {
+      if (!tile.soil) continue
+      const from = tile.pos.distanceTo(this.origin)
+      this.rising.push({
+        soil: tile.soil,
+        y: tile.soil.position.y,
+        scale: tile.soil.scale.x,
+        // Staggered by distance from the middle, so the block ripples outward
+        // rather than heaving up as one slab.
+        t: -from * 0.16,
+      })
+      tile.soil.visible = false
+    }
+  }
+
+  /**
+   * Beds currently on their way up. Empty except for the few frames after the
+   * clearing opens.
+   */
+  private readonly rising: { soil: THREE.Mesh; y: number; scale: number; t: number }[] = []
+
+  /** Seconds each bed takes to rise. */
+  private static readonly RISE_TIME = 0.5
+
+  private updateRising(dt: number) {
+    for (let i = this.rising.length - 1; i >= 0; i--) {
+      const bed = this.rising[i]
+      bed.t += dt
+      if (bed.t < 0) continue
+
+      bed.soil.visible = true
+      const p = Math.min(1, bed.t / Farm.RISE_TIME)
+      if (p >= 1) {
+        bed.soil.position.y = bed.y
+        bed.soil.scale.setScalar(bed.scale)
+        this.rising.splice(i, 1)
+        continue
+      }
+
+      /*
+       * Height eases out; width overshoots and settles.
+       *
+       * The tray reaching its final height early and then still swelling is
+       * what sells it as something growing rather than a prop being raised on a
+       * lift — the same back-out curve every panel in the UI arrives on.
+       */
+      const ease = 1 - (1 - p) ** 3
+      const pop = 1 + Math.sin(p * Math.PI) * 0.12
+      bed.soil.position.y = bed.y - 0.5 * (1 - ease)
+      bed.soil.scale.setScalar(bed.scale * (0.55 + 0.45 * ease) * pop)
+    }
+  }
+
+  /** Inside the garden at its current level. */
   private withinSpan(tile: Tile) {
-    if (this.span <= 0) return false
-    const half = (this.span - 1) / 2
-    const cx = (GRID_W - 1) / 2
-    const cz = (GRID_H - 1) / 2
-    return Math.abs(tile.gx - cx) <= half && Math.abs(tile.gz - cz) <= half
+    if (this.level <= 0) return false
+    const b = GARDEN_BOUNDS[this.level - 1]
+    return tile.gx >= b.lo && tile.gx <= b.hi && tile.gz >= b.lo && tile.gz <= b.hi
   }
 
   canPlace(tile: Tile | null): tile is Tile {
@@ -1196,6 +1318,7 @@ export class Farm {
     }
 
     this.updateExits(dt)
+    this.updateRising(dt)
 
     for (const tile of this.tiles) {
       tile.sprinkler?.model.update(elapsed)
@@ -1307,7 +1430,19 @@ export class Farm {
 
   // --- persistence --------------------------------------------------------
 
+  /**
+   * The tiles, plus the garden level they sit inside.
+   *
+   * The level has to be stored rather than derived: a level bought and not yet
+   * built on is ground the player paid for with nothing on it to show, and
+   * deriving from beds alone would quietly repossess it on every load. Saves
+   * written before levels existed are a bare array — see deserialize.
+   */
   serialize() {
+    return { level: this.level, tiles: this.serializeTiles() }
+  }
+
+  private serializeTiles() {
     return this.tiles.map((t) => ({
       o: t.placed ? 1 : 0,
       s: t.state === 'tilled' ? 1 : 0,
@@ -1323,10 +1458,15 @@ export class Farm {
     }))
   }
 
-  deserialize(data: ReturnType<Farm['serialize']>, elapsed: number) {
+  deserialize(saved: ReturnType<Farm['serialize']> | ReturnType<Farm['serializeTiles']>, elapsed: number) {
+    // A bare array is a save from before garden levels; its level is recovered
+    // from the beds instead.
+    const legacy = Array.isArray(saved)
+    const data = legacy ? saved : saved?.tiles
     if (!Array.isArray(data) || data.length !== this.tiles.length) return
-    // The span is *derived*, not stored — see recoverSpan.
-    this.span = 0
+
+    this.level = legacy ? 0 : (saved.level ?? 0)
+
     data.forEach((d, i) => {
       const tile = this.tiles[i]
       this.setPlaced(tile, d.o === 1)
@@ -1373,8 +1513,9 @@ export class Farm {
       }
     })
 
-    // Last, once every tile knows whether it is owned.
-    this.recoverSpan()
+    // Last, once every tile knows whether it is owned. A no-op for a save that
+    // carried its own level, and the whole story for one that did not.
+    if (this.level <= 0) this.recoverLevel()
   }
 }
 

@@ -21,6 +21,8 @@ import { iconHtml } from './icons'
 
 export interface FtueStats {
   plantedCount: number
+  /** Beds the farm has, planted or not — the plant step asks for all of them. */
+  plotCount: number
   wateredCount: number
   nearShop: boolean
   /** Seed purchases made this session — the shop step watches this move. */
@@ -31,6 +33,8 @@ export interface FtueStats {
   treesLeft: number
   /** True once the clearing has been cut and the farm exists. */
   hasFarm: boolean
+  /** 0 before the farm exists, then 1..3 as the garden is upgraded. */
+  gardenLevel: number
 }
 
 /** The steps, by name. `main` uses these to keep each one completable. */
@@ -41,9 +45,10 @@ export type StepId =
   | 'clear-trees'
   | 'plant'
   | 'water'
+  | 'upgrade-garden'
 
 /** What the finger should point at while a step is active. */
-export type PointerHint = 'plot' | 'crop' | 'shop' | 'seeds' | 'trees' | null
+export type PointerHint = 'plot' | 'crop' | 'shop' | 'seeds' | 'trees' | 'mailbox' | null
 
 interface Step {
   /** Stable name for this step, so game code can ask what is being asked of the player. */
@@ -55,6 +60,15 @@ interface Step {
   body: string
   /** Present = auto-advance when true. Absent = the card shows a button. */
   done?: (stats: FtueStats, baseline: FtueStats) => boolean
+  /**
+   * Live "2/4" style tally, for a step that asks for more than one of something.
+   *
+   * A step the player can satisfy in one action needs no counter — the card
+   * disappearing is the feedback. A step that wants four says so, and then has
+   * to show the four filling up, or the third plant is indistinguishable from
+   * the first and the player cannot tell the instruction is being followed.
+   */
+  progress?: (stats: FtueStats, baseline: FtueStats) => string | null
   button?: string
   /** Where the guiding finger points. Resolved to pixels by the caller. */
   pointer?: PointerHint
@@ -86,6 +100,27 @@ const STEPS: Step[] = [
     title: 'Washed ashore',
     body: 'You have the clothes you stand in and a handful of coins. There is good soil inland — but first, see what came in with the tide.',
     button: 'Take a look',
+    /*
+     * Dismissed by playing, not only by clicking.
+     *
+     * The button is the polite way past this card, but a player who has already
+     * worked out what to do and walked off to grab a barrel should not come back
+     * to a screen still asking them to go and look at the tide. Any real
+     * progress — a crate taken, a tree felled, a farm cut — stands the card
+     * down, and the steps behind it then satisfy themselves in turn, so
+     * overtaking the tutorial fast-forwards it instead of leaving it stuck
+     * describing something you have finished.
+     */
+    done: (s, base) => s.cratesLeft < base.cratesLeft || s.treesLeft < base.treesLeft || s.hasFarm,
+    /*
+     * The guides are up before the card is even dismissed.
+     *
+     * This step is the one place the player has no idea what the game wants,
+     * and the card telling them to look at the tide is worth much more with
+     * three gold trails already running down the sand to the crates it means.
+     * Nothing is asked of them yet, so there is no instruction to pre-empt.
+     */
+    pointer: 'seeds',
   },
   {
     iconId: 'ftue-plant',
@@ -118,9 +153,19 @@ const STEPS: Step[] = [
     iconId: 'ftue-plant',
     id: 'plant',
     emoji: '🌱',
-    title: 'Plant your first seed',
-    body: 'Pick a seed from the hotbar (or press 1), then click any bed to plant it.',
-    done: (s, base) => s.plantedCount > base.plantedCount,
+    title: 'Fill the beds',
+    /*
+     * All four, not one.
+     *
+     * Planting a single seed teaches the click and leaves the player standing in
+     * a farm that is three-quarters bare, with no sense of what a working bed
+     * looks like — and the next step then has them watering one sprout in an
+     * empty plot. Filling the plot is the same lesson four times for the cost of
+     * a few seconds, and it hands over a farm that looks like a farm.
+     */
+    body: 'Pick a seed from the hotbar (or press 1), then click a bed to plant it. Fill every bed in the plot.',
+    done: (s) => s.plotCount > 0 && s.plantedCount >= s.plotCount,
+    progress: (s) => (s.plotCount > 0 ? `${Math.min(s.plantedCount, s.plotCount)}/${s.plotCount} planted` : null),
     pointer: 'plot',
   },
   {
@@ -129,12 +174,60 @@ const STEPS: Step[] = [
     emoji: '💧',
     title: 'Water it',
     body: 'Click your sprout — watered crops grow faster and mutate more often.',
-    done: (s, base) => s.wateredCount > base.wateredCount,
+    /*
+     * Absolute, not "one more than when this card appeared".
+     *
+     * A player who waters each bed as they plant it arrives here with the job
+     * already done, and a relative test would sit asking them to water
+     * something that is already wet — the card would only clear when a crop
+     * dried out. Asking whether every planted bed is watered is the same
+     * question and answers correctly however the player got here.
+     */
+    done: (s) => s.plantedCount > 0 && s.wateredCount >= s.plantedCount,
+    progress: (s) =>
+      s.plantedCount > 0 ? `${Math.min(s.wateredCount, s.plantedCount)}/${s.plantedCount} watered` : null,
     pointer: 'crop',
   },
 ]
 
 const KEY = 'sv-ftue'
+const UPGRADE_KEY = 'sv-ftue-upgrade'
+
+/**
+ * The second tour: the garden upgrade, taught when it first becomes possible.
+ *
+ * The opening tutorial ends with a watered bed and never mentions that the
+ * ground itself can be bought — which is the single biggest thing the player
+ * can do with money, standing at a mailbox they have walked past a hundred
+ * times. It is taught at level 2 rather than at the start because that is when
+ * it becomes true, and a tutorial for something you cannot yet afford is just
+ * an advert.
+ */
+const UPGRADE_STEPS: Step[] = [
+  {
+    iconId: 'ftue-buy',
+    id: 'upgrade-garden',
+    emoji: '📮',
+    title: 'Room to grow',
+    body: 'Your garden can be extended. Head to the mailbox by the gate and press E — here is the coin for it.',
+    done: (s, base) => s.gardenLevel > base.gardenLevel,
+    pointer: 'mailbox',
+  },
+]
+
+/** Forget the upgrade tour too, so a wiped save teaches it again. */
+export function forgetUpgradeTour() {
+  try {
+    localStorage.removeItem(UPGRADE_KEY)
+  } catch {
+    /* storage off */
+  }
+}
+
+/** A tour that waits for its cue. See Ftue's `autoStart`. */
+export function createUpgradeTour(onSfx: (id: 'click' | 'dismiss' | 'open') => void) {
+  return new Ftue(false, onSfx, UPGRADE_STEPS, UPGRADE_KEY, false)
+}
 
 /**
  * How much room the card is taking at the bottom of the screen.
@@ -174,43 +267,92 @@ export class Ftue {
   private step = 0
   private baseline: FtueStats = {
     plantedCount: 0,
+    plotCount: 0,
     wateredCount: 0,
     nearShop: false,
     seedsBought: 0,
     cratesLeft: 0,
     treesLeft: 0,
     hasFarm: false,
+    gardenLevel: 0,
   }
   private baselineFresh = false
   /** Most recent stats seen, whatever the step — advance() snapshots from it. */
   private lastStats: FtueStats | null = null
+  /** The live tally on the card, and what it currently reads. */
+  private progress: HTMLElement | null = null
+  private progressText = ''
 
   /** True while the tutorial is guiding — main mutes the ambient tips off it. */
   active = false
 
+  /** Already seen through, or skipped, on this device. */
+  get finished() {
+    return localStorage.getItem(this.storeKey) === 'done'
+  }
+
+  /**
+   * Start a tour that was waiting for its cue.
+   *
+   * Distinct from `restart`, which replays a finished one for QA: this is the
+   * first run of a tour whose trigger is a moment in the game rather than a new
+   * save, and it must not re-fire for someone who has already been through it.
+   */
+  begin() {
+    if (this.active || this.finished) return
+    this.step = 0
+    this.baselineFresh = false
+    this.lastStats = null
+    this.active = true
+    localStorage.setItem(this.storeKey, '0')
+    this.show()
+  }
+
   constructor(
     freshFarm: boolean,
     private readonly onSfx: (id: 'click' | 'dismiss' | 'open') => void = () => {},
+    /*
+     * Which tour this is.
+     *
+     * The opening is not the only thing worth teaching: the garden upgrade
+     * arrives an hour later and is just as invisible, and it wants the same
+     * card, the same finger and the same gold trail rather than a second
+     * parallel implementation of all three. A tour is its list of steps plus
+     * the key it remembers itself under.
+     */
+    private readonly steps: Step[] = STEPS,
+    private readonly storeKey: string = KEY,
+    /** False for a tour that begins later — see `begin`. */
+    autoStart = true,
   ) {
+    /*
+     * Classes, not ids.
+     *
+     * There is more than one tour now, and each builds its own card — two
+     * elements with the same id is invalid, and the first `getElementById`
+     * anywhere in the codebase would silently pick whichever was created first.
+     */
     this.root = document.createElement('div')
-    this.root.id = 'ftueCard'
-    this.root.className = 'hidden'
+    this.root.className = 'ftue-card hidden'
     document.getElementById('ui')!.appendChild(this.root)
 
     this.finger = document.createElement('div')
-    this.finger.id = 'ftuePointer'
+    this.finger.className = 'ftue-pointer'
     this.finger.textContent = '👇'
     this.finger.style.display = 'none'
     document.getElementById('ui')!.appendChild(this.finger)
 
-    const stored = localStorage.getItem(KEY)
+    const stored = localStorage.getItem(this.storeKey)
     if (stored === 'done') return
     // A returning device with a saved step resumes it; otherwise only a fresh
     // farm starts the tutorial — a veteran's existing farm explains itself.
     if (stored !== null) {
-      this.step = Math.min(STEPS.length - 1, Number(stored) || 0)
+      this.step = Math.min(this.steps.length - 1, Number(stored) || 0)
+    } else if (!autoStart) {
+      // Waiting for its cue. Nothing is stored, so it can still fire later.
+      return
     } else if (!freshFarm) {
-      localStorage.setItem(KEY, 'done')
+      localStorage.setItem(this.storeKey, 'done')
       return
     }
     this.active = true
@@ -219,13 +361,13 @@ export class Ftue {
 
   /** Which step is on screen, or null when the tutorial is not running. */
   get stepId(): StepId | null {
-    return this.active ? STEPS[this.step].id : null
+    return this.active ? this.steps[this.step].id : null
   }
 
   /** What the active step wants pointed at; null when nothing (or inactive). */
   pointerHint(): PointerHint {
     if (!this.active) return null
-    return STEPS[this.step].pointer ?? null
+    return this.steps[this.step].pointer ?? null
   }
 
   /**
@@ -257,7 +399,7 @@ export class Ftue {
     this.baselineFresh = false
     this.lastStats = null
     this.active = true
-    localStorage.setItem(KEY, '0')
+    localStorage.setItem(this.storeKey, '0')
     this.show()
   }
 
@@ -265,7 +407,19 @@ export class Ftue {
   update(stats: FtueStats) {
     if (!this.active) return
     this.lastStats = stats
-    const step = STEPS[this.step]
+    const step = this.steps[this.step]
+
+    if (this.progress) {
+      const text = step.progress?.(stats, this.baseline) ?? ''
+      // Written only on change: this runs every frame, and assigning identical
+      // text still dirties the node for the next layout pass.
+      if (text !== this.progressText) {
+        this.progressText = text
+        this.progress.textContent = text
+        this.progress.classList.toggle('hidden', text === '')
+      }
+    }
+
     if (!step.done) return
 
     /*
@@ -291,20 +445,20 @@ export class Ftue {
     } else {
       this.baselineFresh = false
     }
-    if (this.step >= STEPS.length) {
+    if (this.step >= this.steps.length) {
       this.active = false
-      localStorage.setItem(KEY, 'done')
+      localStorage.setItem(this.storeKey, 'done')
       this.root.classList.add('hidden')
       this.publishHeight()
       this.hidePointer()
       return
     }
-    localStorage.setItem(KEY, String(this.step))
+    localStorage.setItem(this.storeKey, String(this.step))
     this.show()
   }
 
   private show() {
-    const step = STEPS[this.step]
+    const step = this.steps[this.step]
     this.root.classList.remove('hidden')
     this.publishHeight()
     // Re-trigger the entrance spring per step.
@@ -318,10 +472,15 @@ export class Ftue {
         <span>${step.body}</span>
       </div>
       <div class="ftue-side">
-        <span class="ftue-count">${this.step + 1}/${STEPS.length}</span>
+        <span class="ftue-count">${this.step + 1}/${this.steps.length}</span>
+        <span class="ftue-prog hidden"></span>
         ${step.button ? `<button class="ftue-next">${step.button}</button>` : ''}
         <button class="ftue-skip">Skip tour</button>
       </div>`
+    // Re-found per step: show() rewrites the card wholesale, so the previous
+    // step's node is detached by the time this runs.
+    this.progress = this.root.querySelector('.ftue-prog')
+    this.progressText = ''
     this.onSfx('open')
     this.root.querySelector('.ftue-next')?.addEventListener('click', () => {
       this.onSfx('click')
@@ -330,7 +489,7 @@ export class Ftue {
     this.root.querySelector('.ftue-skip')!.addEventListener('click', () => {
       this.onSfx('dismiss')
       this.active = false
-      localStorage.setItem(KEY, 'done')
+      localStorage.setItem(this.storeKey, 'done')
       this.root.classList.add('hidden')
       this.publishHeight()
       this.hidePointer()

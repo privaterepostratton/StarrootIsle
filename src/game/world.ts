@@ -20,8 +20,11 @@ import { Shopkeeper } from './shopkeeper'
 import { PLAYER_HEIGHT } from './player'
 import { Skyline } from '../assets/skyline'
 import { Water } from './water'
+import { createMailboxModel } from '../assets/cottage'
+import { GARDEN_BOUNDS, GARDEN_LEVELS, GRID_W, TILE_SIZE } from './farm'
 import {
   createTerrainMesh,
+  groundHeight,
   heightAt,
   isPlantable,
   isSand,
@@ -39,11 +42,12 @@ import {
   PLAYER_SLOT,
   FENCE_HX,
   FENCE_HZ,
+  FENCE_MARGIN,
   GATE_WIDTH,
   LANE_HALF,
-  LANE_Z_MIN,
-  LANE_Z_MAX,
-  SQUARE_CZ,
+  LANE_X_MIN,
+  LANE_X_MAX,
+  SQUARE_CX,
   SQUARE_HX,
   SQUARE_HZ,
   WELL_POS,
@@ -59,6 +63,7 @@ import {
   onLane,
   type FarmSlot,
 } from './village'
+
 
 /**
  * The village made solid.
@@ -170,8 +175,14 @@ export interface World {
   /** The stallholder beside the seed shop: idles, and waves as you walk up. */
   shopkeeper: Shopkeeper
   farmgirl: Shopkeeper
-  /** Put the player's fence up. Off until the opening clearing is cut. */
-  setPlayerFenceVisible(on: boolean): void
+  /**
+   * Re-hedge the yard for the parcels the player holds, and put the outer
+   * fence and mailbox up (or, for an empty list, take the lot down — the
+   * opening clearing is not cut yet and the ground is still woodland).
+   */
+  setGardenLevel(level: number): void
+  /** Where the upgrade mailbox is standing, for the interaction prompt. */
+  readonly mailboxPos: THREE.Vector3
   /** Reveal or hide a building that arrives with the player's level. */
   setArrivalVisible(id: ArrivalId, on: boolean): void
   hasArrived(id: ArrivalId): boolean
@@ -331,13 +342,41 @@ export function buildPlotFence(
    * gate meant walking the length of the fence every time they came home.
    */
   outerGate = false,
+  /**
+   * Half-extents, for a plot that is not full size.
+   *
+   * The player's clearing starts at a fraction of these and is widened by the
+   * mailbox — see GARDEN_FENCE_SCALES. Every other plot in the village is built
+   * at the default, which is the size the lane and the row spacing were laid
+   * out against.
+   */
+  hx = FENCE_HX,
+  hz = FENCE_HZ,
 ) {
-  const inner = s.x + s.inward * FENCE_HX
-  const outer = s.x - s.inward * FENCE_HX
-  fenceRun(fences, 'z', inner, s.z - FENCE_HZ, s.z + FENCE_HZ, GATE_WIDTH / 2, walls)
-  fenceRun(fences, 'z', outer, s.z - FENCE_HZ, s.z + FENCE_HZ, outerGate ? GATE_WIDTH / 2 : 0, walls)
-  fenceRun(fences, 'x', s.z - FENCE_HZ, s.x - FENCE_HX, s.x + FENCE_HX, 0, walls)
-  fenceRun(fences, 'x', s.z + FENCE_HZ, s.x - FENCE_HX, s.x + FENCE_HX, 0, walls)
+  /*
+   * The gate goes in whichever face the slot fronts the lane with.
+   *
+   * Written as "the two runs across the gate axis, then the two along it"
+   * rather than as four hard-coded sides, because a plot at the *end* of the
+   * street faces down it instead of across it — and a fence builder that only
+   * knows how to put a gate on an X face would wall that farm in completely.
+   */
+  if (s.axis === 'x') {
+    const inner = s.x + s.inward * hx
+    const outer = s.x - s.inward * hx
+    fenceRun(fences, 'z', inner, s.z - hz, s.z + hz, GATE_WIDTH / 2, walls)
+    fenceRun(fences, 'z', outer, s.z - hz, s.z + hz, outerGate ? GATE_WIDTH / 2 : 0, walls)
+    fenceRun(fences, 'x', s.z - hz, s.x - hx, s.x + hx, 0, walls)
+    fenceRun(fences, 'x', s.z + hz, s.x - hx, s.x + hx, 0, walls)
+    return
+  }
+
+  const inner = s.z + s.inward * hz
+  const outer = s.z - s.inward * hz
+  fenceRun(fences, 'x', inner, s.x - hx, s.x + hx, GATE_WIDTH / 2, walls)
+  fenceRun(fences, 'x', outer, s.x - hx, s.x + hx, outerGate ? GATE_WIDTH / 2 : 0, walls)
+  fenceRun(fences, 'z', s.x - hx, s.z - hz, s.z + hz, 0, walls)
+  fenceRun(fences, 'z', s.x + hx, s.z - hz, s.z + hz, 0, walls)
 }
 
 export function createWorld(renderer: THREE.WebGLRenderer): World {
@@ -442,14 +481,14 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   // circles along the verges. The scatter is what stops the lane reading as a
   // rectangle laid on top of the grass.
   //
-  // The lane is drawn from the square's north edge rather than from LANE_Z_MIN,
+  // The lane is drawn up to the square's west edge rather than to LANE_X_MAX,
   // so the two quads *abut* instead of overlapping for thirteen units. They are
   // the same material at the same height, so an overlap is a guaranteed z-fight
   // — and no depth offset fixes two identical coplanar surfaces, only not having
-  // them does. LANE_Z_MIN stays the lane's logical extent for `onLane`.
-  const laneDrawMin = Math.max(LANE_Z_MIN, SQUARE_CZ + SQUARE_HZ)
-  const laneLength = LANE_Z_MAX - laneDrawMin
-  const laneMat = dirtMaterial((LANE_HALF * 2) / 4, laneLength / 4)
+  // them does. LANE_X_MAX stays the lane's logical extent for `onLane`.
+  const laneDrawMax = Math.min(LANE_X_MAX, SQUARE_CX - SQUARE_HX)
+  const laneLength = laneDrawMax - LANE_X_MIN
+  const laneMat = dirtMaterial(laneLength / 4, (LANE_HALF * 2) / 4)
   /*
    * The street itself is an arrival.
    *
@@ -460,11 +499,11 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
    * all appear together when the first neighbour moves in.
    */
   arrivalGroup('lane').add(
-    groundQuad(LANE_HALF * 2, laneLength, laneMat, 0, (laneDrawMin + LANE_Z_MAX) / 2),
+    groundQuad(laneLength, LANE_HALF * 2, laneMat, (LANE_X_MIN + laneDrawMax) / 2, 0),
   )
 
   const squareMat = dirtMaterial((SQUARE_HX * 2) / 4, (SQUARE_HZ * 2) / 4)
-  arrivalGroup('lane').add(groundQuad(SQUARE_HX * 2, SQUARE_HZ * 2, squareMat, 0, SQUARE_CZ))
+  arrivalGroup('lane').add(groundQuad(SQUARE_HX * 2, SQUARE_HZ * 2, squareMat, SQUARE_CX, 0))
 
   /*
    * The animal store's yard.
@@ -541,14 +580,14 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
 
   // Small and tight against the edge: big blobs out on the grass stop reading
   // as a worn verge and start reading as spilt paint.
-  for (let z = laneDrawMin; z < LANE_Z_MAX; z += 1.8) {
-    for (const sx of [-1, 1]) {
-      scatter(sx * (LANE_HALF - 0.15 + r() * 0.4), z + r() * 1.2, 0.34 + r() * 0.24)
+  for (let x = LANE_X_MIN; x < laneDrawMax; x += 1.8) {
+    for (const sz of [-1, 1]) {
+      scatter(x + r() * 1.2, sz * (LANE_HALF - 0.15 + r() * 0.4), 0.34 + r() * 0.24)
     }
   }
-  for (let x = -SQUARE_HX; x < SQUARE_HX; x += 1.9) {
-    for (const sz of [-1, 1]) {
-      scatter(x + r() * 1.3, SQUARE_CZ + sz * (SQUARE_HZ - 0.15 + r() * 0.45), 0.36 + r() * 0.26)
+  for (let z = -SQUARE_HZ; z < SQUARE_HZ; z += 1.9) {
+    for (const sx of [-1, 1]) {
+      scatter(SQUARE_CX + sx * (SQUARE_HX - 0.15 + r() * 0.45), z + r() * 1.3, 0.36 + r() * 0.26)
     }
   }
 
@@ -689,15 +728,72 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
    * its own slice of the wall list, so the collision can be switched off with
    * the mesh.
    */
-  const playerFences: PropPlacement[] = []
-  const firstPlayerWall = walls.length
-  buildPlotFence(PLAYER_SLOT, playerFences, walls, true)
-  const playerWalls = walls.slice(firstPlayerWall)
-  const playerFenceGroup = new THREE.Group()
-  playerFenceGroup.add(instanceModel(getModels().plotFence, playerFences))
-  playerFenceGroup.visible = false
-  for (const w of playerWalls) w.off = true
-  group.add(playerFenceGroup)
+  /*
+   * One fence per garden level, all built now and all hidden.
+   *
+   * The garden grows 4x4 -> 7x7 -> 10x10 and the rails follow it, so the yard
+   * visibly gets bigger when an upgrade is bought rather than standing at full
+   * size around three-quarters of nothing. Rebuilding an InstancedMesh and
+   * splicing the wall list mid-session to do that would be fiddly and the sort
+   * of thing that leaves a collider behind; three complete fences switched by
+   * visibility cannot get out of step with themselves.
+   *
+   * Each is centred on its own band of tiles, which is not always the middle of
+   * the plot — see GARDEN_BOUNDS for why level 2 sits half a tile off.
+   */
+  const gardenFences = GARDEN_LEVELS.map((_, i) => {
+    const b = GARDEN_BOUNDS[i]
+    const half = ((b.hi - b.lo + 1) * TILE_SIZE) / 2 + FENCE_MARGIN
+    const offset = ((b.lo + b.hi) / 2 - (GRID_W - 1) / 2) * TILE_SIZE
+    const slot: FarmSlot = { ...PLAYER_SLOT, x: PLAYER_SLOT.x + offset, z: PLAYER_SLOT.z + offset }
+
+    const props: PropPlacement[] = []
+    const firstWall = walls.length
+    buildPlotFence(slot, props, walls, true, half, half)
+    const ringWalls = walls.slice(firstWall)
+    const ringGroup = new THREE.Group()
+    ringGroup.add(instanceModel(getModels().plotFence, props))
+    ringGroup.visible = false
+    for (const w of ringWalls) w.off = true
+    group.add(ringGroup)
+    return { group: ringGroup, walls: ringWalls, slot, half }
+  })
+
+  /*
+   * The mailbox the upgrade is bought at.
+   *
+   * Stands just outside the gate, so it is the first thing passed on the way in
+   * and the last on the way out, and it moves with the fence as the garden
+   * grows. Its collider travels with it — a mailbox left standing where the old
+   * gate used to be is an invisible post in the middle of the new lawn.
+   */
+  const mailbox = createMailboxModel(0xd8b25a)
+  mailbox.object.visible = false
+  group.add(mailbox.object)
+  const mailboxObstacle: Obstacle = { x: 0, z: 0, r: 0.35, off: true }
+  obstacles.push(mailboxObstacle)
+  const mailboxPos = new THREE.Vector3()
+
+  /** Put the mailbox beside the gate of whichever fence is standing. */
+  const placeMailbox = (ring: (typeof gardenFences)[number]) => {
+    /*
+     * At the *outer* gate, not the lane one.
+     *
+     * The lane-side gate is the one the village arrives through; the outer gate
+     * is the one the player uses, because they wake on the beach and walk in
+     * from that side for the whole opening. A mailbox they only meet after
+     * walking the length of their own fence is a mailbox they do not meet.
+     */
+    const side = -PLAYER_SLOT.inward
+    const gateX = ring.slot.x + side * ring.half
+    const x = gateX + side * 0.85
+    const z = ring.slot.z - GATE_WIDTH / 2 - 0.55
+    mailbox.object.position.set(x, groundHeight(x, z), z)
+    mailbox.object.rotation.y = PLAYER_SLOT.inward * (Math.PI / 2)
+    mailboxObstacle.x = x
+    mailboxObstacle.z = z
+    mailboxPos.set(x, groundHeight(x, z), z)
+  }
 
   // Signpost beside the gate, turned to face along the lane so it is readable
   // to someone walking up the street rather than edge-on.
@@ -717,17 +813,19 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   const lanterns: PropPlacement[] = []
 
   for (let i = 0; ; i++) {
-    const z = LANE_Z_MIN + 6 + i * 9.5
-    if (z > LANE_Z_MAX - 4) break
-    const sx = i % 2 === 0 ? -1 : 1
-    const x = sx * (LANE_HALF - 0.45)
+    const x = LANE_X_MIN + 6 + i * 9.5
+    if (x > laneDrawMax - 4) break
+    // Alternating verges: north side, then south, so the two rows interleave
+    // down the street rather than standing in facing pairs.
+    const sz = i % 2 === 0 ? -1 : 1
+    const z = sz * (LANE_HALF - 0.45)
     lanterns.push({
       x,
       // Modelled centred on its own origin, so lift it by half its scaled height.
       y: -lanternBox.min.y * lanternScale,
       z,
       // Face the lane, so the two verges are mirror images rather than clones.
-      rotationY: sx > 0 ? -Math.PI / 2 : Math.PI / 2,
+      rotationY: sz > 0 ? Math.PI : 0,
       scale: lanternScale,
     })
     ownedObstacle('lane', { x, z, r: 0.3 })
@@ -920,7 +1018,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   const beds: PropPlacement[] = []
   for (const sx of [-1, 1]) {
     const bx = sx * 5.8
-    const bz = SQUARE_CZ + SQUARE_HZ - 2.2
+    const bz = SQUARE_HZ - 2.2
     benches.push({
       x: bx,
       y: benchFit.groundY,
@@ -931,7 +1029,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     })
     obstacles.push({ x: bx, z: bz, r: 0.6 })
 
-    beds.push({ x: sx * 13.5, y: bedFit.groundY, z: SQUARE_CZ + 2, scale: bedFit.scale })
+    beds.push({ x: SQUARE_CX + 2, y: bedFit.groundY, z: sx * 8.5, scale: bedFit.scale })
   }
   group.add(instanceModel(getModels().bench, benches))
   group.add(instanceModel(getModels().flowerBed, beds))
@@ -1070,11 +1168,11 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
    */
   plantThicket('shop', SHOP_POS.x, SHOP_POS.z, 10, 8, 46)
   plantThicket('barn', (BARN_POS.x + PASTURE_CENTRE.x) / 2, BARN_POS.z, 17, 11, 76)
-  plantThicket('lane', 0, (LANE_Z_MIN + LANE_Z_MAX) / 2, LANE_HALF + 2.5, (LANE_Z_MAX - LANE_Z_MIN) / 2, 96)
+  plantThicket('lane', (LANE_X_MIN + LANE_X_MAX) / 2, 0, (LANE_X_MAX - LANE_X_MIN) / 2, LANE_HALF + 2.5, 96)
   // The square, and the turning circle at the north end — both part of the
   // street, both bare strips of nothing without this.
-  plantThicket('lane', 0, SQUARE_CZ, SQUARE_HX + 1, SQUARE_HZ + 1, 30)
-  plantThicket('lane', 0, LANE_Z_MAX - 2, 10, 7, 26)
+  plantThicket('lane', SQUARE_CX, 0, SQUARE_HX + 1, SQUARE_HZ + 1, 30)
+  plantThicket('lane', LANE_X_MIN + 4, 0, 7, 10, 26)
 
   for (const g of arrivalGroups.values()) g.visible = false
   for (const o of obstacles) if (o.owner) o.off = true
@@ -1090,9 +1188,17 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     shopMarkers,
     shopkeeper,
     farmgirl,
-    setPlayerFenceVisible(on: boolean) {
-      playerFenceGroup.visible = on
-      for (const w of playerWalls) w.off = !on
+    mailboxPos,
+    setGardenLevel(level: number) {
+      const index = level > 0 ? Math.min(gardenFences.length, level) - 1 : -1
+      gardenFences.forEach((ring, i) => {
+        const on = i === index
+        ring.group.visible = on
+        for (const w of ring.walls) w.off = !on
+      })
+      mailbox.object.visible = index >= 0
+      mailboxObstacle.off = index < 0
+      if (index >= 0) placeMailbox(gardenFences[index])
     },
     setArrivalVisible(id: ArrivalId, on: boolean) {
       const g = arrivalGroups.get(id)

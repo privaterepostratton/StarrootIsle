@@ -8,6 +8,8 @@ import {
   FENCE_HX,
   FENCE_HZ,
   gatePos,
+  towardLane,
+  fenceHalfAlong,
 } from '../village'
 
 /**
@@ -136,9 +138,23 @@ describe('village router', () => {
         }
         if (!wasInside && containingSlot(pos) === PLAYER_SLOT) {
           entered = true
+          /*
+           * Either gate, not just the lane one.
+           *
+           * The player's clearing has two openings: the lane gate, and a second
+           * on the far side facing the beach — it is there so that walking home
+           * from the sea does not mean a lap of your own fence. A walker coming
+           * from due west lines up with that one and goes straight in, which is
+           * the whole point of it. What this test is guarding is that they came
+           * through *an opening* rather than over the rails.
+           */
           const gate = gatePos(PLAYER_SLOT)
-          const atGate = Math.hypot(pos.x - gate.x, pos.z - gate.z)
-          expect(atGate, `entry point ${atGate.toFixed(2)} from gate at ${deg}°`).toBeLessThan(2.2)
+          const back = towardLane(PLAYER_SLOT, -fenceHalfAlong(PLAYER_SLOT))
+          const atGate = Math.min(
+            Math.hypot(pos.x - gate.x, pos.z - gate.z),
+            Math.hypot(pos.x - back.x, pos.z - back.z),
+          )
+          expect(atGate, `entry point ${atGate.toFixed(2)} from a gate at ${deg}°`).toBeLessThan(2.2)
         }
       }
       expect(entered, `never entered from ${deg}°`).toBe(true)

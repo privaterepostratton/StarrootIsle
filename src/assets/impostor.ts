@@ -19,8 +19,15 @@ import type { LoadedModel } from './models'
  * snapshot instead would leave the horizon glowing at midnight.
  */
 
-/** Snapshot resolution. At impostor distances one tree is well under 100px. */
-const ATLAS_SIZE = 256
+/**
+ * Snapshot resolution.
+ *
+ * At true impostor distances a tree is well under 100px, but the ring starts
+ * close enough to the village that one can be a few metres away at the edge of
+ * the swap — and a 256px crown magnified that far is visibly soft. 512 is one
+ * texture per species, taken once at load.
+ */
+const ATLAS_SIZE = 512
 
 export interface Impostor {
   /** The snapshot, ready to be worn by billboard quads. */
@@ -135,6 +142,29 @@ export function createImpostorField(
         iOrigin + bbRight * transformed.x * iScale + vec3(0.0, transformed.y * iScale, 0.0);
       vec4 mvPosition = viewMatrix * vec4(worldPos, 1.0);
       gl_Position = projectionMatrix * mvPosition;
+      `,
+    )
+
+    /*
+     * A tree is either there or it is not.
+     *
+     * The snapshot's alpha is only binary in the middle of the crown: the
+     * capture antialiases the silhouette, the linear filter blends across
+     * texels, and both leave a band of part-transparent pixels around every
+     * leaf. Those pixels clear the alpha test and are then written *with their
+     * own alpha*, so the far forest ends up with a translucent fringe — and
+     * where crowns overlap, or a mountain stands behind them, you can see
+     * straight through the tree.
+     *
+     * The stock alphatest chunk cannot fix this: it only decides whether to
+     * discard, never what alpha survives. So the test is done here and the
+     * survivors are forced to fully opaque.
+     */
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <alphatest_fragment>',
+      /* glsl */ `
+      if (diffuseColor.a < 0.5) discard;
+      diffuseColor.a = 1.0;
       `,
     )
   }

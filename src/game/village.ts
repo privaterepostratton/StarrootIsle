@@ -29,9 +29,19 @@ import { GRID_W, GRID_H, TILE_SIZE } from './farm'
  */
 export const LANE_HALF = 3.2
 
-/** How far the lane runs. South end is the market square, north end the well. */
-export const LANE_Z_MIN = -41
-export const LANE_Z_MAX = 34
+/**
+ * How far the lane runs, west to east.
+ *
+ * The street used to run north–south with the square at its south end. It now
+ * runs across the map: the market square caps the *east* end, and the west end
+ * stops at the player's own gate rather than carrying on into empty grass —
+ * which is what allows their farm to sit at the head of the street instead of
+ * marooned off to one side of it. See PLAYER_SLOT.
+ *
+ * The west end is derived from the player's fence rather than typed, so moving
+ * the farm moves the end of the road with it.
+ */
+export const LANE_X_MAX = 40
 
 // --- plot footprint ----------------------------------------------------------
 
@@ -56,11 +66,20 @@ export const FENCE_HZ = PLOT_HZ + FENCE_MARGIN
 
 /** Distance from the lane centreline to a plot centre. Puts the inner fence
  *  exactly on the lane edge, so plots front directly onto the street. */
-export const PLOT_CX = LANE_HALF + FENCE_HX
+export const PLOT_CZ = LANE_HALF + FENCE_HZ
 
-/** Centre-to-centre spacing of the three rows. */
-export const ROW_SPACING = 19
-export const ROW_Z = [-ROW_SPACING, 0, ROW_SPACING]
+/** Centre-to-centre spacing of the three rows, measured along the street. */
+export const ROW_SPACING = 16
+/*
+ * Rows along the street, shifted east of centre.
+ *
+ * The player's farm caps the west end and is a full plot wide, so a row centred
+ * on the origin put the nearest neighbours' fences *through* it — the router
+ * tests caught it as routes crossing a foreign fence, which is exactly what it
+ * was. Each row now clears the farm's east fence with a couple of units to
+ * spare, and the last one stops short of the market square.
+ */
+export const ROW_X = [-16, 0, 16]
 
 /** Width of the gate opening in the lane-side fence. */
 export const GATE_WIDTH = 3.2
@@ -69,24 +88,47 @@ export const GATE_WIDTH = 3.2
 
 export interface FarmSlot {
   /** Which verge this plot sits on. */
-  side: 'west' | 'east'
-  /** 0 = southernmost row. */
+  side: 'north' | 'south'
+  /** 0 = the western end of the street. */
   row: number
   /** Plot centre. */
   x: number
   z: number
   /**
-   * Which way the lane lies from this plot: +1 when the lane is at greater X
-   * (west verge), -1 when it is at lesser X (east verge). Gates, mailboxes and
-   * cottages are mirrored by this rather than rotated, which keeps every
-   * plot's tile grid axis-aligned.
+   * Which way the lane lies from this plot along `axis`: +1 when the lane is at
+   * the greater coordinate, -1 when it is at the lesser. Gates, mailboxes and
+   * cottages are mirrored by this rather than rotated, which keeps every plot's
+   * tile grid axis-aligned.
    */
   inward: 1 | -1
+  /**
+   * Which axis `inward` points along.
+   *
+   * Every plot on the street fronts it across the same axis, so this was an
+   * assumption baked into the gate maths rather than a field. It stops being
+   * true the moment one plot sits at the *end* of the lane instead of beside
+   * it — that farm's gate faces down the street, not across it — and a hidden
+   * assumption is a much worse place for that to surface than a field.
+   */
+  axis: 'x' | 'z'
 }
 
-function slot(side: 'west' | 'east', row: number): FarmSlot {
-  const inward = side === 'west' ? 1 : -1
-  return { side, row, x: -inward * PLOT_CX, z: ROW_Z[row], inward }
+function slot(side: 'north' | 'south', row: number): FarmSlot {
+  // North of the street means a lesser Z, so the lane lies at greater Z: +1.
+  const inward = side === 'north' ? 1 : -1
+  return { side, row, x: ROW_X[row], z: -inward * PLOT_CZ, inward, axis: 'z' }
+}
+
+/** Half-extent of a plot's fence across whichever axis its gate faces. */
+export function fenceHalfAlong(s: FarmSlot) {
+  return s.axis === 'x' ? FENCE_HX : FENCE_HZ
+}
+
+/** Offset a plot centre by `d` in the direction of its gate. */
+export function towardLane(s: FarmSlot, d: number) {
+  return s.axis === 'x'
+    ? new THREE.Vector3(s.x + s.inward * d, 0, s.z)
+    : new THREE.Vector3(s.x, 0, s.z + s.inward * d)
 }
 
 /**
@@ -95,12 +137,12 @@ function slot(side: 'west' | 'east', row: number): FarmSlot {
  * neighbour profiles in order.
  */
 export const FARM_SLOTS: FarmSlot[] = [
-  slot('west', 0),
-  slot('east', 0),
-  slot('west', 1),
-  slot('east', 1),
-  slot('west', 2),
-  slot('east', 2),
+  slot('north', 0),
+  slot('south', 0),
+  slot('north', 1),
+  slot('south', 1),
+  slot('north', 2),
+  slot('south', 2),
 ]
 
 /**
@@ -119,7 +161,26 @@ export const FARM_SLOTS: FarmSlot[] = [
  * pointing at the lane — so the gate, the signpost, the fence builder and the
  * router all keep working without knowing it has moved off the street.
  */
-export const PLAYER_SLOT: FarmSlot = { side: 'west', row: 1, x: -38, z: 2, inward: 1 }
+/*
+ * Six tiles east of where it used to stand.
+ *
+ * The yard is about to become a board of parcels the player claims one at a
+ * time, and at x = -38 its western third was beach: the grass line runs about
+ * 2.8 units west of the old centre, so the outermost column of parcels would
+ * have been sand nobody can farm. Shifting east puts the whole board on grass
+ * with a margin at both ends — roughly a unit and a half of turf before the
+ * sand to the west, and two before the neighbours' plots to the east, which is
+ * as much room as there is to have.
+ */
+export const PLAYER_SLOT: FarmSlot = { side: 'north', row: 1, x: -32, z: 0, inward: 1, axis: 'x' }
+
+/**
+ * Where the street stops in the west: at the player's gate.
+ *
+ * Derived rather than typed, so moving the farm moves the end of the road with
+ * it and the two can never drift into each other.
+ */
+export const LANE_X_MIN = PLAYER_SLOT.x + FENCE_HX
 
 /**
  * The five plots the neighbours live on.
@@ -156,13 +217,13 @@ export const SPAWN = new THREE.Vector3(-56, 0, 6)
 
 /** Where a plot's gate opens onto the lane. */
 export function gatePos(s: FarmSlot) {
-  return new THREE.Vector3(s.x + s.inward * FENCE_HX, 0, s.z)
+  return towardLane(s, fenceHalfAlong(s))
 }
 
 /** Where the player is dropped when fast-travelling to a plot: on the lane,
  *  just outside the gate, so they walk in through it. */
 export function approachPos(s: FarmSlot) {
-  return new THREE.Vector3(s.x + s.inward * (FENCE_HX + 1.8), 0, s.z)
+  return towardLane(s, fenceHalfAlong(s) + 1.8)
 }
 
 // --- market square -----------------------------------------------------------
@@ -175,12 +236,12 @@ export function approachPos(s: FarmSlot) {
  * slab of bare dirt that swallows the bottom of the frame whenever the camera
  * looks up the street from the entrance.
  */
-export const SQUARE_CZ = -34
-export const SQUARE_HX = 11
-export const SQUARE_HZ = 6.5
+export const SQUARE_CX = 33
+export const SQUARE_HX = 6.5
+export const SQUARE_HZ = 11
 
-/** Seed stall, west side of the square. */
-export const SHOP_POS = new THREE.Vector3(-8, 0, SQUARE_CZ - 2.5)
+/** Seed stall, north side of the square. */
+export const SHOP_POS = new THREE.Vector3(SQUARE_CX + 2.5, 0, -8)
 
 /**
  * Animal store, at the *north* end of the lane, with its paddock beside it.
@@ -191,7 +252,7 @@ export const SHOP_POS = new THREE.Vector3(-8, 0, SQUARE_CZ - 2.5)
  * two stores to opposite ends gives the street a reason to exist: seeds at one
  * end, livestock at the other, and the farms in between.
  */
-export const BARN_POS = new THREE.Vector3(11, 0, LANE_Z_MAX + 8)
+export const BARN_POS = new THREE.Vector3(LANE_X_MAX + 11, 0, -13)
 
 /**
  * Which way the barn's doors face, as a sign on Z.
@@ -209,12 +270,18 @@ export const BARN_POS = new THREE.Vector3(11, 0, LANE_Z_MAX + 8)
 export const BARN_FRONT = -1
 
 /** Grazing paddock, beside the animal store. */
-export const PASTURE_CENTRE = new THREE.Vector3(24.5, 0, LANE_Z_MAX + 9)
+export const PASTURE_CENTRE = new THREE.Vector3(LANE_X_MAX + 12, 0, 6)
 export const PASTURE_RADIUS = 7.5
 
-
-/** The well capping the north end of the lane. */
-export const WELL_POS = new THREE.Vector3(0, 0, LANE_Z_MAX - 3)
+/**
+ * The well, moved onto the market square.
+ *
+ * It used to cap the far end of the street from the square. There is no far end
+ * any more — the west end is the player's own gate — and a well standing in
+ * somebody's driveway is worse than no well. The middle of the square is where
+ * a village well belongs anyway.
+ */
+export const WELL_POS = new THREE.Vector3(SQUARE_CX, 0, 0)
 
 // --- flat ground -------------------------------------------------------------
 
@@ -235,16 +302,16 @@ export interface FlatPad {
 }
 
 export const FLAT_PADS: FlatPad[] = [
-  // The street itself: all six plots plus the lane between them.
+  // The street itself: all five neighbour plots plus the lane between them.
   {
     cx: 0,
     cz: 0,
-    hx: PLOT_CX + FENCE_HX + 0.5,
-    hz: ROW_SPACING + FENCE_HZ + 0.5,
+    hx: ROW_SPACING + FENCE_HX + 0.5,
+    hz: PLOT_CZ + FENCE_HZ + 0.5,
     falloff: 9,
   },
-  // Market square at the south end.
-  { cx: 0, cz: SQUARE_CZ, hx: SQUARE_HX + 2, hz: SQUARE_HZ + 2, falloff: 9 },
+  // Market square at the east end.
+  { cx: SQUARE_CX, cz: 0, hx: SQUARE_HX + 2, hz: SQUARE_HZ + 2, falloff: 9 },
   // Paddock beside the animal store.
   {
     cx: PASTURE_CENTRE.x,
@@ -256,8 +323,8 @@ export const FLAT_PADS: FlatPad[] = [
   // The animal store's own ground. It used to share the square's pad; at the
   // north end it stands on open valley floor and needs its own.
   { cx: BARN_POS.x, cz: BARN_POS.z, hx: 8, hz: 7, falloff: 8 },
-  // The turning circle at the north end of the lane.
-  { cx: 0, cz: LANE_Z_MAX - 2, hx: 9, hz: 6, falloff: 8 },
+  // The lane surface itself, west of the square.
+  { cx: (LANE_X_MIN + LANE_X_MAX) / 2, cz: 0, hx: (LANE_X_MAX - LANE_X_MIN) / 2 + 2, hz: LANE_HALF + 3, falloff: 8 },
   /*
    * The player's clearing. Flattened like any other built ground — a farm on a
    * slope cannot have a square tile grid — and given a wide falloff so the
@@ -270,17 +337,16 @@ export const FLAT_PADS: FlatPad[] = [
 
 /** Extent of everything the village occupies, used to keep wild features out. */
 export const VILLAGE_BOUNDS = {
-  // Reaches west to the player's clearing, which is well off the street now.
-  minX: Math.min(-(PLOT_CX + FENCE_HX), PLAYER_SLOT.x - FENCE_HX - 3),
-  maxX: PASTURE_CENTRE.x + PASTURE_RADIUS + 2,
-  minZ: SQUARE_CZ - 9,
+  // Reaches west to the player's clearing, which caps the end of the street.
+  minX: PLAYER_SLOT.x - FENCE_HX - 3,
   /*
-   * Reaches past the lane to whichever of the paddock or the barn ends furthest
-   * north. Left at `LANE_Z_MAX + 4` when the store moved up here, the box
-   * stopped short of both of them and the forest scatter planted trees through
-   * the paddock fence.
+   * Reaches east past the square to whichever of the paddock or the barn ends
+   * furthest out — anything short of them lets the forest scatter plant trees
+   * through the paddock fence.
    */
-  maxZ: Math.max(LANE_Z_MAX + 4, PASTURE_CENTRE.z + PASTURE_RADIUS + 2, BARN_POS.z + 8),
+  maxX: Math.max(LANE_X_MAX + 4, PASTURE_CENTRE.x + PASTURE_RADIUS + 2, BARN_POS.x + 8),
+  minZ: Math.min(-(PLOT_CZ + FENCE_HZ), BARN_POS.z - 8) - 4,
+  maxZ: Math.max(PLOT_CZ + FENCE_HZ, PASTURE_CENTRE.z + PASTURE_RADIUS, SQUARE_HZ) + 4,
 }
 
 /**
@@ -311,10 +377,10 @@ export function inAnyPlot(x: number, z: number, margin = 0) {
 
 /** True on the lane surface, including the market square and the north circle. */
 export function onLane(x: number, z: number, margin = 0) {
-  if (Math.abs(x) < LANE_HALF + margin && z > LANE_Z_MIN - margin && z < LANE_Z_MAX + margin) {
+  if (Math.abs(z) < LANE_HALF + margin && x > LANE_X_MIN - margin && x < LANE_X_MAX + margin) {
     return true
   }
-  return Math.abs(x) < SQUARE_HX + margin && Math.abs(z - SQUARE_CZ) < SQUARE_HZ + margin
+  return Math.abs(x - SQUARE_CX) < SQUARE_HX + margin && Math.abs(z) < SQUARE_HZ + margin
 }
 
 /** True anywhere the village has built on — nothing wild may generate here. */

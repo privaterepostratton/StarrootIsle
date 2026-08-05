@@ -49,6 +49,35 @@ interface Node {
   edges: number[]
 }
 
+/*
+ * Gate geometry, in terms of the slot's own axis rather than of X.
+ *
+ * A plot at the end of the street faces down it, so "am I lined up with the
+ * opening" and "how far outside it am I" are questions about whichever axis
+ * that plot fronts the lane with. These three read the axis off the slot so the
+ * routing works the same for a farm beside the road and one at the head of it.
+ */
+
+/** Standing within the width of the gate opening, however it is oriented. */
+function alignedWithGate(pos: THREE.Vector3, slot: FarmSlot) {
+  const off = slot.axis === 'x' ? pos.z - slot.z : pos.x - slot.x
+  return Math.abs(off) < 1.1
+}
+
+/** How far outside the gate this position is. Negative means already through. */
+function gateDistance(pos: THREE.Vector3, gate: THREE.Vector3, slot: FarmSlot) {
+  const along = slot.axis === 'x' ? pos.x - gate.x : pos.z - gate.z
+  return along * slot.inward
+}
+
+/** A point a stride inside the gate, so a crossing completes rather than stalls. */
+function justInsideGate(gate: THREE.Vector3, slot: FarmSlot) {
+  const inner = gate.clone()
+  if (slot.axis === 'x') inner.x -= slot.inward * 1.2
+  else inner.z -= slot.inward * 1.2
+  return inner
+}
+
 /** Liang-Barsky: does the segment cross this rect (expanded by pad)? */
 function segmentHitsRect(
   x1: number,
@@ -165,12 +194,8 @@ export function nextWaypoint(
   // On the gate leg: between the approach point and safely inside, aligned
   // with the opening. Aim past the line so the crossing completes.
   const gate = gatePos(slot)
-  const onAxis = Math.abs(pos.z - slot.z) < 1.1
-  const outward = (pos.x - gate.x) * slot.inward
-  if (onAxis && outward < 2.2) {
-    const inner = gate.clone()
-    inner.x -= slot.inward * 1.2
-    return inner
+  if (alignedWithGate(pos, slot) && gateDistance(pos, gate, slot) < 2.2) {
+    return justInsideGate(gate, slot)
   }
 
   const a = approachPos(slot)
@@ -253,12 +278,7 @@ export function routeToPoint(pos: THREE.Vector3, tx: number, tz: number): THREE.
 
 /** Exit waypoint for anything standing inside a farm: gate first, then out. */
 export function exitWaypoint(pos: THREE.Vector3, slot: FarmSlot): THREE.Vector3 {
-  const onAxis = Math.abs(pos.z - slot.z) < 1.1
-  if (!onAxis) {
-    const inner = gatePos(slot)
-    inner.x -= slot.inward * 1.2
-    return inner
-  }
+  if (!alignedWithGate(pos, slot)) return justInsideGate(gatePos(slot), slot)
   const a = approachPos(slot)
   return new THREE.Vector3(a.x, 0, a.z)
 }

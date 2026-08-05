@@ -23,7 +23,7 @@ import {
   PLOT_HZ,
   GATE_WIDTH,
   approachPos,
-  gatePos,
+  FENCE_MARGIN,
   type FarmSlot,
 } from './village'
 import { isSand } from './terrain'
@@ -232,6 +232,25 @@ export class Neighbour {
     // rather than rotated, so the tile grid stays axis-aligned on both verges.
     const inward = slot.inward
 
+    /*
+     * Plot-local coordinates, because a plot no longer knows which way it faces.
+     *
+     * `deep` runs away from the lane — the cottage is deep, the crops are
+     * shallow — and `across` runs along the frontage. Written this way the whole
+     * yard below is a description of a farm rather than of a farm *on a
+     * north–south street*: a plot that fronts the lane along Z lays itself out
+     * identically, and none of the offsets have to be touched to say so.
+     */
+    const at = (deep: number, across: number) =>
+      slot.axis === 'x'
+        ? { x: slot.x - inward * deep, z: slot.z + across }
+        : { x: slot.x + across, z: slot.z - inward * deep }
+    /** Rotation that turns a +Z-facing model to look at the lane. */
+    const facingLane = slot.axis === 'x' ? inward * (Math.PI / 2) : inward === 1 ? 0 : Math.PI
+    /** Half-extents in plot-local terms. Square plots, but named for clarity. */
+    const DEEP_HALF = slot.axis === 'x' ? PLOT_HX : PLOT_HZ
+    const ACROSS_HALF = slot.axis === 'x' ? PLOT_HZ : PLOT_HX
+
     /**
      * Everything static on this farm is collected here and baked into a single
      * mesh at the end of construction. A cottage is ~25 meshes and a ring of
@@ -249,14 +268,15 @@ export class Neighbour {
     // — so it is washed most of the way to white and used as an instance tint
     // rather than being dropped. Applied at full strength it would swamp the
     // model's own texture.
-    const cottageX = slot.x - inward * (PLOT_HX - 3.0)
-    const cottageZ = slot.z - 2.4
+    const cottage = at(DEEP_HALF - 3.0, -2.4)
+    const cottageX = cottage.x
+    const cottageZ = cottage.z
     const cottageFit = fitToHeight(getModels().cottage, PROP_HEIGHT.cottage)
     batches.cottages.push({
       x: cottageX,
       y: cottageFit.groundY,
       z: cottageZ,
-      rotationY: inward * (Math.PI / 2) + 0.18,
+      rotationY: facingLane + 0.18,
       scale: cottageFit.scale,
       color: washToward(profile.wallColor, 0.72),
     })
@@ -264,9 +284,10 @@ export class Neighbour {
 
     // --- mailbox ----------------------------------------------------------
     // On the verge beside the gate, so its raised flag is readable from the lane.
-    const gate = gatePos(slot)
     this.mailbox = createMailboxModel(profile.roofColor)
-    this.mailbox.object.position.set(gate.x + inward * 0.8, 0, slot.z + GATE_WIDTH / 2 + 0.9)
+    // Just outside the gate and clear of the opening, in plot-local terms.
+    const post = at(-(DEEP_HALF + FENCE_MARGIN + 0.8), GATE_WIDTH / 2 + 0.9)
+    this.mailbox.object.position.set(post.x, 0, post.z)
     this.group.add(this.mailbox.object)
 
     // Request marker, parked over the cottage roof and hidden until they ask
@@ -281,11 +302,14 @@ export class Neighbour {
     // --- plot -------------------------------------------------------------
     // The tilled patch sits towards the lane end of the strip, so their crops
     // are the part of their farm you see from the street.
-    const bedCX = slot.x + inward * 2.6
-    const bedCZ = slot.z + 0.4
+    const bedCentre = at(-2.6, 0.4)
+    const bedCX = bedCentre.x
+    const bedCZ = bedCentre.z
 
     for (let gz = 0; gz < PLOT_H; gz++) {
       for (let gx = 0; gx < PLOT_W; gx++) {
+        // The bed's own grid is square and axis-aligned either way, so it is
+        // laid out in world axes rather than plot-local ones.
         const pos = new THREE.Vector3(
           bedCX + (gx - (PLOT_W - 1) / 2) * TILE,
           0,
@@ -333,14 +357,13 @@ export class Neighbour {
     // around bare lawn is the thing that makes a farm look unfinished. All of
     // this bakes into the static mesh with everything else, so filling the yard
     // is free at runtime.
-    const yardX = slot.x - inward * (PLOT_HX - 1.6)
-
     const scarecrowFit = fitToHeight(getModels().scarecrow, PROP_HEIGHT.scarecrow)
+    const scarecrow = at(1.2, ACROSS_HALF - 1.8)
     batches.scarecrows.push({
-      x: slot.x - inward * 1.2,
+      x: scarecrow.x,
       y: scarecrowFit.groundY,
-      z: slot.z + PLOT_HZ - 1.8,
-      rotationY: inward * (Math.PI / 2),
+      z: scarecrow.z,
+      rotationY: facingLane,
       scale: scarecrowFit.scale,
     })
 
@@ -353,12 +376,14 @@ export class Neighbour {
      */
     const bedFit = fitToHeight(getModels().flowerBed, PROP_HEIGHT.flowerBed)
     for (let i = 0; i < 3; i++) {
+      // Draws from the shared PRNG in the same order as before, so moving these
+      // out of the bake does not reshuffle every yard's dressing.
+      const jitter = (r() - 0.5) * 1.6
+      const spot = at(DEEP_HALF - 1.6 + jitter, -ACROSS_HALF + 1.6 + i * 2.4)
       batches.flowerBeds.push({
-        // Draws from the shared PRNG in the same order as before, so moving
-        // these out of the bake does not reshuffle every yard's dressing.
-        x: yardX + (r() - 0.5) * 1.6,
+        x: spot.x,
         y: bedFit.groundY,
-        z: slot.z - PLOT_HZ + 1.6 + i * 2.4,
+        z: spot.z,
         rotationY: r() * Math.PI,
         scale: bedFit.scale,
       })
@@ -375,8 +400,9 @@ export class Neighbour {
      */
     const bushFit = fitToHeight(getModels().bush, PROP_HEIGHT.bush)
     for (let i = 0; i < 7; i++) {
-      const bx = slot.x - inward * (2.4 + r() * (PLOT_HX - 3.2))
-      const bz = slot.z - PLOT_HZ + 0.9 + r() * (PLOT_HZ * 2 - 1.8)
+      const bush = at(2.4 + r() * (DEEP_HALF - 3.2), -ACROSS_HALF + 0.9 + r() * (ACROSS_HALF * 2 - 1.8))
+      const bx = bush.x
+      const bz = bush.z
       if (Math.hypot(bx - cottageX, bz - cottageZ) < 2.6) continue
       const jitter = 0.75 + r() * 0.5
       batches.bushes.push({
@@ -391,11 +417,13 @@ export class Neighbour {
     // Authored and textured, so it joins the instanced batch rather than being
     // baked in with the procedural dressing.
     const benchFit = fitToHeight(getModels().bench, PROP_HEIGHT.bench)
+    // In front of the cottage, a little along the frontage from its door.
+    const bench = at(DEEP_HALF - 3.0 - 2.4, -2.4 + 2.2)
     batches.benches.push({
-      x: cottageX + inward * 2.4,
+      x: bench.x,
       y: benchFit.groundY,
-      z: cottageZ + 2.2,
-      rotationY: inward * (Math.PI / 2),
+      z: bench.z,
+      rotationY: facingLane,
       scale: benchFit.scale,
     })
 

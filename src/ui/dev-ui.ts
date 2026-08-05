@@ -45,6 +45,10 @@ export interface DevActions {
   expandPlot(): void
   /** Force every level-gated building into the world regardless of level. */
   revealAll(): void
+  /** Walk a fresh wave of wild animals out of the treeline (QA). */
+  spawnWildlife(): void
+  /** Wash a flotsam barrel up on the beach now, instead of on its timer (QA). */
+  washUpBarrel(): void
   /** Live render stats for the readout line. */
   stats(): { fps: number; calls: number; tris: number; quality: string }
 }
@@ -182,6 +186,8 @@ export class DevUi {
         btn('respawn crates', () => actions.respawnCrates()),
         btn('+plot ring', () => actions.expandPlot()),
         btn('reveal all', () => actions.revealAll()),
+        btn('spawn wildlife', () => actions.spawnWildlife()),
+        btn('wash up barrel', () => actions.washUpBarrel()),
       ),
       /*
        * Destructive, so it is last and it asks. A stray click on "wipe" during a

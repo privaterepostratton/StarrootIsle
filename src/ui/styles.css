@@ -2886,31 +2886,38 @@ body.panel-open #ui #questTracker {
   color: var(--ink);
 }
 
-/* Same rounded-rect slice as plot actions (btn-action.png, 220×96). */
+/* Same stadium pill as plot actions (btn-plot.png, 424×120). */
 .lvl-continue {
   width: 100%;
-  min-height: 64px;
-  padding: 4px 8px;
-  /* 64 × 28/96 ≈ 19  ·  64 × 32/96 ≈ 21 */
-  border: 19px 21px;
+  height: 72px;
+  min-height: 72px;
+  /* Slight bottom pad: the glossy lip makes true center look a hair low. */
+  padding: 0 8px 10px;
+  /*
+   * 72 × 52/120 ≈ 31.
+   *
+   * `border-width`, not the `border` shorthand: the shorthand takes a single
+   * width, so `border: 0 31px` is invalid and the whole declaration is thrown
+   * away — leaving the button on whatever generic 2px border it inherited,
+   * with the pill's 52px end caps crammed into 2px and its middle stretched
+   * across the whole face. The two responsive rules below always used the
+   * longhand, which is why this only looked wrong above their breakpoints.
+   */
+  border-width: 0 31px;
   border-style: solid;
   border-color: transparent;
-  border-image: url('/ui/btn-action.png') 28 32 fill stretch;
+  border-image: url('/ui/btn-plot.png') 0 52 fill stretch;
   border-radius: 0;
   background: none;
   color: #fff;
   font: inherit;
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 900;
   letter-spacing: 0.5px;
   cursor: pointer;
-  text-shadow:
-    -1px -1px 0 rgb(38, 68, 20),
-    1px -1px 0 rgb(38, 68, 20),
-    -1px 1px 0 rgb(38, 68, 20),
-    1px 1px 0 rgb(38, 68, 20);
-  box-shadow: 0 4px 0 #2f6e1c;
-  transition: transform 0.1s ease, box-shadow 0.1s ease, filter 0.1s ease;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
+  box-shadow: none;
+  transition: transform 0.12s var(--spring), filter 0.12s ease;
 }
 
 .lvl-continue:hover {
@@ -2919,8 +2926,8 @@ body.panel-open #ui #questTracker {
 }
 
 .lvl-continue:active {
-  transform: translateY(3px);
-  box-shadow: 0 1px 0 #2f6e1c;
+  transform: translateY(2px);
+  filter: brightness(0.97);
 }
 
 /* ---------- confetti ---------- */
@@ -4201,7 +4208,7 @@ body:has(#devPanel:not([style*='display: none'])) #help {
  * The guide card: bottom-centre, above the hotbar, never modal. Not tagged
  * .hud-chrome on purpose — a panel opening mid-step should not hide the
  * instruction the player is following. */
-#ftueCard {
+.ftue-card {
   position: absolute;
   bottom: calc(var(--slot-size) + var(--ui-inset-b) + 40px);
   left: 50%;
@@ -4219,11 +4226,11 @@ body:has(#devPanel:not([style*='display: none'])) #help {
   z-index: 22;
 }
 
-#ftueCard.hidden {
+.ftue-card.hidden {
   display: none;
 }
 
-#ftueCard.ftue-in {
+.ftue-card.ftue-in {
   animation: ftueIn 0.4s var(--spring);
 }
 
@@ -4277,6 +4284,14 @@ body:has(#devPanel:not([style*='display: none'])) #help {
   color: var(--ink-soft);
 }
 
+/* The live tally for a step that wants several of something. Loud enough to be
+   read at a glance mid-action, since that is when it changes. */
+.ftue-prog {
+  font-size: 12px;
+  font-weight: 800;
+  color: #3f7d2f;
+}
+
 .ftue-next {
   font: inherit;
   font-size: 14px;
@@ -4318,7 +4333,7 @@ body:has(#devPanel:not([style*='display: none'])) #help {
  * The guiding finger. Anchored by left/top per frame; --aim swings it toward
  * off-screen targets. The bob rides the inner transform so per-frame anchor
  * moves never fight the animation. */
-#ftuePointer {
+.ftue-pointer {
   position: absolute;
   z-index: 23;
   font-size: 46px;
@@ -4673,7 +4688,7 @@ body:has(#devPanel:not([style*='display: none'])) #help {
    * the shared ftueIn keyframe animates from a translateX(-50%) that nothing is
    * cancelling any more.
    */
-  #ftueCard {
+  .ftue-card {
     left: var(--ui-inset-x);
     transform: none;
     max-width: min(360px, calc(100vw - 2 * var(--ui-inset-x)));
@@ -4684,7 +4699,7 @@ body:has(#devPanel:not([style*='display: none'])) #help {
     border-radius: 13px;
   }
 
-  #ftueCard.ftue-in {
+  .ftue-card.ftue-in {
     animation: ftueInLeft 0.4s var(--spring);
   }
 
@@ -4804,12 +4819,13 @@ body:has(#devPanel:not([style*='display: none'])) #help {
     font-size: 13px;
   }
 
-  /* Border widths track the height, or the 9-slice's caps swallow the face:
-     48 × 28/96 = 14, 48 × 32/96 ≈ 16. */
+  /* Border caps track height: 56 × 52/120 ≈ 24. */
   .lvl-continue {
-    min-height: 48px;
-    border-width: 14px 16px;
-    font-size: 16px;
+    height: 56px;
+    min-height: 56px;
+    border-width: 0 24px;
+    padding: 0 6px 8px;
+    font-size: 17px;
   }
 
   #shop .panel,
@@ -5206,10 +5222,12 @@ body:has(#devPanel:not([style*='display: none'])) #help {
     font-size: 12px;
   }
 
-  /* 42 × 28/96 ≈ 12  ·  42 × 32/96 = 14 */
+  /* 48 × 52/120 ≈ 21 */
   .lvl-continue {
-    min-height: 42px;
-    border-width: 12px 14px;
+    height: 48px;
+    min-height: 48px;
+    border-width: 0 21px;
+    padding: 0 4px 7px;
     font-size: 15px;
   }
 

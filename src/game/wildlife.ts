@@ -211,6 +211,25 @@ export class Wildlife {
     }
   }
 
+  /** How many are out in the valley right now. */
+  get count() {
+    return this.animals.length
+  }
+
+  /**
+   * Drop a fresh wave in, walking out of the treeline as if they had arrived.
+   *
+   * For QA: the valley holds a fixed population that only turns over when one
+   * is tamed, so testing anything to do with wild animals otherwise means
+   * walking the whole map looking for the species you need. The species cycle
+   * continues from the current tail, so a wave is a spread rather than five of
+   * whatever the roll favoured.
+   */
+  spawnWave(count = ANIMALS.length) {
+    const base = this.animals.length
+    for (let i = 0; i < count; i++) this.spawn(base + i, true)
+  }
+
   /**
    * A spot on the treeline: out near the walk limit, on the forested arc.
    *
