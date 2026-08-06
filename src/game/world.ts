@@ -1130,7 +1130,15 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     },
   }
 
-  // Benches and flower beds facing the street from the square.
+  /*
+   * Benches and flower beds facing the street from the square.
+   *
+   * Into the lane's arrival group with the square itself. Left on the world
+   * group they stood in open grass from the first frame — a lamp post, two
+   * benches and a pair of planters arranged around a market square that does
+   * not exist yet, which reads as the village having failed to load rather than
+   * as a village that has not been built.
+   */
   const benchFit = fitToHeight(getModels().bench, PROP_HEIGHT.bench)
   const bedFit = fitToHeight(getModels().flowerBed, PROP_HEIGHT.flowerBed)
   const benches: PropPlacement[] = []
@@ -1146,12 +1154,12 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
       rotationY: sx > 0 ? -Math.PI / 2 : Math.PI / 2,
       scale: benchFit.scale,
     })
-    obstacles.push({ x: bx, z: bz, r: 0.6 })
+    ownedObstacle('lane', { x: bx, z: bz, r: 0.6 })
 
     beds.push({ x: SQUARE_CX + 2, y: bedFit.groundY, z: sx * 8.5, scale: bedFit.scale })
   }
-  group.add(instanceModel(getModels().bench, benches))
-  group.add(instanceModel(getModels().flowerBed, beds))
+  arrivalGroup('lane').add(instanceModel(getModels().bench, benches))
+  arrivalGroup('lane').add(instanceModel(getModels().flowerBed, beds))
 
   /*
    * A lantern closing off the north end of the lane, inside a pebbled circle.
@@ -1165,8 +1173,8 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
    */
   const laneEnd = modelGroup(getModels().lantern, PROP_HEIGHT.lantern)
   laneEnd.position.copy(WELL_POS)
-  group.add(laneEnd)
-  obstacles.push({ x: WELL_POS.x, z: WELL_POS.z, r: 0.3 })
+  arrivalGroup('lane').add(laneEnd)
+  ownedObstacle('lane', { x: WELL_POS.x, z: WELL_POS.z, r: 0.3 })
   for (let i = 0; i < 10; i++) {
     const a = (i / 10) * Math.PI * 2
     const pebbles = createPebbleScatter(r)
@@ -1176,7 +1184,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
       WELL_POS.z + Math.sin(a) * (2.6 + r() * 1.4),
     )
     setLayer(pebbles, MINOR_LAYER)
-    group.add(pebbles)
+    arrivalGroup('lane').add(pebbles)
   }
 
   // --- scattered vegetation ------------------------------------------------

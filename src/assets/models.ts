@@ -57,6 +57,8 @@ interface ModelCache {
   storeCrate: LoadedModel
   /** The whole strawberry plant, used in place of the procedural bush when ripe. */
   strawberryPlant: LoadedModel
+  /** Stands on a bought world plot until the player decides what to build. */
+  workbench: LoadedModel
   haybale: LoadedModel
   haypile: LoadedModel
   /** The coin doobers burst out of a harvest as. See game/doobers.ts. */
@@ -227,7 +229,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, workbench] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -271,6 +273,7 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/store-crate.glb')),
       gltf.loadAsync(asset('models/turnip.glb')),
       gltf.loadAsync(asset('models/strawberry-plant.glb')),
+      gltf.loadAsync(asset('models/workbench.glb')),
     ])
 
   cache = {
@@ -313,6 +316,7 @@ export async function loadModels(): Promise<ModelCache> {
     barrel: extractMesh(barrel.scene),
     storeCrate: extractMesh(storeCrate.scene),
     strawberryPlant: extractMesh(strawberryPlant.scene),
+    workbench: extractMesh(workbench.scene),
     turnip: extractMesh(turnip.scene),
     haybale: extractMesh(haybale.scene),
     haypile: extractMesh(haypile.scene),
@@ -379,6 +383,7 @@ export const PROP_HEIGHT = {
      lower than the bale it came from. */
   barrel: 0.95,
   storeCrate: 1.9,
+  workbench: 1.5,
   haybale: 0.8,
   haypile: 1.15,
 } as const

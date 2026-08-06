@@ -43,6 +43,7 @@ import { Wildlife, type TameTarget } from './game/wildlife'
 import { Clearing, CLEAR_COST, type Standing } from './game/clearing'
 import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
 import { Flotsam, type FlotsamPrize } from './game/flotsam'
+import { WorldPlots, type WorldPlot } from './game/world-plots'
 import { Stock } from './game/stock'
 import { Audio } from './core/audio'
 import { Pets, type EggDef } from './game/pets'
@@ -744,6 +745,27 @@ flotsam.onCollect = (at, prize) => {
   grantXp(4)
 }
 
+/*
+ * Land for sale beyond the farm.
+ *
+ * Built at world construction like everything else that has colliders, and
+ * standing as woodland until bought — see game/world-plots.ts.
+ */
+const worldPlots = new WorldPlots(world.obstacles, rng(0x5eed17))
+engine.scene.add(worldPlots.group)
+
+worldPlots.onCleared = (plot, at) => {
+  bursts.emit(at, 30, [0x7ec850, 0x4a7a2c, 0x9ad86a], { kind: 'petal', speed: 3.6, life: 1.8, jitter: 0.5 })
+  bursts.emit(at, 24, [0xc9b48e, 0xa8894f], { kind: 'puff', speed: 2.0, life: 1.3, scale: 0.36 })
+  popups.spawn('Land cleared!', at, 'rare', 2.2)
+  audio.play('levelup')
+  shake.add(0.4)
+  hud.toast('🌳 The trees are down — the land is yours', 'good')
+  // Same wide hold the crate and the neighbours get.
+  pendingShot = at.clone()
+  void plot
+}
+
 // --- the opening clearing ----------------------------------------------------
 /*
  * The stand of trees on the ground the farm will occupy. Felling the last one
@@ -1233,6 +1255,8 @@ if (saved) {
   trading.deserialize(saved.trading)
   requests.deserialize(saved.requests)
   placeables.deserialize(saved.placeables)
+  // Land bought in an earlier session is already cleared — no felling replay.
+  worldPlots.restore(saved.worldPlots ?? [])
   farm.deserialize(saved.farm, elapsed)
   // The clearing is implied by the farm: if any ground is owned, it was cut.
   if (farm.exists) {
@@ -1273,7 +1297,7 @@ document.addEventListener('visibilitychange', () => {
     // should not keep playing to an empty tab while it does.
     audio.suspendForHidden()
     hiddenAt = Date.now()
-    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables)
+    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize())
     return
   }
   // Back before anything else — the sound should be there as the tab appears,
@@ -1877,6 +1901,37 @@ function buyGardenUpgrade() {
   grantXp(20)
 }
 
+/**
+ * The plot the player is standing at, if it is still for sale.
+ *
+ * Distance is measured to the parcel's *edge* rather than its middle, because
+ * the middle is behind a wall of trees — you buy a plot by walking up to it,
+ * not by getting inside it.
+ */
+function plotForSale(): WorldPlot | null {
+  if (modalOpen()) return null
+  const plot = worldPlots.nearest(player.position)
+  return plot && !worldPlots.isOwned(plot.id) ? plot : null
+}
+
+function plotPromptText() {
+  const cost = worldPlots.nextPrice
+  return inventory.coins >= cost
+    ? `🌳 Buy this land — ${coinIconHtml('inline-ico')}${formatCoins(cost)}`
+    : `🌳 This land costs ${coinIconHtml('inline-ico')}${formatCoins(cost)}`
+}
+
+function buyWorldPlot(plot: WorldPlot) {
+  const cost = worldPlots.nextPrice
+  if (!inventory.spend(cost)) {
+    audio.play('error')
+    hud.toast('Not enough coins for that land', 'bad')
+    return
+  }
+  worldPlots.claim(plot.id)
+  grantXp(40)
+}
+
 /** Land the pending swing, then drive whatever is falling. */
 function updateChopping(dt: number) {
   if (chopTimer > 0) {
@@ -2050,8 +2105,10 @@ function handleInput() {
   if (Input.justPressed('KeyE') || Input.justPressed('Space')) {
     const fellable = clearTarget()
     const tameable = tameTarget()
+    const forSale = plotForSale()
     if (fellable) fellTree()
     else if (mailboxInRange()) buyGardenUpgrade()
+    else if (forSale) buyWorldPlot(forSale)
     else if (crateInRange()) shopUi.show()
     else if (shopInRange()) shopUi.show()
     else if (tameable) feedWildAnimal(tameable)
@@ -2241,7 +2298,7 @@ function updateFtuePointer() {
 
 // --- autosave ---------------------------------------------------------------
 let saveTimer = 0
-addEventListener('beforeunload', () => Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables))
+addEventListener('beforeunload', () => Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize()))
 
 // Rain tops up the soil on a slow tick rather than every frame.
 let rainTimer = 0
@@ -2434,7 +2491,7 @@ const devUi = new DevUi({
     hud.toast('Dev: FTUE restarted', 'info')
   },
   saveNow: () => {
-    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables)
+    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize())
     hud.toast('Dev: saved', 'info')
   },
   resetSave: () => {
@@ -2700,6 +2757,7 @@ function frame() {
   }
   ambience.update(dt, elapsed, engine, weather, day.hour)
   updateChopping(dt)
+  worldPlots.update(dt)
   // Manual because autoReset is off (see the dev panel block). Reset *before*
   // the frame's renders so the counters cover exactly one frame.
   engine.renderer.info.reset()
@@ -2862,8 +2920,10 @@ function frame() {
   } else {
     const fellable = clearTarget()
     const tameable = tameTarget()
+    const forSale = plotForSale()
     if (fellable) hud.setPrompt('tame', clearPromptText())
     else if (mailboxInRange()) hud.setPrompt('tame', mailboxPromptText())
+    else if (forSale) hud.setPrompt('tame', plotPromptText())
     else if (crateInRange()) hud.setPrompt('tame', '📦 Trade at the crate')
     else if (shopInRange()) hud.setPrompt('shop')
     else if (tameable) hud.setPrompt('tame', tamePromptText(tameable))
@@ -2925,7 +2985,7 @@ function frame() {
   saveTimer += dt
   if (saveTimer > 10) {
     saveTimer = 0
-    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables)
+    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize())
   }
 
   // Water renders its reflection and refraction buffers first — both need the
@@ -2974,7 +3034,7 @@ frame()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots,
   }
 
   /**

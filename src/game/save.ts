@@ -40,6 +40,14 @@ export interface SaveData {
   trading: ReturnType<Trading['serialize']>
   requests: ReturnType<Requests['serialize']>
   placeables: ReturnType<Placeables['serialize']>
+  /**
+   * Which world plots have been bought.
+   *
+   * Optional so every save written before land was for sale still loads — a
+   * missing list simply means nobody has bought any, which is true of all of
+   * them.
+   */
+  worldPlots?: number[]
 }
 
 function buildData(
@@ -58,6 +66,7 @@ function buildData(
   trading: Trading,
   requests: Requests,
   placeables: Placeables,
+  worldPlots: number[],
 ): SaveData {
   return {
     version: SAVE_VERSION,
@@ -77,6 +86,7 @@ function buildData(
     trading: trading.serialize(),
     requests: requests.serialize(),
     placeables: placeables.serialize(),
+    worldPlots,
   }
 }
 
@@ -117,6 +127,7 @@ export function save(
   trading: Trading,
   requests: Requests,
   placeables: Placeables,
+  worldPlots: number[],
 ) {
   const data = buildData(
     farm,
@@ -134,6 +145,7 @@ export function save(
     trading,
     requests,
     placeables,
+    worldPlots,
   )
   try {
     localStorage.setItem(KEY, JSON.stringify(data))
