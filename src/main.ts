@@ -38,7 +38,8 @@ import { SPRINKLER_TIERS, SPRINKLER_BY_ID, type SprinklerTierId } from './game/s
 import { produceLabel, produceValue, valueMultiplier } from './game/mutations'
 import { PlotUi } from './ui/plot-ui'
 import { AnimalUi } from './ui/animal-ui'
-import { Pasture, type AnimalDef } from './game/animals'
+import { Pasture, type AnimalHaul, type Animal } from './game/animals'
+import { AnimalInfoUi } from './ui/animal-info-ui'
 import { Wildlife, type TameTarget } from './game/wildlife'
 import { Clearing, CLEAR_COST, type Standing } from './game/clearing'
 import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
@@ -648,15 +649,37 @@ const pasture = new Pasture()
 engine.scene.add(pasture.group)
 
 /** Sell animal products straight into the wallet — they need no seed cycle. */
-function collectFrom(def: AnimalDef, count = 1) {
-  inventory.coins += def.product.value * count
-  grantXp(def.xp * count)
+/**
+ * Bank one animal's produce.
+ *
+ * Takes the haul rather than the species: what a collection is worth now
+ * depends on the individual animal's grade and trait, and paying from the
+ * species table would quietly ignore both.
+ */
+function collectFrom(haul: AnimalHaul) {
+  const { def, animal, value, xp } = haul
+  inventory.coins += value
+  grantXp(xp)
   audio.play('collect')
-  hud.toast(
-    `+${count} ${def.product.emoji} ${def.product.name} · 🪙${formatCoins((def.product.value * count))}`,
-    'good',
-  )
+  const grade = animal.grade.id === 'common' ? '' : `${animal.grade.emoji} `
+  hud.toast(`${grade}${animal.name}: ${def.product.emoji} ${def.product.name} · 🪙${formatCoins(value)}`, 'good')
 }
+
+/**
+ * The card a click on an animal opens.
+ *
+ * Declared before the shop because the collect path is shared: the button on
+ * the card and the "collect all" in the store both end up in `collectFrom`.
+ */
+const animalInfoUi = new AnimalInfoUi(pasture, (animal: Animal) => {
+  const haul = pasture.collect(animal)
+  if (!haul) return
+  collectFrom(haul)
+  const at = new THREE.Vector3(animal.pos.x, 0.9, animal.pos.y)
+  bursts.emit(at, 12, [haul.def.product.color], { kind: 'shard', speed: 3 })
+  bursts.emit(at, 10, [0xfff0a0], { kind: 'spark', speed: 3.4 })
+  popups.spawn(`+${coinIconHtml('popup-coin')}${formatCoins(haul.value)}`, at, animal.grade.id === 'common' ? 'good' : 'rare')
+})
 
 const animalUi = new AnimalUi(
   inventory,
@@ -680,7 +703,7 @@ const animalUi = new AnimalUi(
     grantXp(def.xp * 2)
   },
   () => {
-    for (const { def, count } of pasture.collectAll()) collectFrom(def, count)
+    for (const haul of pasture.collectAll()) collectFrom(haul)
   },
 )
 
@@ -1252,7 +1275,7 @@ const modalOpen = () =>
   // picking and prompts together.
   isEditingUi() ||
   bagUi.open ||
-  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || plotUi.open || questUi.open || animalUi.open || neighbourUi.open || neighbourPlotUi.open || petUi.open || landMapUi.open || plotBuildUi.open
+  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || plotUi.open || questUi.open || animalUi.open || neighbourUi.open || neighbourPlotUi.open || petUi.open || landMapUi.open || plotBuildUi.open || animalInfoUi.open
 
 /**
  * The subset of those that take over the screen, and so hide the HUD chrome.
@@ -1674,16 +1697,17 @@ function interactAt(clientX: number, clientY: number, reach = TILE_SIZE * 0.8) {
     return
   }
 
-  // Clicking an animal with a product ready collects it.
-  const animal = pasture.findReadyNear(hit)
-  if (animal) {
-    const def = pasture.collect(animal)
-    if (def) {
-      collectFrom(def)
-      bursts.emit(hit, 12, [def.product.color], { kind: 'shard', speed: 3 })
-      bursts.emit(hit, 10, [0xfff0a0], { kind: 'spark', speed: 3.4 })
-      popups.spawn(`+🪙${formatCoins(def.product.value)}`, hit, 'good')
-    }
+  /*
+   * Clicking an animal opens its card.
+   *
+   * It used to collect on the spot, which was quick and said nothing — the
+   * player never found out that this was their best cow, or when the next one
+   * would be ready. The card carries the collect button, so the fast path costs
+   * one more tap and the animal stops being an anonymous shape in a field.
+   */
+  const clicked = pasture.findNear(hit)
+  if (clicked) {
+    animalInfoUi.show(clicked)
     return
   }
 
@@ -2867,6 +2891,8 @@ function frame() {
     updateGrass(elapsed, fog && 'near' in fog ? fog.near : undefined)
   }
   pasture.update(dt, elapsed, engine.camera)
+  // The card shows a countdown, so it repaints with the clock it is counting.
+  animalInfoUi.tick()
   wildlife.update(dt, elapsed, player.position)
   beachSeeds.update(dt, elapsed, player.position)
   // Only once the farm exists — the opening owns this beach until then.
@@ -3194,7 +3220,7 @@ frame()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi, animalInfoUi,
   }
 
   /**

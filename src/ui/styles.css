@@ -3260,6 +3260,155 @@ body.panel-open #ui #questTracker {
   gap: 8px;
 }
 
+/* ---------- animal card ---------- */
+/*
+ * Opened by clicking an animal in the paddock. Narrower than the store, which
+ * is a list of species — this is one animal, and everything on it is about that
+ * animal in particular.
+ */
+#animalCard {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 14, 8, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+#animalCard.hidden {
+  display: none;
+}
+
+#animalCard .ac-panel {
+  width: min(400px, calc(100vw - 2 * var(--ui-inset-x)));
+}
+
+#acBody {
+  padding: var(--s3) var(--s4) var(--s4);
+}
+
+.ac-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+
+/* The grade is the loudest thing on the card, so it rings the portrait. */
+.ac-portrait {
+  flex: 0 0 auto;
+  width: 68px;
+  height: 68px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 34px;
+  background: radial-gradient(circle at 50% 32%, #fffaf0, #ecd9b2);
+  border: 3px solid var(--grade, var(--edge));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--grade, #c9b48e) 55%, transparent);
+}
+
+.ac-portrait-ico {
+  width: 80%;
+  height: 80%;
+  object-fit: contain;
+}
+
+.ac-ident {
+  min-width: 0;
+}
+
+.ac-grade {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--ink);
+  /* The tint is a rim, not the text colour: pale grades on cream are unreadable. */
+  border-bottom: 3px solid var(--grade, var(--edge));
+  display: inline-block;
+  padding-bottom: 2px;
+  margin-bottom: 5px;
+}
+
+.ac-trait {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--ink-soft);
+}
+
+.ac-trait b {
+  color: var(--ink);
+}
+
+.ac-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: var(--s3);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: rgba(160, 124, 70, 0.28);
+}
+
+.ac-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: 7px 10px;
+  background: rgba(255, 252, 244, 0.78);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.ac-stat b {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+/* What the grade and trait are doing to the number beside them. */
+.ac-mult {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 1px 6px 2px;
+  border-radius: 999px;
+  color: #3f7d2f;
+  background: rgba(126, 200, 80, 0.22);
+}
+
+.ac-bar {
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(122, 97, 68, 0.22);
+  border: 2px solid rgba(122, 97, 68, 0.35);
+  overflow: hidden;
+}
+
+.ac-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #9ee06f, #5fa93c);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45);
+  transition: width 0.3s linear;
+}
+
+.ac-when {
+  margin: 6px 0 var(--s3);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+
+#animalCard .buy {
+  width: 100%;
+}
+
 /* ---------- plot workbench ---------- */
 /*
  * Cards in a grid, not rows in a list.

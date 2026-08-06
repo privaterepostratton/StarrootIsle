@@ -96,13 +96,142 @@ export const ANIMALS: AnimalDef[] = [
 
 export const ANIMAL_BY_ID = new Map(ANIMALS.map((a) => [a.id, a]))
 
+// --- what makes one animal different from the next ---------------------------
+
+/**
+ * The grade of an individual, rolled once when it joins the paddock.
+ *
+ * Crops have rarity and mutations; livestock had nothing — every sheep was the
+ * same sheep, so a paddock of twelve was one purchase decision made twelve
+ * times. A grade turns each animal into a thing you own rather than a slot you
+ * filled, and gives taming a lottery of its own: the free chicken you caught in
+ * the woods can be the best bird on the farm.
+ *
+ * Ordered rarest-first and walked in order, the same way crop rarity rolls, so
+ * the two systems read alike and neither can drift into its own conventions.
+ */
+export type AnimalGradeId = 'common' | 'fine' | 'prize' | 'champion' | 'legendary'
+
+export interface AnimalGrade {
+  id: AnimalGradeId
+  name: string
+  emoji: string
+  /** Chance of rolling this or better. */
+  chance: number
+  /** Multiplies what its product sells for. */
+  value: number
+  /** Badge tint in the UI. */
+  color: string
+}
+
+export const ANIMAL_GRADES: AnimalGrade[] = [
+  { id: 'legendary', name: 'Legendary', emoji: '🌟', chance: 0.008, value: 10, color: '#ff7ae0' },
+  { id: 'champion', name: 'Champion', emoji: '🏆', chance: 0.035, value: 4.5, color: '#f5c518' },
+  { id: 'prize', name: 'Prize', emoji: '🎀', chance: 0.11, value: 2.2, color: '#7ae0ff' },
+  { id: 'fine', name: 'Fine', emoji: '✦', chance: 0.3, value: 1.4, color: '#9ad86a' },
+  { id: 'common', name: 'Common', emoji: '', chance: 1, value: 1, color: '#c9b48e' },
+]
+
+export const GRADE_BY_ID = new Map(ANIMAL_GRADES.map((g) => [g.id, g]))
+
+/**
+ * A quirk, independent of grade.
+ *
+ * Grade is how *good* an animal is; a trait is what it is *like*. Kept apart so
+ * a common animal can still be interesting to own — a Common cow that fills
+ * twice as fast is a different thing from a Prize cow that pays more, and a
+ * player who has learned the difference is a player reading their paddock.
+ */
+export interface AnimalTrait {
+  id: string
+  name: string
+  blurb: string
+  /** Multiplies the wait between products. Under one is faster. */
+  speed: number
+  /** Multiplies what the product sells for. */
+  value: number
+}
+
+export const ANIMAL_TRAITS: AnimalTrait[] = [
+  { id: 'steady', name: 'Steady', blurb: 'Reliable, unremarkable, and never any trouble.', speed: 1, value: 1 },
+  { id: 'earlyriser', name: 'Early Riser', blurb: 'Up before the farmer. Fills a third quicker.', speed: 0.68, value: 1 },
+  { id: 'generous', name: 'Generous', blurb: 'Gives half again as much as it needs to.', speed: 1, value: 1.5 },
+  { id: 'placid', name: 'Placid', blurb: 'Takes its time, and it shows in the quality.', speed: 1.25, value: 1.9 },
+  { id: 'restless', name: 'Restless', blurb: 'Never settles. Quick to fill, quick to empty.', speed: 0.55, value: 0.75 },
+  { id: 'pedigree', name: 'Pedigree', blurb: 'Bred for it. Faster and worth more.', speed: 0.85, value: 1.3 },
+]
+
+export const TRAIT_BY_ID = new Map(ANIMAL_TRAITS.map((t) => [t.id, t]))
+
+/**
+ * Names, so a paddock is a set of animals rather than a count of them.
+ *
+ * Deliberately homely: these are farm animals with farm names, and the joke of
+ * a Legendary pig called Doris is doing more work than any adjective would.
+ */
+const NAMES = [
+  'Daisy', 'Buttercup', 'Pip', 'Clover', 'Doris', 'Mabel', 'Nutmeg', 'Rosie',
+  'Hazel', 'Poppy', 'Bramble', 'Willow', 'Maple', 'Pickle', 'Tuppence', 'Biscuit',
+  'Marigold', 'Sorrel', 'Cinder', 'Juniper', 'Peaches', 'Waffle', 'Bumble', 'Fern',
+]
+
+/** What one collection from this animal is worth. */
+export function productValue(animal: Animal) {
+  return Math.max(1, Math.round(animal.def.product.value * animal.grade.value * animal.trait.value))
+}
+
+/** How long this animal takes to fill, in seconds. */
+export function productInterval(animal: Animal) {
+  return animal.def.interval * animal.trait.speed
+}
+
+/**
+ * XP for one collection.
+ *
+ * Scaled by grade but not by trait: a better animal is a better animal, while a
+ * fast one already earns more XP per hour by producing more often, and paying
+ * it twice would make Restless the only trait worth keeping.
+ */
+export function productXp(animal: Animal) {
+  return Math.max(1, Math.round(animal.def.xp * animal.grade.value))
+}
+
+/** What a collection hands back — the animal as well as the species. */
+export interface AnimalHaul {
+  def: AnimalDef
+  animal: Animal
+  value: number
+  xp: number
+}
+
+export function rollAnimalGrade(luck = 1): AnimalGrade {
+  for (const grade of ANIMAL_GRADES) {
+    if (Math.random() < grade.chance * luck) return grade
+  }
+  return ANIMAL_GRADES[ANIMAL_GRADES.length - 1]
+}
+
+export function rollAnimalTrait(): AnimalTrait {
+  return ANIMAL_TRAITS[Math.floor(Math.random() * ANIMAL_TRAITS.length)]
+}
+
+function rollName() {
+  return NAMES[Math.floor(Math.random() * NAMES.length)]
+}
+
 /** Centre and radius of the fenced pasture the animals roam. Defined with the
  *  rest of the village layout and re-exported here for existing callers. */
 export { PASTURE_CENTRE, PASTURE_RADIUS } from './village'
 import { PASTURE_CENTRE, PASTURE_RADIUS } from './village'
 
-interface Animal {
+export interface Animal {
   def: AnimalDef
+  /** This one's own name. See NAMES. */
+  name: string
+  /** How good an example of its species it is. */
+  grade: AnimalGrade
+  /** What it is like, independent of how good it is. */
+  trait: AnimalTrait
   rig: AnimalRig
   /** Current position on the pasture plane. */
   pos: THREE.Vector2
@@ -137,18 +266,33 @@ export class Pasture {
     return this.animals.filter((a) => a.def.id === id).length
   }
 
-  add(def: AnimalDef, opts: { timer?: number; ready?: boolean } = {}) {
+  add(
+    def: AnimalDef,
+    opts: {
+      timer?: number
+      ready?: boolean
+      /** Restored from a save; rolled fresh when absent. */
+      name?: string
+      grade?: AnimalGrade
+      trait?: AnimalTrait
+    } = {},
+  ) {
     const rig = createAnimalModel(def.id)
     this.group.add(rig.root)
 
     const pos = randomPointInPasture()
+    const grade = opts.grade ?? rollAnimalGrade()
+    const trait = opts.trait ?? rollAnimalTrait()
     const animal: Animal = {
       def,
+      name: opts.name ?? rollName(),
+      grade,
+      trait,
       rig,
       pos,
       target: randomPointInPasture(),
       facing: Math.random() * Math.PI * 2,
-      timer: opts.timer ?? def.interval,
+      timer: opts.timer ?? def.interval * trait.speed,
       ready: opts.ready ?? false,
       bubble: null,
       phase: Math.random() * Math.PI * 2,
@@ -192,26 +336,52 @@ export class Pasture {
     return best
   }
 
-  /** Collect from a specific animal. Returns what it produced. */
-  collect(animal: Animal) {
-    if (!animal.ready) return null
-    animal.ready = false
-    animal.timer = animal.def.interval
-    this.hideBubble(animal)
-    return animal.def
+  /**
+   * Nearest animal of any kind within `maxDist` — what a click on the paddock
+   * hits. Separate from `findReadyNear` because clicking one that is *not*
+   * ready has to do something too: it opens its card.
+   */
+  findNear(point: THREE.Vector3, maxDist = 1.6): Animal | null {
+    let best: Animal | null = null
+    let bestDist = maxDist
+    for (const animal of this.animals) {
+      const d = Math.hypot(animal.pos.x - point.x, animal.pos.y - point.z)
+      if (d < bestDist) {
+        best = animal
+        bestDist = d
+      }
+    }
+    return best
   }
 
-  /** Collect everything at once. Returns totals per species. */
-  collectAll() {
-    const results: { def: AnimalDef; count: number }[] = []
+  /** Still in the paddock? A card left open on a sold animal must know. */
+  has(animal: Animal) {
+    return this.animals.includes(animal)
+  }
+
+  /** Collect from a specific animal. Returns what it produced. */
+  collect(animal: Animal): AnimalHaul | null {
+    if (!animal.ready) return null
+    animal.ready = false
+    animal.timer = productInterval(animal)
+    this.hideBubble(animal)
+    return { def: animal.def, animal, value: productValue(animal), xp: productXp(animal) }
+  }
+
+  /** Collect everything at once. Returns one entry per animal that gave. */
+  collectAll(): AnimalHaul[] {
+    const results: AnimalHaul[] = []
     for (const animal of this.animals) {
       if (!animal.ready) continue
-      this.collect(animal)
-      const entry = results.find((r) => r.def.id === animal.def.id)
-      if (entry) entry.count++
-      else results.push({ def: animal.def, count: 1 })
+      const haul = this.collect(animal)
+      if (haul) results.push(haul)
     }
     return results
+  }
+
+  /** Every animal, for the paddock listing. */
+  all(): readonly Animal[] {
+    return this.animals
   }
 
   get readyCount() {
@@ -281,14 +451,31 @@ export class Pasture {
   }
 
   serialize() {
-    return this.animals.map((a) => ({ id: a.def.id, t: a.timer, r: a.ready }))
+    return this.animals.map((a) => ({
+      id: a.def.id,
+      t: a.timer,
+      r: a.ready,
+      // Optional on the way back in, so a save written before animals had
+      // names simply rolls them one — which is the same thing that happens the
+      // first time any animal is bought.
+      n: a.name,
+      g: a.grade.id,
+      tr: a.trait.id,
+    }))
   }
 
   deserialize(data: ReturnType<Pasture['serialize']> | undefined) {
     if (!Array.isArray(data)) return
     for (const entry of data) {
       const def = ANIMAL_BY_ID.get(entry.id)
-      if (def) this.add(def, { timer: entry.t, ready: entry.r })
+      if (!def) continue
+      this.add(def, {
+        timer: entry.t,
+        ready: entry.r,
+        name: entry.n,
+        grade: GRADE_BY_ID.get(entry.g),
+        trait: TRAIT_BY_ID.get(entry.tr),
+      })
     }
   }
 }
@@ -307,4 +494,3 @@ function angleLerp(a: number, b: number, t: number) {
   return a + diff * t
 }
 
-export type { Animal }

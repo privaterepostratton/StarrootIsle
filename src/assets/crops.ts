@@ -303,6 +303,22 @@ const VINE_STYLE: Partial<Record<FruitKind, VineStyle>> = {
   bunch: { len: 1.05, width: 1.2, count: 0.85, reach: 0.8, tilt: 0.4, rise: 0.26 },
 }
 
+/**
+ * How far out a bush hangs its fruit, as a multiple of the default ring.
+ *
+ * Only ever raised, and only for the crops whose ripe model is an authored
+ * *cluster* rather than a single fruit. A truss of tomatoes or a bunch of
+ * chillies is several times the width of the one berry the ring was sized for,
+ * so hung at the default radius its inner half sat inside the bush and the
+ * procedural leaves came straight out through the middle of it. Fruit belongs
+ * on the outside of a bush anyway — that is where it can be picked from.
+ */
+const FRUIT_REACH: Partial<Record<FruitKind, number>> = {
+  ribbed: 1.55,
+  pod: 1.7,
+  scaled: 1.6,
+}
+
 const LEAF_STYLE: Partial<Record<FruitKind, LeafStyle>> = {
   // Strawberry: broad, round, low trefoil leaves lying almost flat.
   heart: { width: 1.25, len: 0.9, tilt: -0.12, count: 1.15 },
@@ -640,6 +656,10 @@ function authoredRootModel(def: CropDef) {
   if (!models) return undefined
   if (def.fruit === 'taproot') return models.carrot
   if (def.fruit === 'globe') return models.turnip
+  // The potato model is a sprouting tuber: its own shoots are as leafy as the
+  // rosette, and drawn together the procedural blades ran straight through
+  // them.
+  if (def.fruit === 'tuber') return models.potato
   return undefined
 }
 
@@ -850,7 +870,7 @@ function buildFruit(
        * detail on top of it — which is the right way round for the crop the
        * player is about to dig up.
        */
-      const spud = ripe ? authoredFruit(peekModels()?.potato, 2.15, 0.12, rarity) : null
+      const spud = ripe ? authoredFruit(authoredRootModel(def), 2.15, 0.12, rarity) : null
       if (spud) {
         g.add(spud)
         break
@@ -1193,8 +1213,15 @@ function buildFruit(
     }
 
     case 'striped': {
-      // Melon: the authored fruit once ripe, procedural before that.
-      const authoredMelon = ripe ? authoredFruit(peekModels()?.melon, 2, 0, rarity) : null
+      /*
+       * Melon: the authored fruit once ripe, procedural before that.
+       *
+       * Sunk a quarter unit, unlike the bare sphere it replaced. This export is
+       * a cantaloupe *on the vine* — the fruit sits at the top of its own stem
+       * and leaves — so anchored at the height the sphere used it floated a
+       * hand's width over the soil with its runner hanging in mid air.
+       */
+      const authoredMelon = ripe ? authoredFruit(peekModels()?.melon, 2.3, -0.25, rarity) : null
       if (authoredMelon) {
         g.add(authoredMelon)
         break
@@ -1231,12 +1258,16 @@ function buildFruit(
 
     case 'bunch': {
       /*
-       * Grapes: the authored bunch once ripe, procedural before that.
+       * Grapes: the authored vine once ripe, procedural before that.
        *
-       * The model hangs from its top, so it is dropped by half its height to
-       * hang off the anchor rather than straddle it.
+       * Barely dropped, unlike the export this replaced. That one was a single
+       * bunch hanging from its own top, so it had to fall half its height to
+       * hang off the anchor instead of straddling it. This is a length of vine
+       * — leaves, tendrils and several bunches together — and it belongs
+       * *around* the anchor, sitting down into the sprawl of pads rather than
+       * dangling above them with daylight in between.
        */
-      const authoredBunch = ripe ? authoredFruit(peekModels()?.grapes, 2.6, -0.5, rarity) : null
+      const authoredBunch = ripe ? authoredFruit(peekModels()?.grapes, 3, -0.14, rarity) : null
       if (authoredBunch) {
         g.add(authoredBunch)
         break
@@ -1279,15 +1310,20 @@ function buildFruit(
 
     case 'disc': {
       /*
-       * Sunflower: the authored head once ripe, procedural before that. Its face
-       * is a flat disc in the XY plane, so it is tipped back a quarter turn to
-       * look up — `stalkBody` then nods it forward, and a head that starts
-       * face-on to the horizon would end up staring at the ground.
+       * Sunflower: the authored bloom once ripe, procedural before that.
+       *
+       * No tip-back, unlike the export this replaced. That one was a flat disc
+       * lying in the XY plane and had to be stood up a quarter turn to face the
+       * sky — this one is authored upright on its own short stem, and the same
+       * correction would lay the whole flower on its back. `stalkBody` still
+       * nods it forward, which is now the only rotation it needs.
+       *
+       * Sized well past the procedural head it replaces, and further again for
+       * this model: a sunflower's whole appeal is that the bloom is out of
+       * proportion to the plant, and here the bloom is only the top half of the
+       * export — the rest is stem, which lands over the stalk it is standing on.
        */
-      // Sized well past the procedural head it replaces. A sunflower's whole
-      // appeal is that the bloom is out of proportion to the plant — matched to
-      // the old geometry it read as a daisy on a very tall stalk.
-      const head = ripe ? authoredFruit(peekModels()?.sunflower, 3.4, 0, rarity, [-Math.PI / 2, 0, 0]) : null
+      const head = ripe ? authoredFruit(peekModels()?.sunflower, 4.3, -0.22, rarity) : null
       if (head) {
         g.add(head)
         break
@@ -1374,8 +1410,16 @@ function buildFruit(
     }
 
     case 'husk': {
-      // Coconut: the authored nut once ripe, procedural before that.
-      const nutModel = ripe ? authoredFruit(peekModels()?.coconut, 2, 0, rarity) : null
+      /*
+       * Coconut: the authored nut once ripe, procedural before that.
+       *
+       * Smaller than it was, because the tree under it is authored now. The
+       * procedural canopy was a plain ball and the nuts had to be big to break
+       * its silhouette; the palm's fronds are a shape of their own, and nuts at
+       * the old size sat on top of them like something stuck on rather than
+       * nestled in the crown.
+       */
+      const nutModel = ripe ? authoredFruit(peekModels()?.coconut, 1.5, 0, rarity) : null
       if (nutModel) {
         g.add(nutModel)
         break
@@ -1535,8 +1579,16 @@ function buildFruit(
     }
 
     case 'scaled': {
-      // Dragonfruit: the authored fruit once ripe, procedural before that.
-      const scaled = ripe ? authoredFruit(peekModels()?.dragonfruit, 2, 0, rarity) : null
+      /*
+       * Dragonfruit: the authored fruit once ripe, procedural before that.
+       *
+       * A spray of small fruit on its own stems rather than the one big pod the
+       * old export was, so it is scaled up and — through FRUIT_REACH — hung
+       * further out, clear of the thick upright paddles this plant's body is
+       * made of. Tucked at the default radius the spray sat between the paddles
+       * and was invisible from three sides out of four.
+       */
+      const scaled = ripe ? authoredFruit(peekModels()?.dragonfruit, 3.4, 0, rarity) : null
       if (scaled) {
         g.add(scaled)
         break
@@ -1964,7 +2016,8 @@ function bushBody(def: CropDef, stage: number, r: () => number): Body {
   // A heavier cropper carries a fourth fruit. Any more than that and they merge
   // into a band around the plant instead of reading as individual pickings.
   const n = def.yield >= 4 ? 4 : 3
-  return { group: g, anchors: ring(n, 0.2 + t * 0.05, h * 0.56, 0.45), fruitSize: 0.115 }
+  const reach = FRUIT_REACH[def.fruit] ?? 1
+  return { group: g, anchors: ring(n, (0.2 + t * 0.05) * reach, h * 0.56, 0.45), fruitSize: 0.115 }
 }
 
 function stalkBody(def: CropDef, stage: number, r: () => number): Body {
@@ -2084,9 +2137,16 @@ function stalkBody(def: CropDef, stage: number, r: () => number): Body {
       // the tassel, which turns the crown into a yellow-and-green muddle.
       const up = 0.26 + i * 0.17
       anchors.push({
-        // Well clear of the stalk: the blades radiate far enough that an ear
-        // tucked against it is behind a leaf from most angles.
-        pos: new THREE.Vector3(Math.sin(yaw) * 0.2, h * up, Math.cos(yaw) * 0.2),
+        /*
+         * Well clear of the stalk, and further out than it used to be.
+         *
+         * The blades radiate far enough that an ear tucked against the stem is
+         * behind a leaf from most angles — but 0.2 was inside the ear's own
+         * half-width, so the authored husk was threaded *onto* the stalk and the
+         * stem came out of the top of the cob. Pushed out past its own radius,
+         * the ear leans on the stalk instead of through it.
+         */
+        pos: new THREE.Vector3(Math.sin(yaw) * 0.3, h * up, Math.cos(yaw) * 0.3),
         tilt: 0.5,
         yaw,
       })
@@ -2527,6 +2587,7 @@ export interface CropModelOptions {
 const AUTHORED_BODIES: Record<string, (() => LoadedModel | undefined) | undefined> = {
   strawberry: () => peekModels()?.strawberryPlant,
   blueberry: () => peekModels()?.blueberryBush,
+  coconut: () => peekModels()?.coconutPalm,
 }
 
 /**
