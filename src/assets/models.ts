@@ -66,6 +66,8 @@ interface ModelCache {
   sprinklerBasic: LoadedModel
   /** The hive box. Its bees are still procedural — see assets/decor.ts. */
   beehive: LoadedModel
+  /** Hermit crab. Scenery that runs away — see game/critters.ts. */
+  crab: LoadedModel
   /** Stands on a bought world plot until the player decides what to build. */
   workbench: LoadedModel
   haybale: LoadedModel
@@ -238,7 +240,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, coconutPalm, sprinklerBasic, beehive, workbench] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, coconutPalm, sprinklerBasic, beehive, crab, workbench] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -286,6 +288,7 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/coconut-palm.glb')),
       gltf.loadAsync(asset('models/sprinkler-basic.glb')),
       gltf.loadAsync(asset('models/beehive.glb')),
+      gltf.loadAsync(asset('models/crab.glb')),
       gltf.loadAsync(asset('models/workbench.glb')),
     ])
 
@@ -333,6 +336,7 @@ export async function loadModels(): Promise<ModelCache> {
     coconutPalm: extractMesh(coconutPalm.scene),
     sprinklerBasic: extractMesh(sprinklerBasic.scene),
     beehive: extractMesh(beehive.scene),
+    crab: extractMesh(crab.scene),
     workbench: extractMesh(workbench.scene),
     turnip: extractMesh(turnip.scene),
     haybale: extractMesh(haybale.scene),
@@ -362,7 +366,17 @@ export const PROP_HEIGHT = {
      narrower building — held at the old height it lost a third of its width and
      stopped reading as the biggest thing on the square. */
   barn: 6.2,
-  pine: 6.8,
+  /*
+   * The tallest thing in the forest, and by a clear margin again.
+   *
+   * This slot used to hold a spire, at 6.8. Swapped for a broad-crowned palm it
+   * came down to 6.0, on the reasoning that `fitToHeight` scales width with
+   * height and the old number gave a tree that covered a quarter of the plot it
+   * stood on — but a palm reads as *tall*, and shrunk to sit alongside the
+   * broadleaf it lost the thing that makes it worth having in the treeline.
+   * 1.3x back up: it towers, which is the point of it.
+   */
+  pine: 7.8,
   /* Shorter than the forest canopy behind it. A palm the height of a conifer
      reads as a jungle; the coast wants a fringe you can see the sea over. */
   palm: 5.2,
@@ -389,6 +403,11 @@ export const PROP_HEIGHT = {
   /* Waist-high on the farmer, which is what the stacked-crate version came out
      at. A hive is a thing you lean over to open. */
   beehive: 1.0,
+  /* Ankle-high on the farmer, and jittered either side of it per crab. Small
+     enough that a beach of them reads as movement rather than as livestock,
+     big enough to be seen from the camera's own distance — at 0.42 they were
+     pebbles that happened to move. */
+  crab: 0.55,
   /* Knee-high at base scale; vegetation.ts jitters each one either side of it.
      The model is twice as wide as it is tall, so a height that sounds modest
      still puts a boulder wider than the farmer on the grass. */

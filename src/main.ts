@@ -41,6 +41,7 @@ import { AnimalUi } from './ui/animal-ui'
 import { Pasture, type AnimalHaul, type Animal } from './game/animals'
 import { AnimalInfoUi } from './ui/animal-info-ui'
 import { Wildlife, type TameTarget } from './game/wildlife'
+import { Critters } from './game/critters'
 import { Clearing, CLEAR_COST, type Standing } from './game/clearing'
 import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
 import { Flotsam, type FlotsamPrize } from './game/flotsam'
@@ -911,6 +912,16 @@ clearing.onOpened = () => {
  */
 const wildlife = new Wildlife(rng(0x5eed11fe))
 engine.scene.add(wildlife.group)
+
+/*
+ * The beach's own residents. Nothing to do with the livestock loop.
+ *
+ * Seeded rather than left to Math.random so the same coast always gets the
+ * same scatter — a crab that moves between boots is the sort of thing that
+ * makes a place feel unremembered.
+ */
+const critters = new Critters(rng(0xc4ab5))
+engine.scene.add(critters.group)
 
 /*
  * The arrival: a short hold on whatever just stepped out of the trees.
@@ -2894,6 +2905,7 @@ function frame() {
   // The card shows a countdown, so it repaints with the clock it is counting.
   animalInfoUi.tick()
   wildlife.update(dt, elapsed, player.position)
+  critters.update(dt, elapsed, player.position)
   beachSeeds.update(dt, elapsed, player.position)
   // Only once the farm exists — the opening owns this beach until then.
   flotsam.update(dt, elapsed, player.position, farm.exists)
@@ -3220,7 +3232,7 @@ frame()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi, animalInfoUi,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, critters, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi, animalInfoUi,
   }
 
   /**
