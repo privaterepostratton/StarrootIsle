@@ -44,6 +44,7 @@ import { Clearing, CLEAR_COST, type Standing } from './game/clearing'
 import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
 import { Flotsam, type FlotsamPrize } from './game/flotsam'
 import { WorldPlots, type WorldPlot } from './game/world-plots'
+import { LandMapUi } from './ui/land-map'
 import { Stock } from './game/stock'
 import { Audio } from './core/audio'
 import { Pets, type EggDef } from './game/pets'
@@ -754,6 +755,36 @@ flotsam.onCollect = (at, prize) => {
 const worldPlots = new WorldPlots(world.obstacles, rng(0x5eed17))
 engine.scene.add(worldPlots.group)
 
+/**
+ * The land office panel, opened at the workbench on the square.
+ *
+ * Everything it needs is read through callbacks rather than handed over at
+ * construction: prices, coins and the frontier all move while it is open, and a
+ * snapshot would let the player buy at yesterday's price.
+ */
+const landMapUi = new LandMapUi({
+  survey: () => worldPlots.survey(FARM_CENTRE),
+  coins: () => inventory.coins,
+  price: () => worldPlots.nextPrice,
+  playerPos: () => player.position,
+  farmCentre: () => FARM_CENTRE,
+  buy: (id) => {
+    const cost = worldPlots.nextPrice
+    if (!worldPlots.canBuy(id, FARM_CENTRE)) {
+      audio.play('error')
+      hud.toast('That land is too far from your own', 'bad')
+      return
+    }
+    if (!inventory.spend(cost)) {
+      audio.play('error')
+      hud.toast('Not enough coins for that land', 'bad')
+      return
+    }
+    worldPlots.claim(id)
+    grantXp(40)
+  },
+})
+
 worldPlots.onCleared = (plot, at) => {
   bursts.emit(at, 30, [0x7ec850, 0x4a7a2c, 0x9ad86a], { kind: 'petal', speed: 3.6, life: 1.8, jitter: 0.5 })
   bursts.emit(at, 24, [0xc9b48e, 0xa8894f], { kind: 'puff', speed: 2.0, life: 1.3, scale: 0.36 })
@@ -761,6 +792,8 @@ worldPlots.onCleared = (plot, at) => {
   audio.play('levelup')
   shake.add(0.4)
   hud.toast('🌳 The trees are down — the land is yours', 'good')
+  // Buying one opens its neighbours, so the marks in the world move with it.
+  worldPlots.refreshMarks(FARM_CENTRE)
   // Same wide hold the crate and the neighbours get.
   pendingShot = at.clone()
   void plot
@@ -1180,7 +1213,7 @@ const modalOpen = () =>
   // picking and prompts together.
   isEditingUi() ||
   bagUi.open ||
-  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || plotUi.open || questUi.open || animalUi.open || neighbourUi.open || neighbourPlotUi.open || petUi.open
+  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || plotUi.open || questUi.open || animalUi.open || neighbourUi.open || neighbourPlotUi.open || petUi.open || landMapUi.open
 
 /**
  * The subset of those that take over the screen, and so hide the HUD chrome.
@@ -1191,7 +1224,7 @@ const modalOpen = () =>
  * action the menu exists for.
  */
 const panelOpen = () =>
-  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || questUi.open || animalUi.open || neighbourUi.open || petUi.open || bagUi.open
+  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || questUi.open || animalUi.open || neighbourUi.open || petUi.open || bagUi.open || landMapUi.open
 
 // --- restore ----------------------------------------------------------------
 window.__loading?.(0.9, 'Waking the neighbours…')
@@ -1901,6 +1934,13 @@ function buyGardenUpgrade() {
   grantXp(20)
 }
 
+/** Standing at the land office desk on the square. */
+function landDeskInRange() {
+  if (modalOpen() || !world.hasArrived('lane')) return false
+  const at = world.landDeskPos
+  return Math.hypot(player.position.x - at.x, player.position.z - at.z) < 2.6
+}
+
 /**
  * The plot the player is standing at, if it is still for sale.
  *
@@ -2108,6 +2148,7 @@ function handleInput() {
     const forSale = plotForSale()
     if (fellable) fellTree()
     else if (mailboxInRange()) buyGardenUpgrade()
+    else if (landDeskInRange()) landMapUi.show()
     else if (forSale) buyWorldPlot(forSale)
     else if (crateInRange()) shopUi.show()
     else if (shopInRange()) shopUi.show()
@@ -2757,7 +2798,7 @@ function frame() {
   }
   ambience.update(dt, elapsed, engine, weather, day.hour)
   updateChopping(dt)
-  worldPlots.update(dt)
+  worldPlots.update(dt, engine.camera, elapsed)
   // Manual because autoReset is off (see the dev panel block). Reset *before*
   // the frame's renders so the counters cover exactly one frame.
   engine.renderer.info.reset()
@@ -2923,6 +2964,7 @@ function frame() {
     const forSale = plotForSale()
     if (fellable) hud.setPrompt('tame', clearPromptText())
     else if (mailboxInRange()) hud.setPrompt('tame', mailboxPromptText())
+    else if (landDeskInRange()) hud.setPrompt('tame', '🗺️ Land office — see what is for sale')
     else if (forSale) hud.setPrompt('tame', plotPromptText())
     else if (crateInRange()) hud.setPrompt('tame', '📦 Trade at the crate')
     else if (shopInRange()) hud.setPrompt('shop')
@@ -3022,6 +3064,7 @@ function frame() {
  * the screen fades in — replaying five arrival cutscenes on load would be a
  * sequence about nothing, and they would all be walking the valley at once.
  */
+worldPlots.refreshMarks(FARM_CENTRE)
 hood.restoreArrivedFor(progression.level)
 applyArrivals()
 world.setLaneProgress(hood.arrivedCount, world.hasArrived('shop'))
@@ -3034,7 +3077,7 @@ frame()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi,
   }
 
   /**

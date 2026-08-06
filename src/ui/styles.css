@@ -5281,3 +5281,186 @@ body:has(#devPanel:not([style*='display: none'])) #help {
     margin: -75px 0 0 -75px;
   }
 }
+
+
+/* ---------- land office ---------- */
+/*
+ * A map beside a readout. The canvas has a fixed backing-store size and is
+ * scaled by CSS, so it stays legible on a phone without re-sampling the
+ * heightfield at every viewport — the click handler converts back through the
+ * element's own rect for exactly that reason.
+ */
+/*
+ * Full screen, unlike every other panel.
+ *
+ * The others are dialogs about one thing — a plot, a shop, a pet. This is a
+ * view of the whole valley, and the decision it supports is spatial: which way
+ * is that parcel, what is between here and it, what is left. Shrunk into a
+ * dialog the map is a thumbnail, and a thumbnail cannot answer any of those.
+ */
+/*
+ * The header has to be restated at full screen.
+ *
+ * The shared panel head is sized for a dialog a few hundred pixels wide — at
+ * full width its close button collapses into the corner and the title floats
+ * with nothing to sit against. A full-screen view wants a proper bar.
+ */
+#landMap .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: clamp(10px, 1.6vh, 18px) clamp(14px, 3vw, 40px);
+  flex: 0 0 auto;
+}
+
+#landMap .panel-head h2 {
+  font-size: clamp(20px, 2.6vw, 28px);
+  margin: 0;
+}
+
+#landMap .panel-close {
+  position: static;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  font-size: 20px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+#landMap {
+  position: fixed;
+  inset: 0;
+  /*
+   * Clicks, which do not come for free in here.
+   *
+   * `#ui` is a full-screen overlay with `pointer-events: none` so the world can
+   * be clicked through it, and every panel wins its clicks back through its own
+   * wrapper — `#shop` sets `pointer-events: auto`, and so on. This panel has no
+   * wrapper: it is the full screen itself. Without this every click on it,
+   * including the close button, passed through to the game canvas underneath —
+   * the panel was a picture of a panel.
+   */
+  pointer-events: auto;
+  /*
+   * Above the HUD, not merely above the world.
+   *
+   * A dialog can sit under the avatar and the XP bar without anyone noticing —
+   * it covers the middle of the screen and the HUD lives at the edges. A
+   * full-screen view covers those edges too, so without this the avatar and the
+   * level bar float on top of the map.
+   */
+  z-index: 50;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  border-radius: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.land-body {
+  display: flex;
+  gap: clamp(12px, 2vw, 28px);
+  padding: clamp(8px, 1.5vh, 18px) clamp(12px, 3vw, 40px) clamp(12px, 2vh, 24px);
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-wrap: wrap;
+}
+
+.land-canvas {
+  /* Square, and as big as the shorter axis allows. */
+  width: min(86vh, 62vw);
+  height: min(86vh, 62vw);
+  border-radius: 12px;
+  border: 3px solid rgba(212, 168, 68, 0.75);
+  background: #2b3a2b;
+  cursor: pointer;
+  display: block;
+}
+
+.land-info {
+  flex: 0 1 320px;
+  min-width: 220px;
+  max-width: 380px;
+}
+
+.land-info h3 {
+  margin: 0 0 4px;
+  font-size: clamp(17px, 2vw, 22px);
+  color: var(--ink);
+}
+
+.land-hint {
+  font-weight: 800;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
+
+.land-sub {
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+
+.land-price {
+  font-size: clamp(20px, 2.4vw, 26px);
+  font-weight: 900;
+  color: var(--ink);
+  margin: 6px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.land-owned {
+  font-weight: 800;
+  color: #3f7d2f;
+}
+
+.land-locked {
+  font-size: 13px;
+  color: #a2661f;
+  line-height: 1.4;
+}
+
+.land-buy {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 900;
+  color: #fff;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 8px 6px;
+  border-width: 0 20px;
+  border-style: solid;
+  border-color: transparent;
+  border-image: url('/ui/btn-plot.png') 0 52 fill stretch;
+  background: none;
+  cursor: pointer;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
+}
+
+.land-buy.disabled {
+  filter: grayscale(0.7) brightness(0.9);
+  cursor: default;
+}
+
+
+@media (max-aspect-ratio: 1/1) {
+  .land-canvas {
+    width: min(92vw, 60vh);
+    height: min(92vw, 60vh);
+  }
+
+  .land-info {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+}

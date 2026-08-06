@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { getModels, modelGroup, PROP_HEIGHT } from '../assets/models'
+import { createAlertMarker } from '../assets/alert-marker'
 import { groundHeight } from './terrain'
 import { TILE_SIZE } from './farm'
 import type { Obstacle } from './world'
@@ -67,6 +68,16 @@ export function plotPrice(owned: number) {
 /** How close the player has to stand for the sale prompt. */
 export const PLOT_REACH = 3.2
 
+/**
+ * How far land can be claimed from ground you already hold.
+ *
+ * Expansion has to spread outward from home rather than letting a rich player
+ * buy the far corner of the valley first: land you cannot walk to past land you
+ * do not own is not an expansion, it is a teleport. Sized so the nearest parcel
+ * is reachable from the farm and each one after that opens its neighbours.
+ */
+export const CLAIM_REACH = 34
+
 /** Trees per unbought plot. Dense enough to read as woodland, not as scenery. */
 const TREES_PER_PLOT = 26
 /** Seconds a felled stand takes to come down when a plot is bought. */
@@ -87,7 +98,22 @@ interface Stand {
    * something to build here.
    */
   bench: THREE.Group
+  /**
+   * How the player can tell this stand of trees is for sale.
+   *
+   * Without it a plot is twenty-six trees indistinguishable from the forest
+   * around them, and the only way to discover one is to walk into its edge and
+   * happen to see a prompt. Two marks, because they answer different questions
+   * from different distances: a marker floating over the canopy says *there is
+   * something here* from across the valley, and the signpost at the near edge
+   * says *this ground is for sale* once you have walked over.
+   */
+  sign: THREE.Group
+  marker: THREE.Group
 }
+
+/** How high above the stand the for-sale marker floats. */
+const MARKER_Y = PROP_HEIGHT.tree * 1.15
 
 export class WorldPlots {
   readonly group = new THREE.Group()
@@ -120,6 +146,29 @@ export class WorldPlots {
         mine.push(o)
       }
 
+      /*
+       * The signpost goes on the edge facing the middle of the valley, which is
+       * the side every approach comes from — the farm, the lane and the square
+       * are all inboard of these parcels.
+       */
+      const inward = new THREE.Vector2(-plot.x, -plot.z).normalize()
+      const sx = plot.x + inward.x * (HALF + 0.9)
+      const sz = plot.z + inward.y * (HALF + 0.9)
+      const sign = modelGroup(getModels().signpost, PROP_HEIGHT.signpost)
+      sign.position.set(sx, groundHeight(sx, sz), sz)
+      sign.rotation.y = Math.atan2(inward.x, inward.y)
+      this.group.add(sign)
+      obstacles.push({ x: sx, z: sz, r: 0.3 })
+
+      // The same "!" the shop and the neighbours use, so one mark means one
+      // thing everywhere in the game.
+      const marker = createAlertMarker(1.7)
+      // Alert markers ship hidden — their usual callers toggle them per request.
+      // A plot for sale is always for sale, so it is up from the first frame.
+      marker.visible = true
+      marker.position.set(plot.x, groundHeight(plot.x, plot.z) + MARKER_Y, plot.z)
+      this.group.add(marker)
+
       const bench = modelGroup(getModels().workbench, PROP_HEIGHT.workbench)
       bench.position.set(plot.x, groundHeight(plot.x, plot.z), plot.z)
       // Turned to face roughly homeward, so it reads as set up rather than dropped.
@@ -128,7 +177,7 @@ export class WorldPlots {
       this.group.add(bench)
 
       this.group.add(group)
-      this.stands.push({ plot, group, obstacles: mine, felling: null, bench })
+      this.stands.push({ plot, group, obstacles: mine, felling: null, bench, sign, marker })
     }
   }
 
@@ -142,6 +191,34 @@ export class WorldPlots {
 
   get nextPrice() {
     return plotPrice(this.owned.size)
+  }
+
+  /**
+   * Within reach of the farm or of land already owned.
+   *
+   * The frontier, in other words — which is both the rule and the thing the
+   * land map draws.
+   */
+  canBuy(id: number, farmCentre: THREE.Vector3) {
+    if (this.owned.has(id)) return false
+    const plot = WORLD_PLOTS[id]
+    if (!plot) return false
+    if (Math.hypot(plot.x - farmCentre.x, plot.z - farmCentre.z) <= CLAIM_REACH) return true
+    for (const owned of this.owned) {
+      const o = WORLD_PLOTS[owned]
+      if (Math.hypot(plot.x - o.x, plot.z - o.z) <= CLAIM_REACH) return true
+    }
+    return false
+  }
+
+  /** Every plot with its state, for the land map. */
+  survey(farmCentre: THREE.Vector3) {
+    return WORLD_PLOTS.map((plot) => ({
+      plot,
+      owned: this.owned.has(plot.id),
+      buyable: this.canBuy(plot.id, farmCentre),
+      distance: Math.hypot(plot.x - farmCentre.x, plot.z - farmCentre.z),
+    }))
   }
 
   /** The plot the player is standing on or beside, owned or not. */
@@ -169,6 +246,9 @@ export class WorldPlots {
     const stand = this.stands[id]
     stand.felling = 0
     stand.bench.visible = true
+    // Bought: it is not for sale any more, so neither mark belongs.
+    stand.sign.visible = false
+    stand.marker.visible = false
     // The colliders go the moment it is bought: the player owns this ground now
     // and must not be shouldered out of it by trees that are still falling.
     for (const o of stand.obstacles) o.off = true
@@ -184,6 +264,8 @@ export class WorldPlots {
       const stand = this.stands[id]
       stand.group.visible = false
       stand.bench.visible = true
+      stand.sign.visible = false
+      stand.marker.visible = false
       stand.felling = null
       for (const o of stand.obstacles) o.off = true
     }
@@ -193,8 +275,29 @@ export class WorldPlots {
     return [...this.owned].sort((a, b) => a - b)
   }
 
-  update(dt: number) {
+  /**
+   * Show the for-sale marks only on land that can actually be claimed.
+   *
+   * A signpost on a parcel four expansions away advertises something the player
+   * cannot buy, and eight at once turns the valley into a wall of markers. The
+   * frontier alone is the useful set.
+   */
+  refreshMarks(farmCentre: THREE.Vector3) {
     for (const stand of this.stands) {
+      const on = this.canBuy(stand.plot.id, farmCentre)
+      stand.sign.visible = on
+      stand.marker.visible = on
+    }
+  }
+
+  update(dt: number, camera?: THREE.Camera, elapsed = 0) {
+    for (const stand of this.stands) {
+      if (stand.marker.visible) {
+        // Billboarded and bobbing, exactly like the shop's.
+        if (camera) stand.marker.quaternion.copy(camera.quaternion)
+        stand.marker.position.y =
+          groundHeight(stand.plot.x, stand.plot.z) + MARKER_Y + Math.sin(elapsed * 2 + stand.plot.id) * 0.35
+      }
       if (stand.felling === null) continue
       stand.felling += dt / FELL_SECONDS
       if (stand.felling >= 1) {

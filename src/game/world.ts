@@ -195,6 +195,8 @@ export interface World {
   setLaneProgress(arrived: number, toSquare?: boolean): void
   /** The washed-up seed crate: where it is, and whether it is trading. */
   readonly storeCratePos: THREE.Vector3
+  /** The land office desk on the square, where parcels are bought. */
+  readonly landDeskPos: THREE.Vector3
   setStoreCrateVisible(on: boolean): void
   /** Reveal or hide a building that arrives with the player's level. */
   setArrivalVisible(id: ArrivalId, on: boolean): void
@@ -1162,6 +1164,21 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   arrivalGroup('lane').add(instanceModel(getModels().flowerBed, beds))
 
   /*
+   * The land office: a workbench on the square.
+   *
+   * Buying ground is the one purchase the player cannot make by walking up to
+   * the thing — the parcels are scattered across the valley and most are behind
+   * trees. It needs a counter, and the square is where every other counter in
+   * this game already is.
+   */
+  const landDesk = modelGroup(getModels().workbench, PROP_HEIGHT.workbench)
+  const landDeskPos = new THREE.Vector3(SQUARE_CX - SQUARE_HX + 3, 0, -SQUARE_HZ + 2.4)
+  landDesk.position.set(landDeskPos.x, groundHeight(landDeskPos.x, landDeskPos.z), landDeskPos.z)
+  landDesk.rotation.y = Math.PI * 0.15
+  arrivalGroup('lane').add(landDesk)
+  ownedObstacle('lane', { x: landDeskPos.x, z: landDeskPos.z, r: 0.7 })
+
+  /*
    * A lantern closing off the north end of the lane, inside a pebbled circle.
    *
    * A stone rabbit stood here. It went with the rabbits, and the pebble ring it
@@ -1317,6 +1334,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     farmgirl,
     mailboxPos,
     storeCratePos,
+    landDeskPos,
     setLaneProgress(arrived: number, toSquare = false) {
       /*
        * How far the road has to reach.
