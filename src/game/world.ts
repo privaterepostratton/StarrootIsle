@@ -192,7 +192,7 @@ export interface World {
    * lamps stop at the last occupied plot, so the village visibly builds toward
    * the player instead of appearing whole the first time anyone moves in.
    */
-  setLaneProgress(arrived: number): void
+  setLaneProgress(arrived: number, toSquare?: boolean): void
   /** The washed-up seed crate: where it is, and whether it is trading. */
   readonly storeCratePos: THREE.Vector3
   setStoreCrateVisible(on: boolean): void
@@ -1309,7 +1309,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     farmgirl,
     mailboxPos,
     storeCratePos,
-    setLaneProgress(arrived: number) {
+    setLaneProgress(arrived: number, toSquare = false) {
       /*
        * How far the road has to reach.
        *
@@ -1321,11 +1321,22 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
       for (let i = 0; i < Math.min(arrived, NEIGHBOUR_SLOTS.length); i++) {
         reach = Math.max(reach, NEIGHBOUR_SLOTS[i].x + PLOT_HX + 3)
       }
-      for (const seg of laneSegments) seg.group.visible = arrived > 0 && seg.x0 < reach
+      /*
+       * The square pulls the road all the way to it.
+       *
+       * Once the stall is open the market square is standing there in full, and
+       * a paved square at the end of a road that stops two plots short reads as
+       * unfinished ground rather than as a village still growing. Whatever the
+       * arrivals have earned, the street reaches whatever is already built at
+       * the far end of it — with the lamps that light the walk.
+       */
+      const open = toSquare || arrived > 0
+      if (toSquare) reach = laneDrawMax
+      for (const seg of laneSegments) seg.group.visible = open && seg.x0 < reach
 
       // InstancedMesh draws its first `count` instances, and the lamps were
       // generated in order along the street — so the count *is* the reveal.
-      const lit = arrived > 0 ? lanterns.filter((l) => l.x < reach).length : 0
+      const lit = open ? lanterns.filter((l) => l.x < reach).length : 0
       lanternMesh.count = lit
       pools.count = lit
       cones.count = lit

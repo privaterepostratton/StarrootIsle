@@ -47,7 +47,7 @@ import { Stock } from './game/stock'
 import { Audio } from './core/audio'
 import { Pets, type EggDef } from './game/pets'
 import { PetUi } from './ui/pet-ui'
-import { Neighbourhood } from './game/neighbours'
+import { Neighbourhood, type Neighbour } from './game/neighbours'
 import { NeighbourUi } from './ui/neighbour-ui'
 import { NeighbourPlotUi } from './ui/neighbour-plot-ui'
 import { PostFX } from './core/postfx'
@@ -865,13 +865,33 @@ const hood = new Neighbourhood(world.obstacles, world.walls)
  */
 hood.onArrivalStart = (nb, at) => {
   hud.toast(`🧳 ${nb.profile.name} has come ashore`, 'good')
-  if (modalOpen()) return
+  void at
+  /*
+   * Queued, never skipped.
+   *
+   * A neighbour arrives *because* the player levelled up, so the level-up
+   * screen is always on top at this exact moment — and the old check bailed out
+   * on any open modal, which meant the shot was skipped every single time it
+   * was supposed to play. It waits for the screen instead, and aims at wherever
+   * the villager has walked to by then rather than at the beach they have since
+   * left.
+   */
+  pendingArrival = nb
+}
+
+/** The villager waiting to be filmed, once the player closes the level-up. */
+let pendingArrival: Neighbour | null = null
+
+function playArrivalShot() {
+  if (!pendingArrival || modalOpen()) return
+  const at = pendingArrival.npcWorldPos
+  pendingArrival = null
   arrivalTimer = ARRIVAL_SECONDS
-  arrivalAt.copy(at)
+  arrivalAt.set(at.x, 0, at.y)
   arrivalPrevPitch = engine.pitch
   arrivalPrevYaw = engine.targetYaw
-  // Look inland from the water, the way they are about to walk.
-  arrivalYaw = Math.atan2(-at.x, -at.z)
+  // Look inland from the water, the way they are walking.
+  arrivalYaw = Math.atan2(-at.x, -at.y)
   document.body.classList.add('cinematic')
   audio.play('greet')
 }
@@ -1843,9 +1863,17 @@ function applyArrivals() {
   world.setArrivalVisible('barn', progression.level >= ARRIVAL_LEVEL.barn)
   // The street arrives with the first neighbour to walk down it, and then grows
   // a stretch at a time as the rest move in — see World.setLaneProgress.
-  world.setArrivalVisible('lane', progression.level >= ARRIVAL_LEVEL.lane)
+  /*
+   * The street's group is up if *anything* on it has been built — the first
+   * neighbour, or the stall at the far end. Gating it on the neighbour alone
+   * left the square open for business with its road group switched off.
+   */
+  world.setArrivalVisible(
+    'lane',
+    progression.level >= ARRIVAL_LEVEL.lane || progression.level >= ARRIVAL_LEVEL.shop,
+  )
   hood.setArrivedFor(progression.level)
-  world.setLaneProgress(hood.arrivedCount)
+  world.setLaneProgress(hood.arrivedCount, world.hasArrived('shop'))
 }
 
 /**
@@ -2377,7 +2405,9 @@ const devUi = new DevUi({
   revealAll: () => {
     world.setArrivalVisible('shop', true)
     world.setArrivalVisible('barn', true)
+    world.setArrivalVisible('lane', true)
     hood.setArrivedFor(99)
+    world.setLaneProgress(hood.arrivedCount, true)
     hud.toast('Dev: everything revealed', 'info')
   },
   washUpBarrel: () => {
@@ -2555,6 +2585,7 @@ function frame() {
   // the setter itself is a no-op when the flag has not changed.
   hud.setPetAlert(pets.readyEggs.length > 0)
   hood.update(dt, elapsed, player.position, engine.camera)
+  playArrivalShot()
 
   // Requests run on a real clock, so a deadline passes whether or not the
   // player ever opened the valley panel.
@@ -2849,7 +2880,7 @@ function frame() {
  */
 hood.restoreArrivedFor(progression.level)
 applyArrivals()
-world.setLaneProgress(hood.arrivedCount)
+world.setLaneProgress(hood.arrivedCount, world.hasArrived('shop'))
 
 window.__loading?.(1)
 frame()
