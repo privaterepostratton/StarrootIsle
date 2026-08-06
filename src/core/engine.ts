@@ -13,12 +13,12 @@ import { isHandheld } from '../ui/fullscreen'
  */
 
 /** How far back the camera sits by default on desktop. */
-export const DEFAULT_DISTANCE = 11
+export const DEFAULT_DISTANCE = 8
 /** Phones start closer so plots and the farmer fill more of a small screen. */
-const MOBILE_DEFAULT_DISTANCE = 7
+const MOBILE_DEFAULT_DISTANCE = 6
 const MIN_DISTANCE = 3.5
-/* Tightened repeatedly (26 → 17 → 13 → 11): zoomed out the street reads as a
- * diorama — every farm at once, plants at a few pixels. Pinned to
+/* Tightened repeatedly (26 → 17 → 13 → 11 → 8): zoomed out the street reads
+ * as a diorama — every farm at once, plants at a few pixels. Pinned to
  * DEFAULT_DISTANCE, so the framing the game opens with is the widest there is
  * and the wheel / pinch only zooms *in* from it. If this ever needs loosening,
  * keep it >= DEFAULT_DISTANCE or the camera spawns outside its own clamp. */

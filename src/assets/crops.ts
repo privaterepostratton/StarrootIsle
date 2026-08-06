@@ -627,6 +627,23 @@ const GRAPE_BUNCH_GEO = (() => {
 })()
 
 /**
+ * Root crops whose authored model brings its own leaves.
+ *
+ * The procedural body grows a two-tier rosette over every root, which is right
+ * for a bulb modelled as a bare bulb and wrong for one modelled complete: the
+ * turnip came out as a purple pebble under a bush, and the carrot wore two sets
+ * of greens at once. Where this returns a model, the body leaves the foliage to
+ * it — see rootBody.
+ */
+function authoredRootModel(def: CropDef) {
+  const models = peekModels()
+  if (!models) return undefined
+  if (def.fruit === 'taproot') return models.carrot
+  if (def.fruit === 'globe') return models.turnip
+  return undefined
+}
+
+/**
  * An authored fruit model, standing in for the procedural one.
  *
  * Three crops now swap a glTF in once they ripen, and the dance is identical
@@ -685,6 +702,18 @@ function buildFruit(
 
   switch (kind) {
     case 'globe': {
+      /*
+       * The authored root once ripe, the procedural bulb before that — the same
+       * arrangement the carrot uses. Growing stages stay procedural because they
+       * are half-buried and barely seen; the ripe one is what the player leans
+       * in to look at, and an authored model earns its place there.
+       */
+      const authoredTurnip = ripe ? authoredFruit(authoredRootModel(def), 2.7, 0.3, rarity) : null
+      if (authoredTurnip) {
+        g.add(authoredTurnip)
+        break
+      }
+
       /*
        * Turnip: a pale bulb, purple where the sun reached it, tapering to a tail.
        *
@@ -751,7 +780,7 @@ function buildFruit(
       // Lifted and enlarged so its tip meets the soil and its own leafy crown
       // reaches the plant's rosette. At the model's authored size the two sat
       // apart with a gap of daylight between root and leaves.
-      const root2 = ripe ? authoredFruit(peekModels()?.carrot, 3.2, 0.7, rarity, [0.6981, 0, 0]) : null
+      const root2 = ripe ? authoredFruit(authoredRootModel(def), 4.6, 0.34, rarity, [0.6981, 0, 0]) : null
       if (root2) {
         g.add(root2)
         break
@@ -1798,7 +1827,17 @@ function rootBody(def: CropDef, stage: number, r: () => number): Body {
   const top = ROOT_STYLE[def.fruit] ?? { width: 1, len: 1, tilt: 0, count: 1 }
   const many = (n: number) => Math.max(3, Math.round(n * top.count))
 
-  leafRosette(
+  /*
+   * A ripe root with an authored model wears that model's own leaves.
+   *
+   * Growing the rosette anyway put two sets of greens on the carrot and buried
+   * the turnip under a bush several times its own size — the plant read as
+   * foliage with a vegetable hidden in it. The tiers stay for every unripe
+   * stage, because until the model swaps in the leaves are the whole plant.
+   */
+  const authoredTop = stage === GROWTH_STAGES - 1 && !!authoredRootModel(def)
+
+  if (!authoredTop) leafRosette(
     g,
     stage === 0 ? 4 : many(9),
     (0.24 + t * 0.22) * top.len,
@@ -1810,7 +1849,7 @@ function rootBody(def: CropDef, stage: number, r: () => number): Body {
     undefined,
     top.width,
   )
-  if (stage >= 1) {
+  if (stage >= 1 && !authoredTop) {
     // The upper tier stands, but not to attention. At 1.0 rad these were broad
     // vertical spears and every root crop in the game read as an aloe.
     leafRosette(

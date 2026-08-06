@@ -39,6 +39,8 @@ import {
 } from './terrain'
 import {
   FARM_SLOTS,
+  NEIGHBOUR_SLOTS,
+  PLOT_HX,
   PLAYER_SLOT,
   FENCE_HX,
   FENCE_HZ,
@@ -183,6 +185,14 @@ export interface World {
   setGardenLevel(level: number): void
   /** Where the upgrade mailbox is standing, for the interaction prompt. */
   readonly mailboxPos: THREE.Vector3
+  /**
+   * Lay the street out as far as the arrivals have earned.
+   *
+   * `arrived` is how many neighbours have moved in. The road, its verge and its
+   * lamps stop at the last occupied plot, so the village visibly builds toward
+   * the player instead of appearing whole the first time anyone moves in.
+   */
+  setLaneProgress(arrived: number): void
   /** The washed-up seed crate: where it is, and whether it is trading. */
   readonly storeCratePos: THREE.Vector3
   setStoreCrateVisible(on: boolean): void
@@ -211,6 +221,15 @@ const FENCE_THICKNESS = 0.14
 
 /** Length of the authored fence panel. Runs are divided into whole panels. */
 const FENCE_PANEL = 1
+
+/**
+ * How far a tree has to stand off a fenced plot.
+ *
+ * Roughly the radius of a broadleaf crown at the sizes the scatter uses, so a
+ * tree cleared by this much has neither its trunk nor its branches over
+ * someone's beds.
+ */
+const CANOPY_CLEARANCE = 2.4
 
 /**
  * How far to lift the fence so its posts meet the ground.
@@ -442,6 +461,18 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
       const x = cx + (r() - 0.5) * 2 * hx
       const z = cz + (r() - 0.5) * 2 * hz
       if (!isWalkable(x, z) || isSand(x, z)) continue
+      /*
+       * Never inside a garden, and never so close that the crown hangs over one.
+       *
+       * This was the one scatter in the game with no plot test at all — it only
+       * asked whether the ground could be stood on. That went unnoticed for as
+       * long as the thickets sat in open gaps, and became three trees growing
+       * out of the player's own beds the moment the village turned and the farm
+       * moved to the head of the lane. The margin is a canopy rather than a
+       * pace, because a trunk politely outside the rails with its branches over
+       * the crops is the same bug to look at.
+       */
+      if (onLane(x, z, 1.2) || inAnyPlot(x, z, CANOPY_CLEARANCE)) continue
       const conifer = r() < 0.35
       const model = conifer ? getModels().pine : getModels().tree
       const height = (conifer ? PROP_HEIGHT.pine : PROP_HEIGHT.tree) * (0.8 + r() * 0.45)
@@ -490,8 +521,6 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   // — and no depth offset fixes two identical coplanar surfaces, only not having
   // them does. LANE_X_MAX stays the lane's logical extent for `onLane`.
   const laneDrawMax = Math.min(LANE_X_MAX, SQUARE_CX - SQUARE_HX)
-  const laneLength = laneDrawMax - LANE_X_MIN
-  const laneMat = dirtMaterial(laneLength / 4, (LANE_HALF * 2) / 4)
   /*
    * The street itself is an arrival.
    *
@@ -501,12 +530,16 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
    * forgotten to load. The lane, the square, the worn verges and the lanterns
    * all appear together when the first neighbour moves in.
    */
-  arrivalGroup('lane').add(
-    groundQuad(laneLength, LANE_HALF * 2, laneMat, (LANE_X_MIN + laneDrawMax) / 2, 0),
-  )
-
+  /*
+   * The market square belongs to the stall, not to the street.
+   *
+   * On the lane group it appeared with the first neighbour: a swept dirt plaza,
+   * lit, dressed with a lamp and a flower bed, and completely empty for several
+   * levels until the stall opened on it. An empty market is a stronger statement
+   * that something is missing than bare grass ever was.
+   */
   const squareMat = dirtMaterial((SQUARE_HX * 2) / 4, (SQUARE_HZ * 2) / 4)
-  arrivalGroup('lane').add(groundQuad(SQUARE_HX * 2, SQUARE_HZ * 2, squareMat, SQUARE_CX, 0))
+  arrivalGroup('shop').add(groundQuad(SQUARE_HX * 2, SQUARE_HZ * 2, squareMat, SQUARE_CX, 0))
 
   /*
    * The animal store's yard.
@@ -567,8 +600,15 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     scatterParts.push(geo)
   }
 
-  /** Bake the collected discs into one mesh. Call once, after the last scatter(). */
-  const commitScatter = () => {
+  /**
+   * Bake the collected discs into one mesh and hand it to `target`.
+   *
+   * Takes a group rather than always adding to the lane, because the street now
+   * arrives a stretch at a time and its worn edges have to arrive with the road
+   * they are worn by — verge dirt drawn along grass with no lane on it reads as
+   * a missing road, which is worse than no verge at all.
+   */
+  const commitScatter = (target: THREE.Object3D) => {
     if (scatterParts.length === 0) return
     const merged = mergeGeometries(scatterParts, false)
     for (const g of scatterParts) g.dispose()
@@ -578,21 +618,47 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     // After the terrain and the lane, before anything standing on the ground.
     mesh.renderOrder = 1
     setLayer(mesh, MINOR_LAYER)
-    arrivalGroup('lane').add(mesh)
+    target.add(mesh)
   }
 
-  // Small and tight against the edge: big blobs out on the grass stop reading
-  // as a worn verge and start reading as spilt paint.
-  for (let x = LANE_X_MIN; x < laneDrawMax; x += 1.8) {
-    for (const sz of [-1, 1]) {
-      scatter(x + r() * 1.2, sz * (LANE_HALF - 0.15 + r() * 0.4), 0.34 + r() * 0.24)
+  /*
+   * The street, built in stretches.
+   *
+   * One neighbour moving in should not lay a road past five empty lawns and
+   * light it end to end. Each stretch is its own quad, its own worn verge and
+   * its own lamps, and `setLaneProgress` reveals as many as the arrivals have
+   * earned — so the village lays its road out toward you as it fills up.
+   *
+   * `laneMat` still exists for the square; each stretch gets its own material
+   * so the dirt tiles at the same density however long the stretch is.
+   */
+  const laneSegments: { x0: number; x1: number; group: THREE.Group }[] = []
+  const LANE_SEGMENT = 9.5
+  for (let sx = LANE_X_MIN; sx < laneDrawMax - 0.01; sx += LANE_SEGMENT) {
+    const x1 = Math.min(sx + LANE_SEGMENT, laneDrawMax)
+    const len = x1 - sx
+    const segGroup = new THREE.Group()
+    segGroup.visible = false
+    segGroup.add(groundQuad(len, LANE_HALF * 2, dirtMaterial(len / 4, (LANE_HALF * 2) / 4), (sx + x1) / 2, 0))
+    // The verge that belongs to this stretch, baked into the same group.
+    for (let x = sx; x < x1; x += 1.8) {
+      for (const sz of [-1, 1]) {
+        scatter(x + r() * 1.2, sz * (LANE_HALF - 0.15 + r() * 0.4), 0.34 + r() * 0.24)
+      }
     }
+    commitScatter(segGroup)
+    arrivalGroup('lane').add(segGroup)
+    laneSegments.push({ x0: sx, x1, group: segGroup })
   }
+
+  // The square's own edging, committed into the shop group with the plaza it
+  // edges — see the note there.
   for (let z = -SQUARE_HZ; z < SQUARE_HZ; z += 1.9) {
     for (const sx of [-1, 1]) {
       scatter(SQUARE_CX + sx * (SQUARE_HX - 0.15 + r() * 0.45), z + r() * 1.3, 0.36 + r() * 0.26)
     }
   }
+  commitScatter(arrivalGroup('shop'))
 
   // Aprons of worn dirt just inside each gate, so the opening reads as a way in
   // rather than a hole in the fence.
@@ -601,7 +667,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     scatter(g.x - s.inward * 0.7, s.z, GATE_WIDTH / 2 - 0.1)
     scatter(g.x - s.inward * 1.8, s.z + (r() - 0.5) * 0.8, 0.9)
   }
-  commitScatter()
+  commitScatter(arrivalGroup('lane'))
 
   // --- seed shop -----------------------------------------------------------
   const shopModel = getModels().shop
@@ -860,6 +926,7 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   const lanternH = lanternBox.max.y - lanternBox.min.y
   const lanternScale = PROP_HEIGHT.lantern / lanternH
   const lanterns: PropPlacement[] = []
+  const lanternObstacles: Obstacle[] = []
 
   for (let i = 0; ; i++) {
     const x = LANE_X_MIN + 6 + i * 9.5
@@ -877,7 +944,10 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
       rotationY: sz > 0 ? Math.PI : 0,
       scale: lanternScale,
     })
-    ownedObstacle('lane', { x, z, r: 0.3 })
+    // Held individually: a lamp that has not arrived must not block the road.
+    const o: Obstacle = { x, z, r: 0.3, off: true }
+    obstacles.push(o)
+    lanternObstacles.push(o)
   }
 
   const lanternMesh = instanceModel(getModels().lantern, lanterns)
@@ -1239,6 +1309,28 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     farmgirl,
     mailboxPos,
     storeCratePos,
+    setLaneProgress(arrived: number) {
+      /*
+       * How far the road has to reach.
+       *
+       * Out to the far fence of the last occupied plot, plus a little, so the
+       * stretch a neighbour arrives with actually passes their gate rather than
+       * stopping at their hedge. Nobody in yet means no road at all.
+       */
+      let reach = LANE_X_MIN
+      for (let i = 0; i < Math.min(arrived, NEIGHBOUR_SLOTS.length); i++) {
+        reach = Math.max(reach, NEIGHBOUR_SLOTS[i].x + PLOT_HX + 3)
+      }
+      for (const seg of laneSegments) seg.group.visible = arrived > 0 && seg.x0 < reach
+
+      // InstancedMesh draws its first `count` instances, and the lamps were
+      // generated in order along the street — so the count *is* the reveal.
+      const lit = arrived > 0 ? lanterns.filter((l) => l.x < reach).length : 0
+      lanternMesh.count = lit
+      pools.count = lit
+      cones.count = lit
+      lanternObstacles.forEach((o, i) => (o.off = i >= lit))
+    },
     setStoreCrateVisible(on: boolean) {
       storeCrate.visible = on
       crateObstacle.off = !on

@@ -71,6 +71,8 @@ interface ModelCache {
   corn: LoadedModel
   /** The ripe carrot. See the 'taproot' factory in assets/crops.ts. */
   carrot: LoadedModel
+  /** The ripe turnip — the purple-topped root, not the procedural bulb. */
+  turnip: LoadedModel
   /** The ripe apple. See the 'pome' factory in assets/crops.ts. */
   apple: LoadedModel
   /** The ripe watermelon. See the 'striped' factory in assets/crops.ts. */
@@ -223,7 +225,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -265,6 +267,7 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/haybale.glb')),
       gltf.loadAsync(asset('models/haypile.glb')),
       gltf.loadAsync(asset('models/store-crate.glb')),
+      gltf.loadAsync(asset('models/turnip.glb')),
     ])
 
   cache = {
@@ -306,6 +309,7 @@ export async function loadModels(): Promise<ModelCache> {
     bush: extractMesh(bush.scene),
     barrel: extractMesh(barrel.scene),
     storeCrate: extractMesh(storeCrate.scene),
+    turnip: extractMesh(turnip.scene),
     haybale: extractMesh(haybale.scene),
     haypile: extractMesh(haypile.scene),
   }

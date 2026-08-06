@@ -1092,8 +1092,18 @@ body.panel-open #ui #questTracker {
   font-size: clamp(13px, 1.5vw + 10px, 16px);
   font-weight: 700;
   display: none;
+  align-items: center;
+  gap: 0.15em;
   white-space: nowrap;
+  /*
+   * Hard caps — content icons are 1024² PNGs. Without a max-height and a flex
+   * row, their intrinsic min-content size can inflate this pill into a full-
+   * screen cream slab (only "E …" visible at the bottom).
+   */
+  width: max-content;
   max-width: min(92vw, 560px);
+  max-height: 52px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   border-radius: 99px;
@@ -1101,7 +1111,7 @@ body.panel-open #ui #questTracker {
 }
 
 #prompt.show {
-  display: block;
+  display: inline-flex;
   animation: promptIn 0.24s var(--spring);
 }
 
@@ -1122,6 +1132,22 @@ body.panel-open #ui #questTracker {
   font-weight: 700;
   margin-right: var(--s2);
   box-shadow: 0 2px 0 var(--edge-dark);
+  flex: 0 0 auto;
+}
+
+/* Painted animal / crop glyphs in the tame prompt (and matching toasts). */
+#prompt .prompt-ico,
+#prompt img.prompt-ico,
+.toast .prompt-ico {
+  width: 22px;
+  height: 22px;
+  max-width: 22px;
+  max-height: 22px;
+  object-fit: contain;
+  display: inline-block;
+  flex: 0 0 auto;
+  margin: 0 0.12em;
+  pointer-events: none;
 }
 
 /* ---------- toasts ---------- */
@@ -3812,10 +3838,11 @@ body.panel-open #ui #questTracker {
   }
 
   #prompt {
-    white-space: normal;
+    white-space: nowrap;
     text-align: center;
-    border-radius: 18px;
-    line-height: 1.35;
+    border-radius: 99px;
+    line-height: 1.2;
+    max-height: 52px;
   }
 
   .panel {

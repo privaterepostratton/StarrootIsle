@@ -73,7 +73,7 @@ import { Doobers } from './game/doobers'
 import { LevelUpScreen } from './ui/levelup-screen'
 import { TouchControls } from './ui/touch'
 import { enableAutoFullscreen } from './ui/fullscreen'
-import { coinIconHtml, mutationIconHtml } from './ui/icons'
+import { coinIconHtml, iconHtml, mutationIconHtml } from './ui/icons'
 import * as Save from './game/save'
 
 /*
@@ -855,6 +855,44 @@ wildlife.onTamed = (def, at) => {
 const hood = new Neighbourhood(world.obstacles, world.walls)
 
 /*
+ * A neighbour coming ashore.
+ *
+ * They land where the player did and walk the length of the valley to their
+ * plot, so the same camera beat the wild animals get is right here too: cut to
+ * them on the sand, then hand the screen back and let them walk while the
+ * player carries on. The felling and the farm appearing are covered further
+ * down, when they get there.
+ */
+hood.onArrivalStart = (nb, at) => {
+  hud.toast(`🧳 ${nb.profile.name} has come ashore`, 'good')
+  if (modalOpen()) return
+  arrivalTimer = ARRIVAL_SECONDS
+  arrivalAt.copy(at)
+  arrivalPrevPitch = engine.pitch
+  arrivalPrevYaw = engine.targetYaw
+  // Look inland from the water, the way they are about to walk.
+  arrivalYaw = Math.atan2(-at.x, -at.z)
+  document.body.classList.add('cinematic')
+  audio.play('greet')
+}
+
+hood.onArrivalSettled = (nb, at) => {
+  /*
+   * The wood comes down and the farm is simply there on the next frame — the
+   * buildings live in a shared instanced batch, so there is no per-neighbour
+   * mesh to grow out of the ground. A burst of leaves and dust over the plot is
+   * what covers that cut, and it is the same trick the game uses whenever
+   * something has to appear at once.
+   */
+  bursts.emit(at, 26, [0x7ec850, 0x4a7a2c, 0x9ad86a], { kind: 'petal', speed: 3.4, life: 1.6, jitter: 0.5 })
+  bursts.emit(at, 20, [0xc9b48e, 0xa8894f], { kind: 'puff', speed: 1.8, life: 1.2, scale: 0.34 })
+  popups.spawn(`${nb.profile.name} moves in!`, at, 'rare', 2.2)
+  audio.play('levelup')
+  hud.toast(`🏡 ${nb.profile.name} has cleared their plot`, 'good')
+}
+
+
+/*
  * The shopkeeper's hello.
  *
  * Quiet: it is a courtesy, not an event, and it fires every time the player
@@ -1634,17 +1672,20 @@ function tameTarget(): TameTarget | null {
 /** Prompt line for a tameable animal: what it is, and what it wants. */
 function tamePromptText(target: TameTarget) {
   const crop = CROP_BY_ID.get(target.cropId)
-  const label = crop ? `${crop.emoji} ${crop.name}` : target.cropId
+  const animalIco = iconHtml(target.def.id, target.def.emoji, 'prompt-ico')
+  const cropIco = crop ? iconHtml(crop.id, crop.emoji, 'prompt-ico') : ''
+  const cropName = crop?.name ?? target.cropId
   return target.canFeed
-    ? `${target.def.emoji} ${target.def.name} — feed ${label}`
-    : `${target.def.emoji} ${target.def.name} wants ${label}`
+    ? `${animalIco} ${target.def.name} — feed ${cropIco} ${cropName}`
+    : `${animalIco} ${target.def.name} wants ${cropIco} ${cropName}`
 }
 
 function feedWildAnimal(target: TameTarget) {
   if (!target.canFeed) {
     const crop = CROP_BY_ID.get(target.cropId)
     audio.play('error')
-    hud.toast(`The ${target.def.name} wants ${crop?.emoji ?? ''} ${crop?.name ?? target.cropId}`, 'info')
+    const cropIco = crop ? iconHtml(crop.id, crop.emoji, 'prompt-ico') : ''
+    hud.toast(`The ${target.def.name} wants ${cropIco} ${crop?.name ?? target.cropId}`, 'info')
     return
   }
   if (pasture.isFull) {
@@ -1800,9 +1841,11 @@ function applyArrivals() {
   farm.mutationsUnlocked = progression.hasFeature('mutations')
   world.setArrivalVisible('shop', progression.level >= ARRIVAL_LEVEL.shop)
   world.setArrivalVisible('barn', progression.level >= ARRIVAL_LEVEL.barn)
-  // The street arrives with the first neighbour to walk down it.
+  // The street arrives with the first neighbour to walk down it, and then grows
+  // a stretch at a time as the rest move in — see World.setLaneProgress.
   world.setArrivalVisible('lane', progression.level >= ARRIVAL_LEVEL.lane)
   hood.setArrivedFor(progression.level)
+  world.setLaneProgress(hood.arrivedCount)
 }
 
 /**
@@ -2797,7 +2840,16 @@ function frame() {
  * and neighbours it has already earned standing there when the screen fades in
  * rather than arriving a level later.
  */
+/*
+ * Boot applies the arrivals *without* their walks.
+ *
+ * The neighbours a returning player has already earned are simply there when
+ * the screen fades in — replaying five arrival cutscenes on load would be a
+ * sequence about nothing, and they would all be walking the valley at once.
+ */
+hood.restoreArrivedFor(progression.level)
 applyArrivals()
+world.setLaneProgress(hood.arrivedCount)
 
 window.__loading?.(1)
 frame()

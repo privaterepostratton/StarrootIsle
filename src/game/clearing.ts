@@ -143,7 +143,14 @@ export class Clearing {
        * plots — a wood growing through the village, which is the sort of thing
        * that looks like a missing exclusion because it is one.
        */
-      if (onLane(x, z, 1.5) || inAnyPlot(x, z, 1)) continue
+      /*
+       * A canopy's worth of clearance, not a pace.
+       *
+       * At a margin of one the trunks were legally outside the rails and the
+       * crowns were over the beds, which looks exactly like a tree growing in
+       * the garden — the distinction only exists in the collision data.
+       */
+      if (onLane(x, z, 1.5) || inAnyPlot(x, z, 2.4)) continue
 
       const conifer = rand() < 0.35
       const model = conifer ? getModels().pine : getModels().tree

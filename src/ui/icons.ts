@@ -47,7 +47,8 @@ const KNOWN = new Set([
 
 /** Coin chip asset lives one folder up from the per-id icons. */
 export function coinIconHtml(className = 'ico-img') {
-  return `<img class="${className}" src="${asset('ui/coin.png')}" alt="" draggable="false">`
+  /* width/height attrs cap intrinsic layout size before CSS applies (icons are 1024²). */
+  return `<img class="${className}" src="${asset('ui/coin.png')}" alt="" width="96" height="96" draggable="false">`
 }
 
 /** Clock face for the time-of-day chip. */
@@ -73,14 +74,15 @@ export function iconSrc(id: string) {
 /** Inline HTML for a content icon, with emoji fallback. */
 export function iconHtml(id: string, emoji: string, className = 'ico-img') {
   if (!hasIcon(id)) return emoji
-  return `<img class="${className}" src="${iconSrc(id)}" alt="" draggable="false">`
+  /* width/height attrs cap intrinsic layout size before CSS applies (icons are 1024²). */
+  return `<img class="${className}" src="${iconSrc(id)}" alt="" width="96" height="96" draggable="false">`
 }
 
 /** Mutation glyph — `disco` maps to disco-mut.png so weather keeps disco.png. */
 export function mutationIconHtml(id: string, emoji: string, className = 'mut-ico') {
   const file = id === 'disco' ? 'disco-mut' : id
   if (!KNOWN.has(file)) return emoji
-  return `<img class="${className}" src="${iconSrc(file)}" alt="" draggable="false">`
+  return `<img class="${className}" src="${iconSrc(file)}" alt="" width="96" height="96" draggable="false">`
 }
 
 /**

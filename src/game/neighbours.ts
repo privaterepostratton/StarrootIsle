@@ -19,6 +19,7 @@ import {
 } from '../assets/models'
 import {
   NEIGHBOUR_SLOTS,
+  SPAWN,
   PLOT_HX,
   PLOT_HZ,
   GATE_WIDTH,
@@ -92,6 +93,19 @@ function washToward(hex: number, amount: number) {
  * leave a hundred crop models resident. Instead: every plot inside CLOSE_RANGE,
  * every *other* plot out to DETAIL_RANGE, nothing beyond.
  */
+/**
+ * The arrival walk.
+ *
+ * A new neighbour comes ashore where the player did and walks to their plot,
+ * because that is the story the opening already tells — everyone here arrived
+ * by sea with nothing. Thirty seconds is long enough to notice and short enough
+ * that nobody is waiting on it: the player keeps playing throughout.
+ */
+const ARRIVAL_FROM = SPAWN
+const ARRIVAL_WALK_SECONDS = 30
+/** How long the wood on a newly-claimed plot takes to come down. */
+const WOOD_FELL_SECONDS = 1.2
+
 const CLOSE_RANGE = 18
 const DETAIL_RANGE = 32
 
@@ -210,6 +224,23 @@ export class Neighbour {
   /** 0 = no crops built, 1 = every other plot, 2 = all of them. */
   private detailLevel = 0
 
+  /** True while Neighbourhood is walking this villager in from the beach. */
+  walkingIn = false
+
+  /** Put the villager somewhere and turn them to face their heading. */
+  placeNpc(x: number, z: number, facing: number) {
+    this.npcPos.set(x, z)
+    this.npcFacing = facing
+    this.farmer.root.position.set(x, 0, z)
+    this.farmer.root.rotation.y = facing
+  }
+
+  /** Settle them into their own plot once the walk is over. */
+  settleNpc() {
+    this.walkingIn = false
+    this.npcTarget = this.pickNpcTarget()
+  }
+
   // NPC wander state.
   private npcPos: THREE.Vector2
   private npcTarget: THREE.Vector2
@@ -302,19 +333,23 @@ export class Neighbour {
     // --- plot -------------------------------------------------------------
     // The tilled patch sits towards the lane end of the strip, so their crops
     // are the part of their farm you see from the street.
+    /*
+     * Laid out plot-local, like everything else on the farm.
+     *
+     * PLOT_W is the patch's depth and PLOT_H its frontage — six by eight — and
+     * spreading those on world X and Z was right only while every plot faced
+     * along X. For a plot that fronts the lane across Z the block came out
+     * turned a quarter, so its long side ran the *deep* way: eight tiles plus
+     * the offset toward the gate reached 7.4 units from the middle against a
+     * fence half of 6.7, and the last row of beds stood outside the rails.
+     */
+    /** Middle of the tilled patch, in world XZ — the villager idles beside it. */
     const bedCentre = at(-2.6, 0.4)
-    const bedCX = bedCentre.x
-    const bedCZ = bedCentre.z
 
     for (let gz = 0; gz < PLOT_H; gz++) {
       for (let gx = 0; gx < PLOT_W; gx++) {
-        // The bed's own grid is square and axis-aligned either way, so it is
-        // laid out in world axes rather than plot-local ones.
-        const pos = new THREE.Vector3(
-          bedCX + (gx - (PLOT_W - 1) / 2) * TILE,
-          0,
-          bedCZ + (gz - (PLOT_H - 1) / 2) * TILE,
-        )
+        const local = at(-2.6 + (gx - (PLOT_W - 1) / 2) * TILE, 0.4 + (gz - (PLOT_H - 1) / 2) * TILE)
+        const pos = new THREE.Vector3(local.x, 0, local.z)
 
         // The same authored planter the player's tilled plots use, so the street
         // reads as one village rather than as the player's farm next to a
@@ -457,7 +492,7 @@ export class Neighbour {
     this.mixer.setTime(Math.random() * 3)
     this.group.add(this.farmer.root)
 
-    this.npcPos = new THREE.Vector2(bedCX, bedCZ + 1)
+    this.npcPos = new THREE.Vector2(bedCentre.x, bedCentre.z + 1)
     this.npcTarget = this.pickNpcTarget()
 
     this.refreshMailbox()
@@ -638,7 +673,15 @@ export class Neighbour {
      * the next LOD update — the arrival schedule looked like it did nothing at
      * all. Distance culling only ever applies to somebody who is actually here.
      */
-    this.group.visible = this.arrived && (level > 0 || dist < BUILDING_RANGE)
+    /*
+     * A villager walking in counts as here, though their farm does not.
+     *
+     * `arrived` only flips once they reach their plot, so keying visibility off
+     * it alone made the whole arrival invisible: the walk ran its full length
+     * with nobody on the sand, and the neighbour blinked into existence at the
+     * end of it.
+     */
+    this.group.visible = (this.arrived || this.walkingIn) && (level > 0 || dist < BUILDING_RANGE)
 
     if (level === this.detailLevel) return
     this.detailLevel = level
@@ -706,6 +749,26 @@ export class Neighbour {
 
     // --- the farmer wanders ------------------------------------------------
     if (!this.group.visible) return
+    /*
+     * ...unless they are still walking in.
+     *
+     * A neighbour who has just been unlocked is crossing the valley from the
+     * beach to a plot that is not theirs yet, and the wander would drag them
+     * back inside a fence that does not exist. Neighbourhood drives them for
+     * the length of that walk — see `beginArrival` — and hands them back here
+     * once they are home.
+     */
+    if (this.walkingIn) {
+      this.farmer.root.position.set(this.npcPos.x, 0, this.npcPos.y)
+      this.farmer.root.rotation.y = this.npcFacing
+      const walk = this.npcWalkAction ?? this.npcIdleAction
+      if (walk !== this.npcCurrent) {
+        walk?.reset().setEffectiveTimeScale(0.72).fadeIn(0.2).play()
+        this.npcCurrent?.fadeOut(0.2)
+        this.npcCurrent = walk
+      }
+      return
+    }
 
     const dx = this.npcTarget.x - this.npcPos.x
     const dz = this.npcTarget.y - this.npcPos.y
@@ -883,6 +946,11 @@ export class Neighbourhood {
   private readonly woodObstacles: Obstacle[][] = []
   private arrived = 0
 
+  /** How many neighbours have moved in. The street is laid out to match. */
+  get arrivedCount() {
+    return this.arrived
+  }
+
   /**
    * How many neighbours have moved in at this level.
    *
@@ -896,8 +964,108 @@ export class Neighbourhood {
     return Math.max(0, Math.min(PROFILES.length, Math.floor((level - 3) / 2) + 1))
   }
 
+  /**
+   * How many neighbours the player's level has earned. They do not appear at
+   * that instant — see `beginArrival`; this is the target the arrivals walk
+   * toward, one at a time.
+   */
+  private targetArrived = 0
+  /** The arrival playing out right now, if any. */
+  private arrival: {
+    index: number
+    t: number
+    from: THREE.Vector2
+    to: THREE.Vector2
+  } | null = null
+  /** Woods coming down, mid-shrink. */
+  private readonly felling: { group: THREE.Group; t: number }[] = []
+
+  /** Fires when a villager sets off from the beach — for the camera. */
+  onArrivalStart: ((nb: Neighbour, at: THREE.Vector3) => void) | null = null
+  /** Fires when they reach their plot and the wood comes down. */
+  onArrivalSettled: ((nb: Neighbour, at: THREE.Vector3) => void) | null = null
+
+  /**
+   * Bring everyone in at once, without the walk.
+   *
+   * For a restored save: the neighbours a returning player has already earned
+   * are simply *there*, and replaying five arrival walks on load would be a
+   * cutscene about nothing.
+   */
+  restoreArrivedFor(level: number) {
+    this.targetArrived = Neighbourhood.arrivedCountFor(level)
+    this.applyArrived(this.targetArrived)
+  }
+
   setArrivedFor(level: number) {
-    const n = Neighbourhood.arrivedCountFor(level)
+    this.targetArrived = Neighbourhood.arrivedCountFor(level)
+    // Fewer than we have (a retirement) applies at once; more is walked in.
+    if (this.targetArrived < this.arrived) this.applyArrived(this.targetArrived)
+    else this.beginArrival()
+  }
+
+  /**
+   * Start the next villager walking, if one is owed and none is on the road.
+   *
+   * One at a time on purpose: two levels earned at once would otherwise put two
+   * strangers on the beach walking in step, which reads as a spawn rather than
+   * as someone moving in.
+   */
+  private beginArrival() {
+    if (this.arrival || this.arrived >= this.targetArrived) return
+    const index = this.arrived
+    const nb = this.all[index]
+    // Visible for the walk, but not yet counted — their fence, cottage and beds
+    // are in the shared batches and stay out until they are home.
+    nb.group.visible = true
+    nb.walkingIn = true
+
+    const gate = approachPos(NEIGHBOUR_SLOTS[index])
+    const from = new THREE.Vector2(ARRIVAL_FROM.x, ARRIVAL_FROM.z)
+    const to = new THREE.Vector2(gate.x, gate.z)
+    nb.placeNpc(from.x, from.y, Math.atan2(to.x - from.x, to.y - from.y))
+    this.arrival = { index, t: 0, from, to }
+    this.onArrivalStart?.(nb, new THREE.Vector3(from.x, 0, from.y))
+  }
+
+  /** Drive the walk and the felling. Called from update. */
+  private updateArrivals(dt: number) {
+    for (let i = this.felling.length - 1; i >= 0; i--) {
+      const f = this.felling[i]
+      f.t += dt / WOOD_FELL_SECONDS
+      if (f.t >= 1) {
+        f.group.visible = false
+        f.group.scale.setScalar(1)
+        this.felling.splice(i, 1)
+        continue
+      }
+      f.group.scale.setScalar(1 - f.t)
+    }
+
+    const a = this.arrival
+    if (!a) return
+    const nb = this.all[a.index]
+    a.t += dt / ARRIVAL_WALK_SECONDS
+    if (a.t < 1) {
+      const x = a.from.x + (a.to.x - a.from.x) * a.t
+      const z = a.from.y + (a.to.y - a.from.y) * a.t
+      nb.placeNpc(x, z, Math.atan2(a.to.x - a.from.x, a.to.y - a.from.y))
+      return
+    }
+
+    // Home. The wood on their plot comes down, and their farm is theirs.
+    this.arrival = null
+    nb.settleNpc()
+    const wood = this.woods[a.index]
+    if (wood.visible) this.felling.push({ group: wood, t: 0 })
+    this.applyArrived(a.index + 1)
+    this.onArrivalSettled?.(nb, nb.centre.clone())
+    // Another may be owed — they queue rather than travel together.
+    this.beginArrival()
+  }
+
+  /** Put the world into the state for `n` arrived neighbours, at once. */
+  private applyArrived(n: number) {
     if (n === this.arrived) return
     this.arrived = n
     this.all.forEach((nb, i) => {
@@ -905,7 +1073,8 @@ export class Neighbourhood {
       nb.group.visible = nb.arrived
     })
     this.woods.forEach((wood, i) => {
-      wood.visible = i >= n
+      // A wood mid-fall is left to the felling animation to put away.
+      if (!this.felling.some((f) => f.group === wood)) wood.visible = i >= n
       for (const o of this.woodObstacles[i]) o.off = i < n
     })
     this.obstacleRanges.forEach((range, i) => {
@@ -966,6 +1135,7 @@ export class Neighbourhood {
   }
 
   update(dt: number, elapsed: number, playerPos: THREE.Vector3, camera?: THREE.Camera) {
+    this.updateArrivals(dt)
     for (const n of this.all) {
       n.setViewer(playerPos)
       n.update(dt, elapsed, camera)
