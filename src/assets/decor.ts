@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { mat, block, ball, PALETTE } from './style'
+import { modelGroup, peekModels, PROP_HEIGHT } from './models'
 
 /**
  * Decorative props and the beehive.
@@ -40,24 +41,37 @@ export interface BeehiveModel {
 export function createBeehive(): BeehiveModel {
   const g = new THREE.Group()
 
-  const stand = block(0.5, 0.1, 0.5, PALETTE.woodDark, 0.03)
-  stand.position.y = 0.05
-  g.add(stand)
+  /*
+   * The box is authored where the model has loaded; the bees never are.
+   *
+   * Same split as the sprinkler: the swarm is what makes a hive read as
+   * working rather than as a crate on the grass, and it has to keep orbiting
+   * whatever shape is standing in the middle. `peekModels` because the decor
+   * factories are exercised by tools that never load a glTF.
+   */
+  const authored = peekModels()?.beehive
+  if (authored) {
+    g.add(modelGroup(authored, PROP_HEIGHT.beehive))
+  } else {
+    const stand = block(0.5, 0.1, 0.5, PALETTE.woodDark, 0.03)
+    stand.position.y = 0.05
+    g.add(stand)
 
-  // Stacked supers, slightly tapered so it reads as a real hive.
-  for (let i = 0; i < 3; i++) {
-    const box = block(0.56 - i * 0.03, 0.22, 0.56 - i * 0.03, i % 2 ? 0xe8d8a8 : 0xd8c48c, 0.03)
-    box.position.y = 0.21 + i * 0.23
-    g.add(box)
+    // Stacked supers, slightly tapered so it reads as a real hive.
+    for (let i = 0; i < 3; i++) {
+      const box = block(0.56 - i * 0.03, 0.22, 0.56 - i * 0.03, i % 2 ? 0xe8d8a8 : 0xd8c48c, 0.03)
+      box.position.y = 0.21 + i * 0.23
+      g.add(box)
+    }
+
+    const lid = block(0.66, 0.08, 0.66, 0xa8763a, 0.03)
+    lid.position.y = 0.93
+    g.add(lid)
+
+    const entrance = block(0.24, 0.05, 0.04, 0x3b3730, 0.01)
+    entrance.position.set(0, 0.16, 0.28)
+    g.add(entrance)
   }
-
-  const lid = block(0.66, 0.08, 0.66, 0xa8763a, 0.03)
-  lid.position.y = 0.93
-  g.add(lid)
-
-  const entrance = block(0.24, 0.05, 0.04, 0x3b3730, 0.01)
-  entrance.position.set(0, 0.16, 0.28)
-  g.add(entrance)
 
   // Bees.
   const beeMat = new THREE.MeshBasicMaterial({ color: 0xf2c14e })

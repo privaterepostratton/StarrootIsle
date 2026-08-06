@@ -59,6 +59,11 @@ interface ModelCache {
   strawberryPlant: LoadedModel
   /** The whole ripe blueberry bush. See AUTHORED_BODIES in assets/crops.ts. */
   blueberryBush: LoadedModel
+  /** The basic sprinkler's body. Its water is still procedural — see
+   *  assets/sprinkler.ts. */
+  sprinklerBasic: LoadedModel
+  /** The hive box. Its bees are still procedural — see assets/decor.ts. */
+  beehive: LoadedModel
   /** Stands on a bought world plot until the player decides what to build. */
   workbench: LoadedModel
   haybale: LoadedModel
@@ -231,7 +236,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, workbench] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, sprinklerBasic, beehive, workbench] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -276,6 +281,8 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/turnip.glb')),
       gltf.loadAsync(asset('models/strawberry-plant.glb')),
       gltf.loadAsync(asset('models/blueberry-bush.glb')),
+      gltf.loadAsync(asset('models/sprinkler-basic.glb')),
+      gltf.loadAsync(asset('models/beehive.glb')),
       gltf.loadAsync(asset('models/workbench.glb')),
     ])
 
@@ -320,6 +327,8 @@ export async function loadModels(): Promise<ModelCache> {
     storeCrate: extractMesh(storeCrate.scene),
     strawberryPlant: extractMesh(strawberryPlant.scene),
     blueberryBush: extractMesh(blueberryBush.scene),
+    sprinklerBasic: extractMesh(sprinklerBasic.scene),
+    beehive: extractMesh(beehive.scene),
     workbench: extractMesh(workbench.scene),
     turnip: extractMesh(turnip.scene),
     haybale: extractMesh(haybale.scene),
@@ -365,6 +374,17 @@ export const PROP_HEIGHT = {
   shop: 2.9,
   /* Knee-high: it is a trough, and the blooms are most of what you see. */
   flowerBed: 0.72,
+  /*
+   * Ankle-high, and the one prop measured against a *tile* rather than against
+   * the farmer: it stands in a bed the player has to be able to see past, and
+   * the authored dock is as wide as it is tall. At 0.5 it fills about half the
+   * 1.2-unit tile it occupies, which is the same footprint the procedural
+   * sprinkler it replaced had.
+   */
+  sprinkler: 0.5,
+  /* Waist-high on the farmer, which is what the stacked-crate version came out
+     at. A hive is a thing you lean over to open. */
+  beehive: 1.0,
   /* Knee-high at base scale; vegetation.ts jitters each one either side of it.
      The model is twice as wide as it is tall, so a height that sounds modest
      still puts a boulder wider than the farmer on the grass. */

@@ -835,11 +835,18 @@ function buildFruit(
 
     case 'tuber': {
       /*
-       * Potato: the authored tuber once ripe, procedural before that. Authored
-       * lying on its side — which is how a dug potato lies — so it needs no
-       * rotation, only a nudge down so it half-buries the way the lumps did.
+       * Potato: the authored tuber once ripe, procedural before that.
+       *
+       * Sized and seated for the sprouting model, which is a taller export than
+       * the bare tuber it replaced and spends the top half of its bounds on
+       * green shoots. Held at the old numbers it read as a third clump of
+       * foliage at the base of a leafy plant: the shoots landed in among the
+       * procedural leaves and the potato itself sat under the soil mound. Wider
+       * and lifted clear, the tuber is the part you see and the shoots are the
+       * detail on top of it — which is the right way round for the crop the
+       * player is about to dig up.
        */
-      const spud = ripe ? authoredFruit(peekModels()?.potato, 1.9, -0.12, rarity) : null
+      const spud = ripe ? authoredFruit(peekModels()?.potato, 2.15, 0.12, rarity) : null
       if (spud) {
         g.add(spud)
         break

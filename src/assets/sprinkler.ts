@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { mat, block, ball, cyl, PALETTE } from './style'
+import { modelGroup, peekModels, PROP_HEIGHT } from './models'
 import type { SprinklerTier } from '../game/sprinklers'
 
 /**
@@ -21,36 +22,58 @@ const ARC_GEO = new THREE.SphereGeometry(0.5, 6, 4)
 export function createSprinklerModel(tier: SprinklerTier): SprinklerModel {
   const group = new THREE.Group()
 
-  const base = cyl(0.19, 0.25, 0.1, PALETTE.stoneDark, 10)
-  base.position.y = 0.05
-  group.add(base)
+  /*
+   * The basic tier is an authored model; the rest are still built here.
+   *
+   * Only the *body* is swapped. The water is the part that says sprinkler —
+   * a static dock reads as a crate on a bed — so the arcs, the spin and the
+   * nozzle count all stay procedural and are simply hung off the top of
+   * whichever body is standing underneath them.
+   *
+   * `peekModels` rather than `getModels`: the crop gallery and the test suite
+   * both build sprinklers without ever loading a glTF, and throwing there would
+   * make a missing model a broken tool rather than a plainer sprinkler.
+   */
+  const authored = tier.id === 'basic' ? peekModels()?.sprinklerBasic : null
+  const headY = authored ? PROP_HEIGHT.sprinkler * 0.92 : 0.46
 
-  const post = cyl(0.06, 0.075, 0.34, tier.color, 8)
-  post.position.y = 0.26
-  group.add(post)
+  if (authored) {
+    group.add(modelGroup(authored, PROP_HEIGHT.sprinkler))
+  } else {
+    const base = cyl(0.19, 0.25, 0.1, PALETTE.stoneDark, 10)
+    base.position.y = 0.05
+    group.add(base)
+
+    const post = cyl(0.06, 0.075, 0.34, tier.color, 8)
+    post.position.y = 0.26
+    group.add(post)
+  }
 
   // Rotating head.
   const head = new THREE.Group()
-  head.position.y = 0.46
+  head.position.y = headY
   group.add(head)
-
-  const dome = ball(0.11, tier.color, 1)
-  dome.scale.y = 0.75
-  head.add(dome)
-
-  const collar = cyl(0.13, 0.13, 0.035, tier.accent, 10)
-  collar.position.y = -0.06
-  head.add(collar)
 
   // One nozzle per unit of radius, so tier is countable.
   const nozzles = tier.radius + 1
-  for (let i = 0; i < nozzles; i++) {
-    const a = (i / nozzles) * Math.PI * 2
-    const nozzle = cyl(0.022, 0.028, 0.12, tier.accent, 5)
-    nozzle.position.set(Math.cos(a) * 0.1, 0.02, Math.sin(a) * 0.1)
-    nozzle.rotation.z = Math.cos(a) * 0.7
-    nozzle.rotation.x = -Math.sin(a) * 0.7
-    head.add(nozzle)
+
+  if (!authored) {
+    const dome = ball(0.11, tier.color, 1)
+    dome.scale.y = 0.75
+    head.add(dome)
+
+    const collar = cyl(0.13, 0.13, 0.035, tier.accent, 10)
+    collar.position.y = -0.06
+    head.add(collar)
+
+    for (let i = 0; i < nozzles; i++) {
+      const a = (i / nozzles) * Math.PI * 2
+      const nozzle = cyl(0.022, 0.028, 0.12, tier.accent, 5)
+      nozzle.position.set(Math.cos(a) * 0.1, 0.02, Math.sin(a) * 0.1)
+      nozzle.rotation.z = Math.cos(a) * 0.7
+      nozzle.rotation.x = -Math.sin(a) * 0.7
+      head.add(nozzle)
+    }
   }
 
   // Water arcs: droplet trails thrown outward, scaled to the tier's reach.

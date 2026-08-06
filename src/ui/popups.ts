@@ -79,9 +79,19 @@ export class Popups {
     at: THREE.Vector3,
     kind: 'normal' | 'good' | 'rare' | 'epic' = 'normal',
     life = 1.5,
+    /**
+     * Extra class for popups that are a card rather than a line of text.
+     *
+     * Passed in rather than sniffed from the markup: the plate needs a wider
+     * box and a squarer radius than the pill does, and a `:has()` rule keyed on
+     * the content would make the container's shape depend on what happens to be
+     * inside it — which is exactly the sort of thing that quietly breaks when a
+     * caller adds a `<div>`.
+     */
+    variant = '',
   ) {
     const el = document.createElement('div')
-    el.className = `popup popup-${kind}`
+    el.className = `popup popup-${kind}${variant ? ` ${variant}` : ''}`
     el.innerHTML = text
     this.root.appendChild(el)
 

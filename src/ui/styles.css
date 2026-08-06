@@ -3077,6 +3077,120 @@ body.panel-open #ui #questTracker {
   pointer-events: none;
 }
 
+/* --- the harvest card --------------------------------------------------- */
+/*
+ * A plate, not a pill.
+ *
+ * The pill shape is right for "+🪙120" and wrong for a three-row card: a 999px
+ * radius on a 90px-tall box bows the sides in so far that the mutation chips
+ * sit in the curve. Squarer corners, a little more room, and the rows are laid
+ * out inside rather than left to wrap as one paragraph.
+ */
+.popup-card {
+  max-width: 250px;
+  padding: 8px 13px 9px;
+  border-radius: 20px;
+}
+
+.hp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Mutations as a row of coins, so five of them read as a count at a glance
+   instead of as five more words to get through. */
+.hp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px;
+}
+
+/*
+ * Rounded tiles, and the art fills them.
+ *
+ * Some mutation icons are drawn on their own pale card and some are cut out on
+ * transparency. Circles with the icon floating inside made that difference the
+ * loudest thing in the row — three white squares and two glyphs. A square tile
+ * the art can fill edge to edge lands both kinds on the same footprint.
+ */
+.hp-chip {
+  width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(255, 245, 220, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.hp-chip-ico {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.hp-name {
+  font-size: 13px;
+  line-height: 1.24;
+  text-wrap: balance;
+}
+
+/* The rarity leads and the crop closes; the mutation words in between are the
+   quietest part of the line, because their icons said it already. */
+.hp-rarity {
+  font-weight: 900;
+  letter-spacing: 0.3px;
+}
+
+.hp-muts {
+  font-weight: 600;
+  opacity: 0.82;
+}
+
+.hp-crop {
+  font-weight: 900;
+}
+
+.hp-record {
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+/* The number the popup exists for: its own row, its own rule above it. */
+.hp-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  justify-content: center;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 240, 200, 0.22);
+  font-size: 19px;
+  font-weight: 900;
+  color: #ffe9a8;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
+}
+
+.popup-epic .hp-value {
+  color: #fff;
+}
+
+.hp-coin {
+  width: 1.05em;
+  height: 1.05em;
+  object-fit: contain;
+  display: block;
+}
+
 /* A routine pick stays quiet: smaller, dimmer, no rim colour. */
 .popup-normal {
   font-size: 12.5px;

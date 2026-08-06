@@ -45,6 +45,7 @@ import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
 import { Flotsam, type FlotsamPrize } from './game/flotsam'
 import { WorldPlots, WORLD_PLOTS, type WorldPlot, type PlotBuildId } from './game/world-plots'
 import { PlotBuildUi } from './ui/plot-build-ui'
+import { harvestPlateHtml } from './ui/harvest-plate'
 import { MATERIAL_BY_ID } from './game/materials'
 import { LandMapUi } from './ui/land-map'
 import { Stock } from './game/stock'
@@ -523,8 +524,11 @@ const plotUi = new PlotUi(inventory, {
 
     // A genuinely heavy fruit is its own event, separate from rarity.
     // 1.45x is roughly the top few percent of the weight curve (max is 1.65x).
-    if (got.heaviestKg > got.def.baseWeight * 1.45) {
-      popups.spawn(`${got.heaviestKg.toFixed(2)}kg!`, tile.pos, 'rare', 2)
+    const record = got.heaviestKg > got.def.baseWeight * 1.45 ? got.heaviestKg : null
+    // A plain crop still gets its own line for it; a special one carries it on
+    // the plate below rather than as a second plate stacked over the first.
+    if (record !== null && !special) {
+      popups.spawn(`⚖️ ${record.toFixed(2)}kg!`, tile.pos, 'rare', 2)
     }
 
     // --- juice -----------------------------------------------------------
@@ -560,13 +564,31 @@ const plotUi = new PlotUi(inventory, {
     // XP orbs are purely visual — the XP itself is granted below. They exist
     // so a harvest throws something physical rather than only text.
     doobers.spawn(tile.pos, 'xp', tier === 'epic' ? 9 : tier === 'rare' ? 6 : 3, 0)
-    popups.spawn(
-      `+${coinIconHtml('popup-coin')}${formatCoins(value)}`,
-      tile.pos,
-      tier,
-      tier === 'normal' ? 1.3 : 2,
-    )
-    if (special) popups.spawn(label, tile.pos, tier, 2.2)
+    /*
+     * One plate for a find, one pill for a turnip.
+     *
+     * A routine pick wants the smallest possible confirmation and nothing else
+     * on screen; a rainbow five-mutation blueberry wants its name, its
+     * mutations and its price together, in that order, on one card. Firing both
+     * — as this used to — stacked the price above a three-line name and pushed
+     * the number the player was waiting for off the top of the cluster.
+     */
+    if (special) {
+      popups.spawn(
+        harvestPlateHtml(got.def, got.rarity, got.mutations, value, record),
+        tile.pos,
+        tier,
+        2.4,
+        'popup-card',
+      )
+    } else {
+      popups.spawn(
+        `+${coinIconHtml('popup-coin')}${formatCoins(value)}`,
+        tile.pos,
+        tier,
+        1.3,
+      )
+    }
     if (tier !== 'normal') shake.add(tier === 'epic' ? 0.9 : 0.4)
     audio.play(tier === 'epic' ? 'epic' : tier === 'rare' ? 'rare' : 'harvest')
 

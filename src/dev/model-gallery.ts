@@ -78,6 +78,9 @@ const cells: Cell[] = [
   { label: 'scarecrow', note: 'shipping', candidate: true, height: PROP_HEIGHT.scarecrow, path: 'models/scarecrow.glb' },
   { label: 'bench', note: 'shipping · decimated', candidate: true, height: PROP_HEIGHT.bench, path: 'models/bench.glb' },
 
+  { label: 'sprinkler-basic', note: 'shipping · water is procedural', candidate: true, height: PROP_HEIGHT.sprinkler, path: 'models/sprinkler-basic.glb' },
+  { label: 'beehive', note: 'shipping · bees are procedural', candidate: true, height: PROP_HEIGHT.beehive, path: 'models/beehive.glb' },
+
   { label: 'mailbox', note: 'shipping · flag is procedural', candidate: true, height: PROP_HEIGHT.mailbox, path: 'models/mailbox.glb' },
   { label: 'signpost', note: 'shipping', height: PROP_HEIGHT.signpost, path: 'models/signpost.glb' },
   { label: 'cottage', note: 'shipping', height: PROP_HEIGHT.cottage, path: 'models/cottage.glb' },
