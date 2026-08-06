@@ -1,5 +1,12 @@
 import * as THREE from 'three'
 import { heightAt, isSand, WATER_LEVEL } from '../game/terrain'
+import {
+  inAnyPlot,
+  onLane,
+  PASTURE_CENTRE,
+  PASTURE_RADIUS,
+  VILLAGE_BOUNDS,
+} from '../game/village'
 import { PLOT_SIZE, type WorldPlot } from '../game/world-plots'
 import { coinIconHtml, iconHtml } from './icons'
 import { formatCoins } from './format'
@@ -239,6 +246,30 @@ export class LandMapUi {
             r = 138 + (238 - 138) * snow
             g = 130 + (243 - 130) * snow
             b = 118 + (250 - 118) * snow
+          } else if (onLane(x, z)) {
+            /*
+             * The street and the market square, drawn from the same geometry
+             * that builds them.
+             *
+             * Guessing at where the village is would have been the one error
+             * this map cannot afford: the player knows that street. Packed dirt
+             * running east to the square is the strongest orienting mark on the
+             * chart — everything else is read against it.
+             */
+            r = 202
+            g = 172
+            b = 124
+          } else if (inAnyPlot(x, z)) {
+            // Fenced plots, tilled in rows so a farm reads as a farm.
+            const row = Math.sin(z * 2.6) * 0.5 + 0.5
+            r = 158 + row * 30
+            g = 126 + row * 30
+            b = 88 + row * 22
+          } else if (Math.hypot(x - PASTURE_CENTRE.x, z - PASTURE_CENTRE.z) < PASTURE_RADIUS) {
+            // Grazed grass: cropped short, so paler than the meadow around it.
+            r = 158
+            g = 196
+            b = 108
           } else {
             /*
              * Meadow, and then woodland over most of it.
@@ -258,7 +289,7 @@ export class LandMapUi {
             b = 78 + t * 24 + patch * 10
 
             const wood = vnoise(x * 0.13 + 40, z * 0.13 + 40) * 0.62 + vnoise(x * 0.5, z * 0.5) * 0.38
-            const dense = Math.min(1, Math.max(0, (wood - 0.42) / 0.26)) * clearing(x, z, farm)
+            const dense = Math.min(1, Math.max(0, (wood - 0.42) / 0.26)) * clearing(x, z)
             if (dense > 0) {
               // Canopy: a darker, bluer green, broken up by crown-sized blobs so
               // the mass has texture instead of being a stain.
@@ -463,18 +494,18 @@ export class LandMapUi {
 }
 
 /**
- * How wooded a spot should be drawn, 0 at the village and the farm out to 1.
+ * How wooded a spot should be drawn: 0 over the village, 1 out in the wild.
  *
- * The valley the player walks is forest everywhere except the two places that
- * have been cleared, and a map that puts canopy over the market square is
+ * The valley the player walks is forest everywhere except the ground the
+ * village has cleared, and a map that puts canopy over the market square is
  * wrong in the one region they know by heart — which is the region they will
- * check the map against first.
+ * check the map against first. Measured off the same bounds the world
+ * generator keeps its trees out of, so the two cannot disagree.
  */
-function clearing(x: number, z: number, farm: THREE.Vector3) {
-  return Math.min(
-    ramp(Math.hypot(x - 2, z), 15, 32),
-    ramp(Math.hypot(x - farm.x, z - farm.z), 11, 25),
-  )
+function clearing(x: number, z: number) {
+  const dx = Math.max(0, Math.abs(x - (VILLAGE_BOUNDS.minX + VILLAGE_BOUNDS.maxX) / 2) - (VILLAGE_BOUNDS.maxX - VILLAGE_BOUNDS.minX) / 2)
+  const dz = Math.max(0, Math.abs(z - (VILLAGE_BOUNDS.minZ + VILLAGE_BOUNDS.maxZ) / 2) - (VILLAGE_BOUNDS.maxZ - VILLAGE_BOUNDS.minZ) / 2)
+  return ramp(Math.hypot(dx, dz), 1, 13)
 }
 
 /** Smoothstep from 0 at `inner` to 1 at `outer`. */
