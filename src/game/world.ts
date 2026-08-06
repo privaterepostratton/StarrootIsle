@@ -283,6 +283,54 @@ function groundQuad(w: number, d: number, mat: THREE.Material, x: number, z: num
   return mesh
 }
 
+/** An axis-aligned patch of paved ground, in world XZ. */
+interface GroundRect {
+  cx: number
+  cz: number
+  w: number
+  d: number
+}
+
+/**
+ * `rect` with `hole` cut out of it, as up to four rectangles.
+ *
+ * Every paved quad in the village is the same dirt material at the same height,
+ * and two identical coplanar surfaces z-fight whatever depth offset they are
+ * given — which is why the lane stops at the square's edge instead of running
+ * under it. The barn's yard cannot dodge the problem that way: it has to reach
+ * *across* the square to join the barn to the street, and the two overlapped
+ * over a thirteen-by-eight stretch of ground the player stands on to trade. So
+ * it is cut around what is already paved, and the pieces abut like everything
+ * else does.
+ */
+function subtractRect(rect: GroundRect, hole: GroundRect): GroundRect[] {
+  const x0 = rect.cx - rect.w / 2
+  const x1 = rect.cx + rect.w / 2
+  const z0 = rect.cz - rect.d / 2
+  const z1 = rect.cz + rect.d / 2
+  const hx0 = hole.cx - hole.w / 2
+  const hx1 = hole.cx + hole.w / 2
+  const hz0 = hole.cz - hole.d / 2
+  const hz1 = hole.cz + hole.d / 2
+  if (hx1 <= x0 || hx0 >= x1 || hz1 <= z0 || hz0 >= z1) return [rect]
+
+  const out: GroundRect[] = []
+  // Slivers are dropped: a quad a centimetre wide is a seam, not a surface.
+  const add = (ax0: number, ax1: number, az0: number, az1: number) => {
+    if (ax1 - ax0 < 0.05 || az1 - az0 < 0.05) return
+    out.push({ cx: (ax0 + ax1) / 2, cz: (az0 + az1) / 2, w: ax1 - ax0, d: az1 - az0 })
+  }
+  // Full-depth slabs either side of the hole, then the strips above and below
+  // it in the middle column. Four pieces at most, none of them touching.
+  const mx0 = Math.max(x0, hx0)
+  const mx1 = Math.min(x1, hx1)
+  add(x0, mx0, z0, z1)
+  add(mx1, x1, z0, z1)
+  add(mx0, mx1, z0, Math.max(z0, hz0))
+  add(mx0, mx1, Math.min(z1, hz1), z1)
+  return out
+}
+
 /**
  * A straight run of fence between two points on one axis, optionally with a
  * centred gap for a gate.
@@ -557,8 +605,28 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   const yardD = 12
   const yardCX = BARN_POS.x * 0.62
   const yardCZ = BARN_POS.z + BARN_FRONT * (yardD / 2 - 1.5)
-  const yardMat = dirtMaterial(yardW / 4, yardD / 4)
-  arrivalGroup('barn').add(groundQuad(yardW, yardD, yardMat, yardCX, yardCZ))
+  /*
+   * Cut around the square and the street, which it lies across.
+   *
+   * The yard reaches west far enough to meet the lane, so it covered most of
+   * the square's northern half and a corner of the road with a second copy of
+   * the same dirt at the same height — the flicker the player sees standing at
+   * the stall. The pieces are laid at the yard's own texture scale rather than
+   * each at their own, so the cut cannot be read off the grain either. The barn
+   * opens at level 6 and the square at 4, so there is never a moment where the
+   * hole is cut around ground that has not appeared yet.
+   */
+  let yardPieces: GroundRect[] = [{ cx: yardCX, cz: yardCZ, w: yardW, d: yardD }]
+  for (const paved of [
+    { cx: SQUARE_CX, cz: 0, w: SQUARE_HX * 2, d: SQUARE_HZ * 2 },
+    { cx: (LANE_X_MIN + laneDrawMax) / 2, cz: 0, w: laneDrawMax - LANE_X_MIN, d: LANE_HALF * 2 },
+  ]) {
+    yardPieces = yardPieces.flatMap((piece) => subtractRect(piece, paved))
+  }
+  for (const piece of yardPieces) {
+    const mat = dirtMaterial(piece.w / 4, piece.d / 4)
+    arrivalGroup('barn').add(groundQuad(piece.w, piece.d, mat, piece.cx, piece.cz))
+  }
 
   /*
    * The verge scatter is a *decal set*, and decals must not write depth.
