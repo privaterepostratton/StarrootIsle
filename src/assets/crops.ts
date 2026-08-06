@@ -2482,6 +2482,17 @@ export interface CropModelOptions {
  * from its seed, so a field of one crop still reads as a field of individuals
  * rather than as a stamped-out grid.
  */
+/**
+ * Crops whose *plant* is an authored model once ripe, not just their fruit.
+ *
+ * Looked up lazily through `peekModels` for the same reason the fruit factories
+ * do: this module is imported before the glTF set has finished loading, and a
+ * top-level read would capture undefined for the rest of the session.
+ */
+const AUTHORED_BODIES: Record<string, (() => LoadedModel | undefined) | undefined> = {
+  strawberry: () => peekModels()?.strawberryPlant,
+}
+
 export function createCropModel(def: CropDef, stage: number, opts: CropModelOptions = {}): THREE.Group {
   const seed = opts.seed ?? 1
   const r = rng(seed * 2654435761)
@@ -2528,11 +2539,42 @@ export function createCropModel(def: CropDef, stage: number, opts: CropModelOpti
    * Foliage is the part that should vary: a taller plant is a taller plant, but
    * a melon is a melon.
    */
-  const foliage = new THREE.Mesh(body.geometry, bodyMaterial)
-  foliage.castShadow = true
-  foliage.receiveShadow = true
-  foliage.scale.set(1, stretch, 1)
-  group.add(foliage)
+  /*
+   * The plant body: authored where one exists for this crop at full growth,
+   * procedural everywhere else.
+   *
+   * This is a different swap from the fruit ones further up. Those replace the
+   * *berry* and leave the bush that carries it; this replaces the bush itself,
+   * so the anchors keep coming from the procedural body and the fruit still
+   * hangs where it always did. Only at the ripe stage: the authored plant is a
+   * finished, fruiting shape, and standing it in for a seedling would show the
+   * player the end of the growth on day one.
+   *
+   * Scaled to the height the procedural body would have had, so the size
+   * lottery, the per-plant stretch and everything in farm.ts that reasons about
+   * how tall a crop is all keep working untouched.
+   */
+  const authoredBody = stage === GROWTH_STAGES - 1 ? AUTHORED_BODIES[def.id]?.() : null
+  if (authoredBody) {
+    const plant = new THREE.Mesh(authoredBody.geometry, authoredBody.material)
+    plant.castShadow = true
+    plant.receiveShadow = true
+    authoredBody.geometry.computeBoundingBox()
+    const box = authoredBody.geometry.boundingBox!
+    const modelH = Math.max(0.001, box.max.y - box.min.y)
+    const procH = Math.max(0.001, (body.geometry.boundingBox?.max.y ?? 1) - (body.geometry.boundingBox?.min.y ?? 0))
+    const fit = (procH * stretch) / modelH
+    plant.scale.setScalar(fit)
+    // Sit it on the soil rather than on its own origin.
+    plant.position.y = -box.min.y * fit
+    group.add(plant)
+  } else {
+    const foliage = new THREE.Mesh(body.geometry, bodyMaterial)
+    foliage.castShadow = true
+    foliage.receiveShadow = true
+    foliage.scale.set(1, stretch, 1)
+    group.add(foliage)
+  }
 
   // Fruit is scaled independently so a short plant can still carry a big crop.
   const fruitScale = 0.85 + r() * 0.4

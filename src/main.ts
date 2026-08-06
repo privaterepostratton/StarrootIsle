@@ -180,7 +180,7 @@ engine.scene.add(bursts.group)
 
 const doobers = new Doobers()
 // Two meshes: faceted gems for xp/honey/produce, the authored model for coins.
-engine.scene.add(doobers.mesh, doobers.coinMesh)
+engine.scene.add(doobers.mesh, doobers.coinMesh, doobers.wispMesh)
 
 const levelUpScreen = new LevelUpScreen()
 
@@ -690,6 +690,24 @@ function rollFlotsam(): FlotsamPrize {
     return { kind: 'sprinkler', amount: 1, id: tier.id, label: `+${tier.emoji} ${tier.name}` }
   }
 
+  /*
+   * Rarely, seeds for something they have not earned yet.
+   *
+   * The tide is the one part of the game that does not know what level you are,
+   * and a barrel that occasionally holds a crop from four levels ahead is worth
+   * far more than the seeds in it: it is a look at what the game still has, and
+   * a reason to keep checking the sand. Kept genuinely rare — a common one would
+   * flatten the unlock ladder that every other system is built on.
+   */
+  const locked = CROPS.filter((c) => c.unlockLevel > progression.level)
+  if (roll < 0.05 && locked.length > 0) {
+    // The nearest locked crop, not the rarest — a dragonfruit at level two is a
+    // trophy nobody can plant, where the next crop up is a genuine head start.
+    const pick = locked.reduce((a, b) => (b.unlockLevel < a.unlockLevel ? b : a))
+    const amount = 1 + Math.floor(Math.random() * 2)
+    return { kind: 'seeds', amount, id: pick.id, label: `+${amount} ${pick.emoji} (early!)` }
+  }
+
   if (roll < 0.55 && unlocked.length > 0) {
     // Weighted to the back of the unlocked list: the crop they just earned is a
     // better find than another handful of the turnips they started with.
@@ -889,9 +907,27 @@ hood.onArrivalStart = (nb, at) => {
 
 /** The villager waiting to be filmed, once the player closes the level-up. */
 let pendingArrival: Neighbour | null = null
+/** A fixed spot waiting to be filmed — the crate, and anything like it later. */
+let pendingShot: THREE.Vector3 | null = null
 
 function playArrivalShot() {
-  if (!pendingArrival || modalOpen()) return
+  if (modalOpen()) return
+
+  // A place rather than a person: same hold, nothing to follow.
+  if (pendingShot && !pendingArrival) {
+    const at = pendingShot
+    pendingShot = null
+    arrivalTimer = ARRIVAL_SECONDS
+    arrivalAt.copy(at)
+    arrivalPrevPitch = engine.pitch
+    arrivalPrevYaw = engine.targetYaw
+    engine.setCinematicDistance(ARRIVAL_DISTANCE)
+    arrivalYaw = Math.atan2(-at.x, -at.z)
+    document.body.classList.add('cinematic')
+    return
+  }
+
+  if (!pendingArrival) return
   const at = pendingArrival.npcWorldPos
   filming = pendingArrival
   pendingArrival = null
@@ -1910,8 +1946,20 @@ function syncStoreCrate() {
   if (wanted === storeCrateOut) return
   storeCrateOut = wanted
   world.setStoreCrateVisible(wanted)
-  if (wanted) hud.toast('📦 A trader’s crate washed up behind the farm', 'good')
-  else hud.toast('📦 The crate is gone — the stall has opened', 'info')
+  if (wanted) {
+    /*
+     * Filmed, and explained.
+     *
+     * The crate is the only shop in the game for the next couple of levels and
+     * it arrives silently on a beach the player may not walk down for an hour.
+     * It gets the same beat a neighbour gets — a wide hold on it — plus a line
+     * saying what it is *for*, because a crate on the sand does not read as a
+     * shop until somebody says so.
+     */
+    pendingShot = world.storeCratePos.clone()
+    hud.eventBanner('shop', '📦', 'A trader’s crate!', 'Washed up behind the farm — trade seeds here until the stall opens')
+    audio.play('rare')
+  } else hud.toast('📦 The crate is gone — the stall has opened', 'info')
 }
 let storeCrateOut = false
 

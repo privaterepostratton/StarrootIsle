@@ -55,6 +55,8 @@ interface ModelCache {
   barrel: LoadedModel
   /** Washed-up crate that trades seeds until the real stall opens. */
   storeCrate: LoadedModel
+  /** The whole strawberry plant, used in place of the procedural bush when ripe. */
+  strawberryPlant: LoadedModel
   haybale: LoadedModel
   haypile: LoadedModel
   /** The coin doobers burst out of a harvest as. See game/doobers.ts. */
@@ -225,7 +227,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -268,6 +270,7 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/haypile.glb')),
       gltf.loadAsync(asset('models/store-crate.glb')),
       gltf.loadAsync(asset('models/turnip.glb')),
+      gltf.loadAsync(asset('models/strawberry-plant.glb')),
     ])
 
   cache = {
@@ -309,6 +312,7 @@ export async function loadModels(): Promise<ModelCache> {
     bush: extractMesh(bush.scene),
     barrel: extractMesh(barrel.scene),
     storeCrate: extractMesh(storeCrate.scene),
+    strawberryPlant: extractMesh(strawberryPlant.scene),
     turnip: extractMesh(turnip.scene),
     haybale: extractMesh(haybale.scene),
     haypile: extractMesh(haypile.scene),

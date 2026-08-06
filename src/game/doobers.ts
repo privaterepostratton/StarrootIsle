@@ -35,7 +35,8 @@ interface DooberStyle {
 
 const STYLES: Record<DooberKind, DooberStyle> = {
   coin: { color: 0xf2c14e, size: 0.11, glow: true },
-  xp: { color: 0x7ae0ff, size: 0.085, glow: true },
+  // Warm green-gold, the colour of the thing itself rather than of a gem.
+  xp: { color: 0xc8ff8a, size: 0.085, glow: true },
   honey: { color: 0xe8a020, size: 0.1, glow: false },
   produce: { color: 0x8fd85c, size: 0.1, glow: false },
 }
@@ -96,12 +97,47 @@ const COIN_SCALE = 2
  */
 const COIN_LEAN = 0.3
 
+/**
+ * The wisp's texture: a hot core easing to nothing well inside the quad.
+ *
+ * Two stops rather than a linear ramp — a firefly is a small bright point with
+ * a wide faint halo, and a straight gradient gives an evenly lit disc that
+ * reads as a bubble instead.
+ */
+function makeWispTexture() {
+  const size = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+  g.addColorStop(0, 'rgba(255,255,255,1)')
+  g.addColorStop(0.18, 'rgba(255,255,235,0.85)')
+  g.addColorStop(0.45, 'rgba(210,255,170,0.28)')
+  g.addColorStop(1, 'rgba(180,255,140,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, size, size)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
 export class Doobers {
   /** Faceted gems: xp, honey and produce. */
   readonly mesh: THREE.InstancedMesh
   /** The authored coin, on its own instanced mesh because it has its own
    *  geometry and its own textured material. */
   readonly coinMesh: THREE.InstancedMesh
+  /**
+   * XP, as a firefly wisp rather than a gem.
+   *
+   * A faceted octahedron is a *thing* — it has edges, it catches the light, it
+   * reads as treasure. Experience is not treasure; it is the glow the crop gave
+   * off when you pulled it. Its own mesh because it wants the opposite of the
+   * gems' material in every respect: a soft billboarded blob, additive, no
+   * depth write, flickering.
+   */
+  readonly wispMesh: THREE.InstancedMesh
   private readonly pool: Doober[] = []
   private cursor = 0
 
@@ -157,6 +193,46 @@ export class Doobers {
     this.coinMesh.layers.set(MINOR_LAYER)
     this.coinMesh.castShadow = false
 
+    /*
+     * The wisp: one soft radial blob, always facing the camera.
+     *
+     * Camera-facing is done in the vertex shader from the view matrix's own
+     * basis — the same trick the particle bursts use — because an InstancedMesh
+     * cannot be billboarded from the CPU without rewriting every matrix each
+     * frame, and there can be a hundred of these in the air.
+     */
+    const wispTex = makeWispTexture()
+    const wispGeo = new THREE.PlaneGeometry(1, 1)
+    const wispMat = new THREE.MeshBasicMaterial({
+      map: wispTex,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+      vertexColors: true,
+    })
+    const whiteQuad = new Float32Array(wispGeo.attributes.position.count * 3).fill(1)
+    wispGeo.setAttribute('color', new THREE.BufferAttribute(whiteQuad, 3))
+    wispMat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        /* glsl */ `
+        vec3 iOrigin = vec3(instanceMatrix[3]);
+        float iScale = length(instanceMatrix[0].xyz);
+        vec3 camRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+        vec3 camUp = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+        vec3 billboarded = iOrigin + (camRight * transformed.x + camUp * transformed.y) * iScale;
+        vec4 mvPosition = viewMatrix * vec4(billboarded, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        `,
+      )
+    }
+    this.wispMesh = new THREE.InstancedMesh(wispGeo, wispMat, MAX_DOOBERS)
+    this.wispMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_DOOBERS * 3), 3)
+    this.wispMesh.frustumCulled = false
+    this.wispMesh.layers.set(MINOR_LAYER)
+    this.wispMesh.castShadow = false
+
     for (let i = 0; i < MAX_DOOBERS; i++) {
       this.pool.push({
         kind: 'coin', phase: 'dead',
@@ -171,9 +247,11 @@ export class Doobers {
     for (let i = 0; i < MAX_DOOBERS; i++) {
       this.park(this.mesh, i)
       this.park(this.coinMesh, i)
+      this.park(this.wispMesh, i)
     }
     this.mesh.instanceMatrix.needsUpdate = true
     this.coinMesh.instanceMatrix.needsUpdate = true
+    this.wispMesh.instanceMatrix.needsUpdate = true
   }
 
   /**
@@ -325,13 +403,34 @@ export class Doobers {
         continue
       }
 
+      const style = STYLES[d.kind]
+
+      if (d.kind === 'xp') {
+        /*
+         * A firefly does not tumble, it *breathes*. Two sine terms at unrelated
+         * rates so the flicker never settles into a visible loop, and the quad
+         * is drawn several times the gem's size because most of a wisp is the
+         * faint halo — the bright part is tiny.
+         */
+        const flicker = 0.72 + Math.sin(d.age * 11 + d.spin) * 0.18 + Math.sin(d.age * 3.3) * 0.1
+        dummy.rotation.set(0, 0, 0)
+        dummy.scale.setScalar(scale * 4.6 * flicker)
+        dummy.updateMatrix()
+        this.wispMesh.setMatrixAt(i, dummy.matrix)
+        this.park(this.mesh, i)
+        this.park(this.coinMesh, i)
+        tmpColor.setHex(style.color).multiplyScalar(1.35 * flicker)
+        this.wispMesh.setColorAt(i, tmpColor)
+        continue
+      }
+
       dummy.rotation.set(d.spin * 0.6, d.spin, d.spin * 0.35)
       dummy.scale.setScalar(scale)
       dummy.updateMatrix()
       this.mesh.setMatrixAt(i, dummy.matrix)
       this.park(this.coinMesh, i)
+      this.park(this.wispMesh, i)
 
-      const style = STYLES[d.kind]
       tmpColor.setHex(style.color)
       // Glowing kinds are pushed past 1.0 so the bloom threshold catches them.
       if (style.glow) tmpColor.multiplyScalar(1.5)
@@ -340,9 +439,12 @@ export class Doobers {
 
     this.mesh.instanceMatrix.needsUpdate = true
     this.coinMesh.instanceMatrix.needsUpdate = true
+    this.wispMesh.instanceMatrix.needsUpdate = true
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true
+    if (this.wispMesh.instanceColor) this.wispMesh.instanceColor.needsUpdate = true
     this.mesh.visible = live
     this.coinMesh.visible = live
+    this.wispMesh.visible = live
   }
 
   /** Number currently in flight, for debugging and tests. */

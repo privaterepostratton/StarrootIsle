@@ -319,12 +319,19 @@ export class Hud {
   }
 
   /** Full-screen announcement for a global weather event. */
-  eventBanner(iconId: string, emoji: string, name: string) {
+  /**
+   * The big centred banner.
+   *
+   * `sub` was a fixed line about mutations for as long as weather events were
+   * the only thing that used it. Anything worth stopping the screen for wants
+   * to say what it *is* — so the caller supplies it.
+   */
+  eventBanner(iconId: string, emoji: string, name: string, sub = 'Rare mutations available now') {
     const el = document.createElement('div')
     el.className = 'event-banner'
     el.innerHTML =
       `<div class="event-title">${iconHtml(iconId, emoji, 'event-ico')} ${name}</div>` +
-      `<div class="event-sub">Rare mutations available now</div>`
+      `<div class="event-sub">${sub}</div>`
     document.getElementById('ui')!.appendChild(el)
     setTimeout(() => el.remove(), 4600)
   }
