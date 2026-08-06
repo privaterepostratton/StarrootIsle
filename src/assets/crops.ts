@@ -773,14 +773,18 @@ function buildFruit(
 
     case 'taproot': {
       /*
-       * Carrot: the authored root once ripe, procedural before that. Its long
-       * axis was authored fifty degrees off vertical, so it is tipped upright —
-       * measured the same way the corn's was.
+       * Carrot: the authored root once ripe, procedural before that.
+       *
+       * Sunk, not stood on the soil. The old numbers lifted it to +0.34 and
+       * tipped it forty degrees, which was right for an export whose long axis
+       * was authored off vertical — the current model is authored standing, so
+       * that same correction laid a whole carrot on its side on top of the
+       * mound like something dropped there. A root crop is *in* the ground: all
+       * the player should see of a ripe one is the shoulder and its greens,
+       * which is exactly what the turnip beside it does. The remaining twelve
+       * hundredths of a radian is character, not correction.
        */
-      // Lifted and enlarged so its tip meets the soil and its own leafy crown
-      // reaches the plant's rosette. At the model's authored size the two sat
-      // apart with a gap of daylight between root and leaves.
-      const root2 = ripe ? authoredFruit(authoredRootModel(def), 4.6, 0.34, rarity, [0.6981, 0, 0]) : null
+      const root2 = ripe ? authoredFruit(authoredRootModel(def), 4.6, -0.95, rarity, [0.12, 0, 0]) : null
       if (root2) {
         g.add(root2)
         break
@@ -932,8 +936,16 @@ function buildFruit(
     }
 
     case 'ribbed': {
-      // Tomato: the authored model once ripe, procedural before that.
-      const fruitMesh = ripe ? authoredFruit(peekModels()?.tomato, 2, 0, rarity) : null
+      /*
+       * Tomato: the authored model once ripe, procedural before that.
+       *
+       * The model is a *truss* — a bunch on the vine with its own leaves, not a
+       * single fruit — so it is scaled up from the round tomato it replaced and
+       * hung a little below its anchor. A bunch that sits centred on the branch
+       * reads as balanced on top of it; dropped, it hangs off it, which is what
+       * a truss of tomatoes actually does.
+       */
+      const fruitMesh = ripe ? authoredFruit(peekModels()?.tomato, 2.7, -0.12, rarity) : null
       if (fruitMesh) {
         g.add(fruitMesh)
         break
@@ -960,13 +972,21 @@ function buildFruit(
     }
 
     case 'cob': {
-      // Corn: the authored ear once ripe, procedural before that.
-      // Measured, not guessed: the ear's long axis runs at 155 degrees in the
-      // XZ plane, so yawing it back to +Z and tipping that up gives a cob that
-      // stands the way the procedural one did.
-      const ear2 = ripe
-        ? authoredFruit(peekModels()?.corn, 2.4, 0, rarity, [-Math.PI / 2, -2.7053, 0])
-        : null
+      /*
+       * Corn: the authored ear once ripe, procedural before that.
+       *
+       * No rotation, unlike the export this replaced. That one arrived lying
+       * flat with its long axis at 155 degrees in the XZ plane and needed
+       * yawing back to +Z and tipping up; this one is authored standing, so the
+       * same correction would lay a perfectly good cob on its side.
+       *
+       * Scaled well past the old 2.4 because the ear is husked: most of its
+       * height is green leaf that disappears into the plant's own foliage, so
+       * only the golden part counts toward whether there is corn on this stalk.
+       * Set against the tomato and the pepper at gallery zoom, which is about
+       * the distance the farm camera sits at.
+       */
+      const ear2 = ripe ? authoredFruit(peekModels()?.corn, 3.8, 0, rarity) : null
       if (ear2) {
         g.add(ear2)
         break
@@ -1134,11 +1154,19 @@ function buildFruit(
 
     case 'pod': {
       /*
-       * Chilli: the authored pod once ripe, procedural before that. Authored
-       * lying at forty-five degrees, so it is rolled round to hang point-down —
-       * a pepper that sticks up reads as a flower bud.
+       * Chilli: the authored pods once ripe, procedural before that.
+       *
+       * No roll, unlike the export this replaced. That one was a single pod
+       * authored lying at forty-five degrees and had to be rolled round to hang
+       * point-down, because a lone pepper that sticks up reads as a flower bud.
+       * This is a whole cluster with its own leaves, already hanging the right
+       * way — rolling it would tip the bunch upside down.
+       *
+       * Nearly double the old scale for the same reason the corn grew: the
+       * green half of the cluster disappears into the plant's own foliage, so
+       * only the red pods count toward whether there are chillies on this bush.
        */
-      const pod = ripe ? authoredFruit(peekModels()?.pepper, 1.65, -0.7, rarity, [0, 0, 3.927]) : null
+      const pod = ripe ? authoredFruit(peekModels()?.pepper, 3.2, -0.15, rarity) : null
       if (pod) {
         g.add(pod)
         break
