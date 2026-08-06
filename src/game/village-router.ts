@@ -1,10 +1,8 @@
 import * as THREE from 'three'
 import {
   FENCED_PLOTS,
-  FENCE_HX,
-  FENCE_HZ,
-  gatePos,
-  approachPos,
+  gatesOf,
+  fenceHalfOf,
   type FarmSlot,
 } from './village'
 
@@ -65,17 +63,38 @@ function alignedWithGate(pos: THREE.Vector3, slot: FarmSlot) {
 }
 
 /** How far outside the gate this position is. Negative means already through. */
-function gateDistance(pos: THREE.Vector3, gate: THREE.Vector3, slot: FarmSlot) {
+function gateDistance(pos: THREE.Vector3, gate: THREE.Vector3, slot: FarmSlot, sign: number) {
   const along = slot.axis === 'x' ? pos.x - gate.x : pos.z - gate.z
-  return along * slot.inward
+  return along * sign
 }
 
 /** A point a stride inside the gate, so a crossing completes rather than stalls. */
-function justInsideGate(gate: THREE.Vector3, slot: FarmSlot) {
+function justInsideGate(gate: THREE.Vector3, slot: FarmSlot, sign: number) {
   const inner = gate.clone()
-  if (slot.axis === 'x') inner.x -= slot.inward * 1.2
-  else inner.z -= slot.inward * 1.2
+  if (slot.axis === 'x') inner.x -= sign * 1.2
+  else inner.z -= sign * 1.2
   return inner
+}
+
+/**
+ * The way in or out that is actually nearest.
+ *
+ * A plot with two openings is only served correctly if the router picks the one
+ * on the walker's own side — routing everything through the lane gate is what
+ * sent the guide trail the length of the fence and round the back to reach a
+ * mailbox a couple of paces behind the player.
+ */
+function nearestGate(pos: THREE.Vector3, slot: FarmSlot) {
+  let best = gatesOf(slot)[0]
+  let bestD = Infinity
+  for (const g of gatesOf(slot)) {
+    const d = Math.hypot(g.approach.x - pos.x, g.approach.z - pos.z)
+    if (d < bestD) {
+      bestD = d
+      best = g
+    }
+  }
+  return best
 }
 
 /** Liang-Barsky: does the segment cross this rect (expanded by pad)? */
@@ -114,7 +133,9 @@ function segmentHitsRect(
 }
 
 function insideRect(x: number, z: number, s: FarmSlot, shrink = 0) {
-  return Math.abs(x - s.x) < FENCE_HX - shrink && Math.abs(z - s.z) < FENCE_HZ - shrink
+  // The player's yard is only as big as their garden has grown — see fenceHalfOf.
+  const h = fenceHalfOf(s)
+  return Math.abs(x - s.x) < h - shrink && Math.abs(z - s.z) < h - shrink
 }
 
 /**
@@ -125,7 +146,8 @@ function insideRect(x: number, z: number, s: FarmSlot, shrink = 0) {
 function legClear(x1: number, z1: number, x2: number, z2: number) {
   for (const s of FENCED_PLOTS) {
     if (insideRect(x1, z1, s) || insideRect(x2, z2, s)) continue
-    if (segmentHitsRect(x1, z1, x2, z2, s.x, s.z, FENCE_HX + BLOCK_PAD, FENCE_HZ + BLOCK_PAD)) {
+    const h = fenceHalfOf(s)
+    if (segmentHitsRect(x1, z1, x2, z2, s.x, s.z, h + BLOCK_PAD, h + BLOCK_PAD)) {
       return false
     }
   }
@@ -138,23 +160,39 @@ const nodes: Node[] = []
 /** Per slot: index of its approach node (on the lane, outside the gate). */
 const approachNode = new Map<FarmSlot, number>()
 
+/**
+ * Throw the graph away so the next query rebuilds it.
+ *
+ * The corner and approach nodes are positions on a fence, and the player's
+ * fence moves when their garden grows — a cached graph would keep routing
+ * around a boundary that is no longer there.
+ */
+export function invalidateRoutes() {
+  nodes.length = 0
+  approachNode.clear()
+}
+
 function buildGraph() {
   if (nodes.length > 0) return
 
   for (const s of FENCED_PLOTS) {
     // Four pushed corners: the turning points for going around this farm.
+    const half = fenceHalfOf(s)
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
         nodes.push({
-          x: s.x + sx * (FENCE_HX + CORNER_PUSH),
-          z: s.z + sz * (FENCE_HZ + CORNER_PUSH),
+          x: s.x + sx * (half + CORNER_PUSH),
+          z: s.z + sz * (half + CORNER_PUSH),
           edges: [],
         })
       }
     }
-    const a = approachPos(s)
-    approachNode.set(s, nodes.length)
-    nodes.push({ x: a.x, z: a.z, edges: [] })
+    // A node per opening — a plot with a second gate needs both on the graph or
+    // half its approaches are unreachable.
+    gatesOf(s).forEach((g, i) => {
+      if (i === 0) approachNode.set(s, nodes.length)
+      nodes.push({ x: g.approach.x, z: g.approach.z, edges: [] })
+    })
   }
 
   for (let i = 0; i < nodes.length; i++) {
@@ -193,13 +231,12 @@ export function nextWaypoint(
 
   // On the gate leg: between the approach point and safely inside, aligned
   // with the opening. Aim past the line so the crossing completes.
-  const gate = gatePos(slot)
-  if (alignedWithGate(pos, slot) && gateDistance(pos, gate, slot) < 2.2) {
-    return justInsideGate(gate, slot)
+  const near = nearestGate(pos, slot)
+  if (alignedWithGate(pos, slot) && gateDistance(pos, near.gate, slot, near.sign) < 2.2) {
+    return justInsideGate(near.gate, slot, near.sign)
   }
 
-  const a = approachPos(slot)
-  return routeToPoint(pos, a.x, a.z)
+  return routeToPoint(pos, near.approach.x, near.approach.z)
 }
 
 /**
@@ -278,9 +315,9 @@ export function routeToPoint(pos: THREE.Vector3, tx: number, tz: number): THREE.
 
 /** Exit waypoint for anything standing inside a farm: gate first, then out. */
 export function exitWaypoint(pos: THREE.Vector3, slot: FarmSlot): THREE.Vector3 {
-  if (!alignedWithGate(pos, slot)) return justInsideGate(gatePos(slot), slot)
-  const a = approachPos(slot)
-  return new THREE.Vector3(a.x, 0, a.z)
+  const near = nearestGate(pos, slot)
+  if (!alignedWithGate(pos, slot)) return justInsideGate(near.gate, slot, near.sign)
+  return near.approach.clone()
 }
 
 /** The slot whose fences contain this point, if any. */

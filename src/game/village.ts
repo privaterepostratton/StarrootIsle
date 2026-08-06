@@ -111,6 +111,30 @@ export interface FarmSlot {
    * assumption is a much worse place for that to surface than a field.
    */
   axis: 'x' | 'z'
+  /**
+   * A second opening on the far side from the lane.
+   *
+   * The player's plot has one — they arrive from the beach, not the street — and
+   * the fence builder has always known about it. The *router* did not, which is
+   * the sort of mismatch that produces a trail walking the length of a fence to
+   * reach something a step behind the player: it modelled the plot as having a
+   * single way in and dutifully routed round to it.
+   */
+  outerGate?: boolean
+}
+
+/** Every way in and out of a plot: the lane gate, and the outer one if it has one. */
+export function gatesOf(s: FarmSlot) {
+  const half = fenceHalfAlong(s)
+  const gates = [{ gate: towardLane(s, half), approach: towardLane(s, half + 1.8), sign: s.inward }]
+  if (s.outerGate) {
+    gates.push({
+      gate: towardLane(s, -half),
+      approach: towardLane(s, -(half + 1.8)),
+      sign: -s.inward as 1 | -1,
+    })
+  }
+  return gates
 }
 
 function slot(side: 'north' | 'south', row: number): FarmSlot {
@@ -119,9 +143,30 @@ function slot(side: 'north' | 'south', row: number): FarmSlot {
   return { side, row, x: ROW_X[row], z: -inward * PLOT_CZ, inward, axis: 'z' }
 }
 
+/**
+ * The player's fence, as it currently stands.
+ *
+ * FENCE_HX/HZ are the *maximum* — the garden at level 3. While it is smaller
+ * than that, anything reasoning about the plot as a solid rectangle has to use
+ * the real extent or it works from a boundary the player can see straight
+ * through: the router modelled the yard at full size and duly walked the guide
+ * trail out to a gate three levels away to reach a mailbox two paces behind
+ * the player. Written by the farm whenever the garden grows.
+ */
+let playerFenceHalf = FENCE_HX
+
+export function setPlayerFenceHalf(half: number) {
+  playerFenceHalf = half
+}
+
+/** Half-extent of a plot's fence, across and along. */
+export function fenceHalfOf(s: FarmSlot) {
+  return s === PLAYER_SLOT ? playerFenceHalf : s.axis === 'x' ? FENCE_HX : FENCE_HZ
+}
+
 /** Half-extent of a plot's fence across whichever axis its gate faces. */
 export function fenceHalfAlong(s: FarmSlot) {
-  return s.axis === 'x' ? FENCE_HX : FENCE_HZ
+  return fenceHalfOf(s)
 }
 
 /** Offset a plot centre by `d` in the direction of its gate. */
@@ -172,7 +217,16 @@ export const FARM_SLOTS: FarmSlot[] = [
  * sand to the west, and two before the neighbours' plots to the east, which is
  * as much room as there is to have.
  */
-export const PLAYER_SLOT: FarmSlot = { side: 'north', row: 1, x: -32, z: 0, inward: 1, axis: 'x' }
+export const PLAYER_SLOT: FarmSlot = {
+  side: 'north',
+  row: 1,
+  x: -32,
+  z: 0,
+  inward: 1,
+  axis: 'x',
+  // The beach-side gate, which is the one they actually use — see gatesOf.
+  outerGate: true,
+}
 
 /**
  * Where the street stops in the west: at the player's gate.

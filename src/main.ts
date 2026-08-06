@@ -58,6 +58,8 @@ import { RARITY_BY_ID } from './game/mutations'
 import { SettingsUi } from './ui/settings-ui'
 import { BagUi } from './ui/bag-ui'
 import { Ftue, createUpgradeTour, forgetFtue, forgetUpgradeTour } from './ui/ftue'
+import { setPlayerFenceHalf } from './game/village'
+import { invalidateRoutes } from './game/village-router'
 import { DevUi } from './ui/dev-ui'
 import { isEditingUi } from './ui/layout/editing'
 import { Tips } from './ui/tips'
@@ -765,7 +767,7 @@ clearing.onLanded = (at) => {
 clearing.onOpened = () => {
   // `true` asks the beds to grow in rather than appear — see Farm.openClearing.
   farm.openClearing(true)
-  world.setGardenLevel(farm.gardenLevel)
+  syncGardenFence()
   hud.toast('🌱 The ground is clear — your farm is yours', 'good')
   audio.play('levelup')
   grantXp(20)
@@ -1045,7 +1047,7 @@ const prestigeUi = new PrestigeUi(prestige, progression, () => {
   // Retiring hands back the land as well as the crops, so the fence has to come
   // back in to match — otherwise the rails stay out at the size of a farm that
   // no longer exists, and the mailbox with them.
-  world.setGardenLevel(farm.gardenLevel)
+  syncGardenFence()
 
   hud.rebuildHotbar(1)
   hud.updateLevel(progression)
@@ -1199,7 +1201,7 @@ if (saved) {
   // The clearing is implied by the farm: if any ground is owned, it was cut.
   if (farm.exists) {
     clearing.restoreOpened()
-    world.setGardenLevel(farm.gardenLevel)
+    syncGardenFence()
   }
   // Any seeds at all, or any progress, means the beach was already combed.
   if (farm.exists || inventory.seedCount(BEACH_SEED_CROP) > 0) beachSeeds.restoreEmptied()
@@ -1798,6 +1800,20 @@ function mailboxPromptText() {
     : `📮 Extending to ${size}×${size} costs ${coinIconHtml('inline-ico')}${formatCoins(cost)}`
 }
 
+/**
+ * Put the fence up at the current level, and tell the router about it.
+ *
+ * The two have to move together: the router treats a plot as a solid rectangle,
+ * and if it keeps the old size the guide trail routes around a fence that is no
+ * longer where it thinks.
+ */
+function syncGardenFence() {
+  world.setGardenLevel(farm.gardenLevel)
+  const g = farm.gardenExtents()
+  setPlayerFenceHalf(g.half + 0.7)
+  invalidateRoutes()
+}
+
 function buyGardenUpgrade() {
   if (!farm.canUpgrade) {
     audio.play('error')
@@ -1812,7 +1828,7 @@ function buyGardenUpgrade() {
   }
 
   farm.upgradeGarden()
-  world.setGardenLevel(farm.gardenLevel)
+  syncGardenFence()
 
   // The rails have just moved outward; fire the burst from the middle of the
   // garden so the eye goes to the ground rather than to the mailbox.
@@ -2393,7 +2409,7 @@ const devUi = new DevUi({
     clearing.restoreOpened()
     // Animated here too: this button is how the grow-in gets looked at.
     farm.openClearing(true)
-    world.setGardenLevel(farm.gardenLevel)
+    syncGardenFence()
     hud.toast('Dev: clearing opened', 'info')
   },
   respawnCrates: () => {
@@ -2407,7 +2423,7 @@ const devUi = new DevUi({
       hud.toast('Dev: the garden is already at its largest', 'bad')
       return
     }
-    world.setGardenLevel(farm.gardenLevel)
+    syncGardenFence()
     hud.toast(`Dev: garden level ${farm.gardenLevel} — ${farm.gardenSize}×${farm.gardenSize}`, 'info')
   },
   revealAll: () => {
