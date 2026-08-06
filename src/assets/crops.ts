@@ -2491,7 +2491,19 @@ export interface CropModelOptions {
  */
 const AUTHORED_BODIES: Record<string, (() => LoadedModel | undefined) | undefined> = {
   strawberry: () => peekModels()?.strawberryPlant,
+  blueberry: () => peekModels()?.blueberryBush,
 }
+
+/**
+ * Authored plants that come with their crop already on them.
+ *
+ * The strawberry model is leaves only, so the berries still hang off the
+ * procedural anchors — that is the whole reason the anchor list survives the
+ * swap. The blueberry bush is a fruiting bush: its berries are painted into the
+ * same mesh, and hanging five more procedural knots off it gives a bush wearing
+ * two crops.
+ */
+const AUTHORED_CARRIES_FRUIT = new Set(['blueberry'])
 
 export function createCropModel(def: CropDef, stage: number, opts: CropModelOptions = {}): THREE.Group {
   const seed = opts.seed ?? 1
@@ -2578,7 +2590,8 @@ export function createCropModel(def: CropDef, stage: number, opts: CropModelOpti
 
   // Fruit is scaled independently so a short plant can still carry a big crop.
   const fruitScale = 0.85 + r() * 0.4
-  if (stage >= 2 && body.anchors.length > 0) {
+  const fruitCarried = authoredBody !== null && AUTHORED_CARRIES_FRUIT.has(def.id)
+  if (!fruitCarried && stage >= 2 && body.anchors.length > 0) {
     const ripe = stage === GROWTH_STAGES - 1
     // An unripe plant carries fewer, smaller fruit — a partial set reads as
     // "still filling out" without needing a separate silhouette.

@@ -43,7 +43,9 @@ import { Wildlife, type TameTarget } from './game/wildlife'
 import { Clearing, CLEAR_COST, type Standing } from './game/clearing'
 import { BeachSeeds, BEACH_SEED_CROP } from './game/beach-seeds'
 import { Flotsam, type FlotsamPrize } from './game/flotsam'
-import { WorldPlots, type WorldPlot } from './game/world-plots'
+import { WorldPlots, WORLD_PLOTS, type WorldPlot, type PlotBuildId } from './game/world-plots'
+import { PlotBuildUi } from './ui/plot-build-ui'
+import { MATERIAL_BY_ID } from './game/materials'
 import { LandMapUi } from './ui/land-map'
 import { Stock } from './game/stock'
 import { Audio } from './core/audio'
@@ -274,7 +276,8 @@ const shopUi = new ShopUi(
  * short of a firework.
  */
 doobers.onTrail = (at, kind) => {
-  bursts.emit(at, 1, kind === 'coin' ? [0xffe27a] : [0xb6ff8a], {
+  // The wisp's own cyan for XP, so the trail belongs to the thing dragging it.
+  bursts.emit(at, 1, kind === 'coin' ? [0xffe27a] : kind === 'xp' ? [0xaefff4] : [0xb6ff8a], {
     kind: 'spark',
     speed: 0.35,
     life: 0.38,
@@ -1227,7 +1230,7 @@ const modalOpen = () =>
   // picking and prompts together.
   isEditingUi() ||
   bagUi.open ||
-  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || plotUi.open || questUi.open || animalUi.open || neighbourUi.open || neighbourPlotUi.open || petUi.open || landMapUi.open
+  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || plotUi.open || questUi.open || animalUi.open || neighbourUi.open || neighbourPlotUi.open || petUi.open || landMapUi.open || plotBuildUi.open
 
 /**
  * The subset of those that take over the screen, and so hide the HUD chrome.
@@ -1238,7 +1241,7 @@ const modalOpen = () =>
  * action the menu exists for.
  */
 const panelOpen = () =>
-  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || questUi.open || animalUi.open || neighbourUi.open || petUi.open || bagUi.open || landMapUi.open
+  levelUpScreen.open || settingsUi.open || almanacUi.open || prestigeUi.open || shopUi.open || questUi.open || animalUi.open || neighbourUi.open || petUi.open || bagUi.open || landMapUi.open || plotBuildUi.open
 
 // --- restore ----------------------------------------------------------------
 window.__loading?.(0.9, 'Waking the neighbours…')
@@ -1304,6 +1307,8 @@ if (saved) {
   placeables.deserialize(saved.placeables)
   // Land bought in an earlier session is already cleared — no felling replay.
   worldPlots.restore(saved.worldPlots ?? [])
+  // After the plots themselves: a build can only stand on ground that is owned.
+  worldPlots.restoreBuilds(saved.worldPlotBuilds as [number, PlotBuildId, number][] | undefined)
   farm.deserialize(saved.farm, elapsed)
   // The clearing is implied by the farm: if any ground is owned, it was cut.
   if (farm.exists) {
@@ -1344,7 +1349,7 @@ document.addEventListener('visibilitychange', () => {
     // should not keep playing to an empty tab while it does.
     audio.suspendForHidden()
     hiddenAt = Date.now()
-    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize())
+    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize(), worldPlots.serializeBuilds())
     return
   }
   // Back before anything else — the sound should be there as the tab appears,
@@ -1986,6 +1991,65 @@ function buyWorldPlot(plot: WorldPlot) {
   grantXp(40)
 }
 
+/**
+ * Land the player owns, within arm's reach, and what it is asking for.
+ *
+ * Bare ground offers the workbench, a full plot offers its harvest, and one
+ * still filling offers a look at how it is coming along.
+ */
+function ownedPlotAtHand() {
+  if (modalOpen()) return null
+  return worldPlots.atHand(player.position)
+}
+
+function plotBuildPromptText(hand: NonNullable<ReturnType<typeof ownedPlotAtHand>>) {
+  if (hand.state === 'bare') return '🔨 Build on this land'
+  if (hand.state === 'ready') return `${hand.build!.yield.emoji} Collect the ${hand.build!.name.toLowerCase()}`
+  return `${hand.build!.emoji} ${hand.build!.name} — ${Math.round(hand.progress * 100)}%`
+}
+
+/** Take a plot's harvest: coins, materials and the burst that sells it. */
+function collectPlotYield(id: number) {
+  const def = worldPlots.collect(id)
+  if (!def) return
+  const plot = WORLD_PLOTS[id]
+  const at = new THREE.Vector3(plot.x, groundHeight(plot.x, plot.z) + 1.2, plot.z)
+  // Coins fly in as doobers rather than landing in the purse: `onCollect` is
+  // what banks them, so adding them here as well would pay twice.
+  doobers.spawn(at, 'coin', Math.min(12, 4 + Math.round(def.yield.coins / 180)), def.yield.coins)
+  if (def.yield.material) inventory.addMaterial(def.yield.material.id, def.yield.material.amount)
+  grantXp(def.yield.xp)
+  audio.play('collect')
+  popups.spawn(def.yield.label, at, 'rare', 1.8)
+  const haul = def.yield.material
+    ? `+${def.yield.material.amount} ${MATERIAL_BY_ID.get(def.yield.material.id)?.emoji ?? ''} · `
+    : ''
+  hud.toast(`${def.yield.emoji} ${def.yield.label} — ${haul}🪙${formatCoins(def.yield.coins)}`, 'good')
+  plotBuildUi.refresh()
+}
+
+const plotBuildUi = new PlotBuildUi(
+  worldPlots,
+  inventory,
+  progression,
+  (id, def) => {
+    if (!inventory.spend(def.price)) {
+      audio.play('error')
+      hud.toast('Not enough coins to build that', 'bad')
+      return
+    }
+    worldPlots.construct(id, def.id)
+    grantXp(30)
+    audio.play('levelup')
+    hud.toast(`${def.emoji} ${def.name} built on parcel ${id + 1}`, 'good')
+    const plot = WORLD_PLOTS[id]
+    // Same wide hold the crate and the neighbours get: the ground the player
+    // just spent thousands on has changed shape, and they are standing in it.
+    pendingShot = new THREE.Vector3(plot.x, groundHeight(plot.x, plot.z), plot.z)
+  },
+  (id) => collectPlotYield(id),
+)
+
 /** Land the pending swing, then drive whatever is falling. */
 function updateChopping(dt: number) {
   if (chopTimer > 0) {
@@ -2168,10 +2232,17 @@ function handleInput() {
     const fellable = clearTarget()
     const tameable = tameTarget()
     const forSale = plotForSale()
+    const ownedPlot = ownedPlotAtHand()
     if (fellable) fellTree()
     else if (mailboxInRange()) buyGardenUpgrade()
     else if (landDeskInRange()) landMapUi.show()
     else if (forSale) buyWorldPlot(forSale)
+    else if (ownedPlot) {
+      // Ready ground is collected on the spot; anything else opens the bench,
+      // because "what is on my land and how is it doing" is a panel question.
+      if (ownedPlot.state === 'ready') collectPlotYield(ownedPlot.plot.id)
+      else plotBuildUi.show(ownedPlot.plot.id)
+    }
     else if (crateInRange()) shopUi.show()
     else if (shopInRange()) shopUi.show()
     else if (tameable) feedWildAnimal(tameable)
@@ -2361,7 +2432,7 @@ function updateFtuePointer() {
 
 // --- autosave ---------------------------------------------------------------
 let saveTimer = 0
-addEventListener('beforeunload', () => Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize()))
+addEventListener('beforeunload', () => Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize(), worldPlots.serializeBuilds()))
 
 // Rain tops up the soil on a slow tick rather than every frame.
 let rainTimer = 0
@@ -2554,7 +2625,7 @@ const devUi = new DevUi({
     hud.toast('Dev: FTUE restarted', 'info')
   },
   saveNow: () => {
-    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize())
+    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize(), worldPlots.serializeBuilds())
     hud.toast('Dev: saved', 'info')
   },
   resetSave: () => {
@@ -2984,10 +3055,12 @@ function frame() {
     const fellable = clearTarget()
     const tameable = tameTarget()
     const forSale = plotForSale()
+    const ownedPlot = ownedPlotAtHand()
     if (fellable) hud.setPrompt('tame', clearPromptText())
     else if (mailboxInRange()) hud.setPrompt('tame', mailboxPromptText())
     else if (landDeskInRange()) hud.setPrompt('tame', '🗺️ Land office — see what is for sale')
     else if (forSale) hud.setPrompt('tame', plotPromptText())
+    else if (ownedPlot) hud.setPrompt('tame', plotBuildPromptText(ownedPlot))
     else if (crateInRange()) hud.setPrompt('tame', '📦 Trade at the crate')
     else if (shopInRange()) hud.setPrompt('shop')
     else if (tameable) hud.setPrompt('tame', tamePromptText(tameable))
@@ -3049,7 +3122,7 @@ function frame() {
   saveTimer += dt
   if (saveTimer > 10) {
     saveTimer = 0
-    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize())
+    Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize(), worldPlots.serializeBuilds())
   }
 
   // Water renders its reflection and refraction buffers first — both need the
@@ -3099,7 +3172,7 @@ frame()
 if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
-    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi,
+    engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi,
   }
 
   /**

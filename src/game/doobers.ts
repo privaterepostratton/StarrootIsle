@@ -35,8 +35,15 @@ interface DooberStyle {
 
 const STYLES: Record<DooberKind, DooberStyle> = {
   coin: { color: 0xf2c14e, size: 0.11, glow: true },
-  // Warm green-gold, the colour of the thing itself rather than of a gem.
-  xp: { color: 0xc8ff8a, size: 0.085, glow: true },
+  /*
+   * Ice-cyan, and deliberately the one cold colour in the game.
+   *
+   * It used to be a warm green-gold, which put it inside the range every crop,
+   * leaf and coin already occupies — an XP orb crossing a green field was a
+   * light green dot on green. Cold reads instantly against grass, soil and
+   * gold, and nothing else in the valley is allowed this hue.
+   */
+  xp: { color: 0x9ff6ee, size: 0.085, glow: true },
   honey: { color: 0xe8a020, size: 0.1, glow: false },
   produce: { color: 0x8fd85c, size: 0.1, glow: false },
 }
@@ -98,25 +105,114 @@ const COIN_SCALE = 2
 const COIN_LEAN = 0.3
 
 /**
- * The wisp's texture: a hot core easing to nothing well inside the quad.
+ * The wisp's texture: a shard of light with a star burning through it.
  *
- * Two stops rather than a linear ramp — a firefly is a small bright point with
- * a wide faint halo, and a straight gradient gives an evenly lit disc that
- * reads as a bubble instead.
+ * It used to be a radial gradient, which is the honest way to draw a firefly
+ * and reads at any size as a blurred dot — there is no *thing* there, so the
+ * eye files it with the bloom and the god rays rather than with the pickups.
+ * Three layers fix that, drawn in the order the eye assembles them:
+ *
+ *   the halo, wide and faint, so the shard sits in its own light;
+ *   the shard, an angular crystal with a facet down one side, which is the
+ *     silhouette that makes it an object;
+ *   the star, four thin spikes through the middle, which is what says *this is
+ *     glowing* rather than *this is a pale blue rock*.
+ *
+ * Additively blended in the material, so every layer only ever brightens what
+ * is under it and the shard keeps its glassy edge instead of matting out.
  */
 function makeWispTexture() {
-  const size = 64
+  const size = 128
+  const c = size / 2
   const canvas = document.createElement('canvas')
   canvas.width = size
   canvas.height = size
   const ctx = canvas.getContext('2d')!
-  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
-  g.addColorStop(0, 'rgba(255,255,255,1)')
-  g.addColorStop(0.18, 'rgba(255,255,235,0.85)')
-  g.addColorStop(0.45, 'rgba(210,255,170,0.28)')
-  g.addColorStop(1, 'rgba(180,255,140,0)')
-  ctx.fillStyle = g
+
+  // 1. The halo.
+  const halo = ctx.createRadialGradient(c, c, 0, c, c, c)
+  halo.addColorStop(0, 'rgba(190, 255, 248, 0.55)')
+  halo.addColorStop(0.34, 'rgba(120, 240, 226, 0.26)')
+  halo.addColorStop(0.72, 'rgba(70, 200, 200, 0.07)')
+  halo.addColorStop(1, 'rgba(60, 190, 200, 0)')
+  ctx.fillStyle = halo
   ctx.fillRect(0, 0, size, size)
+
+  /*
+   * 2. The shard. Seven points rather than a symmetrical gem: a crystal that
+   * can be folded onto itself reads as a UI icon, and the whole job of this
+   * silhouette is to look grown rather than drawn.
+   */
+  const r = size * 0.27
+  const shard: [number, number][] = [
+    [0, -1.12],
+    [0.72, -0.52],
+    [0.9, 0.36],
+    [0.24, 1.1],
+    [-0.5, 0.92],
+    [-0.94, 0.1],
+    [-0.66, -0.7],
+  ]
+  const trace = (scale: number) => {
+    ctx.beginPath()
+    shard.forEach(([x, y], i) => {
+      const px = c + x * r * scale
+      const py = c + y * r * scale
+      if (i === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
+    })
+    ctx.closePath()
+  }
+
+  const body = ctx.createLinearGradient(c - r, c - r, c + r, c + r)
+  body.addColorStop(0, 'rgba(226, 255, 252, 0.95)')
+  body.addColorStop(0.45, 'rgba(140, 244, 232, 0.8)')
+  body.addColorStop(1, 'rgba(72, 206, 208, 0.62)')
+  ctx.fillStyle = body
+  trace(1)
+  ctx.fill()
+
+  // The facet: the same shape shrunk and pushed off-centre, so one side of the
+  // crystal catches more light than the other.
+  ctx.save()
+  ctx.translate(-r * 0.16, -r * 0.2)
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.72)'
+  trace(0.5)
+  ctx.fill()
+  ctx.restore()
+
+  // 3. The star. Four spikes, the vertical pair longer, as light behaves.
+  const spike = (halfW: number, halfH: number, alpha: number) => {
+    const g = ctx.createLinearGradient(c, c - halfH, c, c + halfH)
+    g.addColorStop(0, `rgba(214, 255, 250, 0)`)
+    g.addColorStop(0.5, `rgba(255, 255, 255, ${alpha})`)
+    g.addColorStop(1, `rgba(214, 255, 250, 0)`)
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.moveTo(c, c - halfH)
+    ctx.lineTo(c + halfW, c)
+    ctx.lineTo(c, c + halfH)
+    ctx.lineTo(c - halfW, c)
+    ctx.closePath()
+    ctx.fill()
+  }
+  spike(size * 0.055, size * 0.48, 0.95)
+  ctx.save()
+  ctx.translate(c, c)
+  ctx.rotate(Math.PI / 2)
+  ctx.translate(-c, -c)
+  spike(size * 0.045, size * 0.4, 0.8)
+  ctx.restore()
+
+  // The hot centre the spikes cross at.
+  const core = ctx.createRadialGradient(c, c, 0, c, c, size * 0.1)
+  core.addColorStop(0, 'rgba(255, 255, 255, 1)')
+  core.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  ctx.fillStyle = core
+  ctx.beginPath()
+  ctx.arc(c, c, size * 0.1, 0, Math.PI * 2)
+  ctx.fill()
+
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
   return tex
@@ -244,14 +340,17 @@ export class Doobers {
   }
 
   private hideAll() {
-    for (let i = 0; i < MAX_DOOBERS; i++) {
-      this.park(this.mesh, i)
-      this.park(this.coinMesh, i)
-      this.park(this.wispMesh, i)
-    }
+    for (let i = 0; i < MAX_DOOBERS; i++) this.parkAll(i)
     this.mesh.instanceMatrix.needsUpdate = true
     this.coinMesh.instanceMatrix.needsUpdate = true
     this.wispMesh.instanceMatrix.needsUpdate = true
+  }
+
+  /** Take one pool slot out of all three meshes. What death means, in pixels. */
+  private parkAll(i: number) {
+    this.park(this.mesh, i)
+    this.park(this.coinMesh, i)
+    this.park(this.wispMesh, i)
   }
 
   /**
@@ -371,8 +470,19 @@ export class Doobers {
         if (dist < 0.4) {
           d.phase = 'dead'
           this.onCollect?.({ kind: d.kind, value: d.value })
-          this.park(this.mesh, i)
-          this.park(this.coinMesh, i)
+          /*
+           * All three meshes, not two.
+           *
+           * A dead slot is skipped by every later frame, so whatever matrix it
+           * last wrote is the matrix it keeps. This parked the gems and the
+           * coins and forgot the wisps, which meant every XP orb ever collected
+           * left a frozen quad hanging at chest height where it was picked up.
+           * It read as "the wisps work for a while and then start to fail":
+           * the debris is only drawn while something else is in flight, because
+           * `live` hides the mesh when the field empties, so the field slowly
+           * filled with stuck glows that blinked on with the next harvest.
+           */
+          this.parkAll(i)
           continue
         }
 
@@ -400,6 +510,11 @@ export class Doobers {
         dummy.updateMatrix()
         this.coinMesh.setMatrixAt(i, dummy.matrix)
         this.park(this.mesh, i)
+        // And the wisp, which this slot may have been a moment ago: the pool is
+        // a ring, so a slot changes kind, and the mesh it *used* to draw in
+        // keeps the last matrix it was given until something clears it. The gem
+        // and wisp branches below each park the other two; this one parked one.
+        this.park(this.wispMesh, i)
         continue
       }
 

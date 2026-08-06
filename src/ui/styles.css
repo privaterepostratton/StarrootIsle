@@ -3146,6 +3146,154 @@ body.panel-open #ui #questTracker {
   gap: 8px;
 }
 
+/* ---------- plot workbench ---------- */
+/*
+ * Cards in a grid, not rows in a list.
+ *
+ * The shop compares prices down a column, which is why it is a list. This
+ * compares *places* — what the ground will look like and what it pays in — and
+ * that is a judgement made side by side.
+ */
+#plotBuild {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 14, 8, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+#plotBuild.hidden {
+  display: none;
+}
+
+#buildBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s3) var(--s4);
+}
+
+.build-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--s3);
+}
+
+.build-card,
+.build-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: var(--s3) var(--s2) var(--s3);
+  border-radius: var(--r-md);
+  border: 2px solid var(--edge);
+  background: linear-gradient(180deg, var(--paper), var(--paper-2));
+  box-shadow: var(--shadow-sm), inset 0 2px 0 rgba(255, 255, 255, 0.7);
+  text-align: center;
+}
+
+.build-card.locked {
+  filter: grayscale(0.55);
+  opacity: 0.85;
+}
+
+.build-ico {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  font-size: 34px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 34%, #fffaf0, #ecd9b2);
+  border: 2px solid rgba(150, 110, 58, 0.5);
+  box-shadow: inset 0 -3px 0 rgba(150, 110, 58, 0.2);
+}
+
+.build-ico.big {
+  width: 82px;
+  height: 82px;
+  font-size: 44px;
+}
+
+.build-ico .ico-img {
+  width: 76%;
+  height: 76%;
+  object-fit: contain;
+}
+
+.build-name {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.build-blurb {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--ink-soft);
+}
+
+/* The two numbers the choice is actually made on, boxed so the eye finds them
+   without reading the blurb first. */
+.build-yield {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--ink);
+  background: rgba(160, 124, 70, 0.16);
+}
+
+.build-yield .inline-ico {
+  width: 15px;
+  height: 15px;
+}
+
+/* A figure never wraps away from the icon it belongs to. */
+.yield-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.yield-dot {
+  font-style: normal;
+  opacity: 0.5;
+}
+
+#plotBuild .buy {
+  width: 100%;
+  margin-top: auto;
+}
+
+.build-bar {
+  width: 100%;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(122, 97, 68, 0.22);
+  border: 2px solid rgba(122, 97, 68, 0.35);
+  overflow: hidden;
+}
+
+.build-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #9ee06f, #5fa93c);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45);
+  transition: width 0.4s ease;
+}
+
 /* ---------- rarity highlights ---------- */
 .row.rare-silver { border-color: #9fb0c4; background: linear-gradient(var(--paper-2), #dfe7f0); }
 .row.rare-gold { border-color: #d9a52a; background: linear-gradient(var(--paper-2), #f7e3a8); }

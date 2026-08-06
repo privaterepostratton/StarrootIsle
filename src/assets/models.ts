@@ -57,6 +57,8 @@ interface ModelCache {
   storeCrate: LoadedModel
   /** The whole strawberry plant, used in place of the procedural bush when ripe. */
   strawberryPlant: LoadedModel
+  /** The whole ripe blueberry bush. See AUTHORED_BODIES in assets/crops.ts. */
+  blueberryBush: LoadedModel
   /** Stands on a bought world plot until the player decides what to build. */
   workbench: LoadedModel
   haybale: LoadedModel
@@ -229,7 +231,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, workbench] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, workbench] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -273,6 +275,7 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/store-crate.glb')),
       gltf.loadAsync(asset('models/turnip.glb')),
       gltf.loadAsync(asset('models/strawberry-plant.glb')),
+      gltf.loadAsync(asset('models/blueberry-bush.glb')),
       gltf.loadAsync(asset('models/workbench.glb')),
     ])
 
@@ -316,6 +319,7 @@ export async function loadModels(): Promise<ModelCache> {
     barrel: extractMesh(barrel.scene),
     storeCrate: extractMesh(storeCrate.scene),
     strawberryPlant: extractMesh(strawberryPlant.scene),
+    blueberryBush: extractMesh(blueberryBush.scene),
     workbench: extractMesh(workbench.scene),
     turnip: extractMesh(turnip.scene),
     haybale: extractMesh(haybale.scene),

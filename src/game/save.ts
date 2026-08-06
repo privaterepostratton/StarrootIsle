@@ -48,6 +48,14 @@ export interface SaveData {
    * them.
    */
   worldPlots?: number[]
+  /**
+   * What has been built on those plots, as `[plotId, buildId, seconds]`.
+   *
+   * Optional for the same reason the list above is: an owned plot with no entry
+   * here is bare ground with a workbench on it, which is every save written
+   * before the bench did anything.
+   */
+  worldPlotBuilds?: [number, string, number][]
 }
 
 function buildData(
@@ -67,6 +75,7 @@ function buildData(
   requests: Requests,
   placeables: Placeables,
   worldPlots: number[],
+  worldPlotBuilds: [number, string, number][],
 ): SaveData {
   return {
     version: SAVE_VERSION,
@@ -87,6 +96,7 @@ function buildData(
     requests: requests.serialize(),
     placeables: placeables.serialize(),
     worldPlots,
+    worldPlotBuilds,
   }
 }
 
@@ -128,6 +138,7 @@ export function save(
   requests: Requests,
   placeables: Placeables,
   worldPlots: number[],
+  worldPlotBuilds: [number, string, number][],
 ) {
   const data = buildData(
     farm,
@@ -146,6 +157,7 @@ export function save(
     requests,
     placeables,
     worldPlots,
+    worldPlotBuilds,
   )
   try {
     localStorage.setItem(KEY, JSON.stringify(data))
