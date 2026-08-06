@@ -5455,6 +5455,9 @@ body:has(#devPanel:not([style*='display: none'])) #help {
   padding: clamp(8px, 1.6vh, 20px) clamp(12px, 2.6vw, 40px) clamp(12px, 2vh, 26px);
   align-items: center;
   justify-content: center;
+  /* Wrapped onto two rows (portrait), the slack belongs above and below the
+     pair rather than as a gulf between the map and the card. */
+  align-content: center;
   flex: 1 1 auto;
   min-height: 0;
   flex-wrap: wrap;

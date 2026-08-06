@@ -136,6 +136,16 @@ const BUILDING_RANGE = 110
  */
 const ANIMATE_RANGE = 34
 
+/**
+ * Ground speed the walk clip's stride is authored for.
+ *
+ * The wander plays it at 0.62 while moving at 1.7 units a second and the feet
+ * hold the ground, so one is the other divided by it. Named rather than
+ * repeated, because anything else that plays this clip has to scale off the
+ * same number or it skates.
+ */
+const WALK_CLIP_SPEED = 1.7 / 0.62
+
 export interface NeighbourProfile {
   id: string
   name: string
@@ -254,6 +264,9 @@ export class Neighbour {
 
   /** Put the villager somewhere and turn them to face their heading. */
   placeNpc(x: number, z: number, facing: number) {
+    // How far they were moved, so the walk clip can be played at the pace they
+    // are actually travelling rather than at a guess — see update().
+    this.npcStep = Math.hypot(x - this.npcPos.x, z - this.npcPos.y)
     this.npcPos.set(x, z)
     this.npcFacing = facing
     this.farmer.root.position.set(x, 0, z)
@@ -271,6 +284,8 @@ export class Neighbour {
   private npcTarget: THREE.Vector2
   private npcFacing = 0
   private npcIdle = 0
+  /** Distance the last placeNpc moved them, for the walk-in's stride pacing. */
+  private npcStep = 0
 
   constructor(
     readonly profile: NeighbourProfile,
@@ -816,9 +831,22 @@ export class Neighbour {
       this.farmer.root.rotation.y = this.npcFacing
       const walk = this.npcWalkAction ?? this.npcIdleAction
       if (walk !== this.npcCurrent) {
-        walk?.reset().setEffectiveTimeScale(0.72).fadeIn(0.2).play()
+        walk?.reset().fadeIn(0.2).play()
         this.npcCurrent?.fadeOut(0.2)
         this.npcCurrent = walk
+      }
+      /*
+       * Stride matched to their real ground speed.
+       *
+       * The walk is a straight lerp from the beach to whichever gate they are
+       * headed for, and those are between forty and seventy units away over the
+       * same thirty seconds — so one fixed time scale had somebody skating and
+       * somebody else moonwalking. Derived from the step Neighbourhood just
+       * moved them, which is the only number that knows.
+       */
+      if (dt > 0 && walk === this.npcWalkAction) {
+        const speed = this.npcStep / dt
+        walk?.setEffectiveTimeScale(Math.min(1.5, Math.max(0.35, speed / WALK_CLIP_SPEED)))
       }
       /*
        * Driven every frame of the walk, whatever the LOD says.
