@@ -265,9 +265,11 @@ export const BARN_POS = new THREE.Vector3(LANE_X_MAX + 11, 0, -13)
  * keeper standing in a field behind it.
  *
  * A sign rather than six edited literals: the offsets stay readable as
- * "1.5 units in front of the doors", and moving the barn again is one line.
+ * "1.5 units in front of the doors", and turning the barn around is one line —
+ * which it has now been, because with the village on its new axis the player
+ * walks up from the paddock side and was meeting the back wall.
  */
-export const BARN_FRONT = -1
+export const BARN_FRONT = 1
 
 /** Grazing paddock, beside the animal store. */
 export const PASTURE_CENTRE = new THREE.Vector3(LANE_X_MAX + 12, 0, 6)

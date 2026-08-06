@@ -105,9 +105,16 @@ const FRAGMENT = /* glsl */ `
     /*
      * A plus in the centre: the single clearest way to say "add a plot". Built
      * from two overlapping rounded boxes so it inherits the same crisp edges.
+     *
+     * Slimmer and shorter than the first cut. At a third of the tile wide with
+     * a heavy corner radius the bars met in a blob that read as a rounded
+     * square with dents rather than as a plus, and the glow around it smeared
+     * whatever was left. Narrow bars with a small radius leave the arms
+     * distinct and the crossing sharp, which is what makes it legible at the
+     * size it is actually drawn.
      */
-    float barH = sdRoundBox(p, vec2(0.30, 0.075), 0.06);
-    float barV = sdRoundBox(p, vec2(0.075, 0.30), 0.06);
+    float barH = sdRoundBox(p, vec2(0.26, 0.045), 0.022);
+    float barV = sdRoundBox(p, vec2(0.045, 0.26), 0.022);
     float plus = 1.0 - smoothstep(0.0, aa, min(barH, barV));
 
     /*
@@ -119,7 +126,15 @@ const FRAGMENT = /* glsl */ `
     float sweep = exp(-pow((p.x + p.y) * 0.5 - (sweepPos * 2.4 - 1.2), 2.0) * 18.0);
     float shine = sweep * inside * 0.30;
 
-    float alpha = (brackets * 0.82 + body + plus * 0.66 + shine) * appear;
+    /*
+     * The plus carries its own weight now.
+     *
+     * It was drawn at two thirds alpha over a lit interior wash, so the shape
+     * that says what the marker *means* was the faintest thing on it. Full
+     * strength for the glyph and a lighter wash behind it puts the reading
+     * order the right way round: plus first, tile second.
+     */
+    float alpha = (brackets * 0.78 + body * 0.72 + plus + shine * 0.8) * appear;
     if (alpha < 0.004) discard;
 
     /*
@@ -129,7 +144,7 @@ const FRAGMENT = /* glsl */ `
      * the amber in the wash and the cream only in the brightest strokes, which is
      * what puts them back in the game's palette.
      */
-    float warmth = clamp(brackets * 0.85 + plus * 0.55 + shine * 0.7, 0.0, 1.0);
+    float warmth = clamp(brackets * 0.8 + plus * 0.92 + shine * 0.7, 0.0, 1.0);
     vec3 colour = mix(uRim, uCore, warmth);
     gl_FragColor = vec4(colour, clamp(alpha, 0.0, 1.0));
   }
