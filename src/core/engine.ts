@@ -117,6 +117,13 @@ export class Engine {
 
   distance = startDistance()
   private targetDistance = startDistance()
+  /** Set while a cutscene owns the boom. Null hands it back to the player. */
+  private cineDistance: number | null = null
+
+  /** Take the boom for a cutscene, or pass null to give it back. */
+  setCinematicDistance(d: number | null) {
+    this.cineDistance = d
+  }
 
   readonly sun: THREE.DirectionalLight
   /** Shadowless counter-light opposite the sun, standing in for sky bounce. */
@@ -312,7 +319,17 @@ export class Engine {
     if (Math.abs(diff) > 1e-4) this.yaw += diff * Math.min(1, dt * 8)
     else this.yaw = this.targetYaw
 
-    this.distance += (this.targetDistance - this.distance) * Math.min(1, dt * 9)
+    /*
+     * A cutscene may pull the boom further out than the player ever can.
+     *
+     * `targetDistance` is clamped to MAX_DISTANCE because that is the widest
+     * *useful* framing for farming — but an establishing shot of somebody
+     * arriving on the island wants to see the island. The override sits outside
+     * that clamp and eases more slowly, so the pull-back reads as a camera move
+     * rather than a jump cut.
+     */
+    const wanted = this.cineDistance ?? this.targetDistance
+    this.distance += (wanted - this.distance) * Math.min(1, dt * (this.cineDistance === null ? 9 : 2.2))
 
     this.lookAt.set(this.focus.x, this.focus.y + FOCUS_HEIGHT, this.focus.z)
 

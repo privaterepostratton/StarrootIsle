@@ -103,19 +103,22 @@ const FRAGMENT = /* glsl */ `
     float body = inside * (0.10 + 0.06 * pulse);
 
     /*
-     * A plus in the centre: the single clearest way to say "add a plot". Built
-     * from two overlapping rounded boxes so it inherits the same crisp edges.
+     * A spade in the centre, not a plus.
      *
-     * Slimmer and shorter than the first cut. At a third of the tile wide with
-     * a heavy corner radius the bars met in a blob that read as a rounded
-     * square with dents rather than as a plus, and the glow around it smeared
-     * whatever was left. Narrow bars with a small radius leave the arms
-     * distinct and the crossing sharp, which is what makes it legible at the
-     * size it is actually drawn.
+     * A plus says "one more of these"; the marker means "dig here, with the
+     * shovel you are holding" — and the shovel is already the button the player
+     * pressed to make these appear, so the mark and the tool now say the same
+     * thing. Three rounded boxes: the shaft, the crossbar of the handle, and
+     * the blade, with the blade's corners rounded hard so it reads as a spade
+     * head rather than as a brick.
+     *
+     * Built from the same sdRoundBox as the frame so it inherits the crisp
+     * antialiased edges instead of needing a texture.
      */
-    float barH = sdRoundBox(p, vec2(0.26, 0.045), 0.022);
-    float barV = sdRoundBox(p, vec2(0.045, 0.26), 0.022);
-    float plus = 1.0 - smoothstep(0.0, aa, min(barH, barV));
+    float shaft = sdRoundBox(p - vec2(0.0, 0.03), vec2(0.035, 0.17), 0.02);
+    float grip = sdRoundBox(p - vec2(0.0, 0.22), vec2(0.105, 0.035), 0.025);
+    float blade = sdRoundBox(p - vec2(0.0, -0.20), vec2(0.125, 0.115), 0.07);
+    float plus = 1.0 - smoothstep(0.0, aa, min(min(shaft, grip), blade));
 
     /*
      * A shine sweeping along the tile diagonal. Confined to the interior so it

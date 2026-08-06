@@ -791,11 +791,17 @@ engine.scene.add(wildlife.group)
  * interruption: no input lock beyond what the letterbox already implies, and it
  * yields entirely if a panel is open.
  */
-const ARRIVAL_SECONDS = 2.4
+const ARRIVAL_SECONDS = 4.5
+/** How far back and how high the arrival shot holds. The farming camera sits at
+ *  a few metres over the shoulder, which establishes nothing. */
+const ARRIVAL_DISTANCE = 30
+const ARRIVAL_PITCH = 0.72
 let arrivalTimer = 0
 const arrivalAt = new THREE.Vector3()
 let arrivalPrevPitch = 0
 let arrivalPrevYaw = 0
+/** The villager the arrival shot is following, if any. */
+let filming: Neighbour | null = null
 let arrivalYaw = 0
 
 wildlife.onEmerge = (def, at) => {
@@ -885,11 +891,13 @@ let pendingArrival: Neighbour | null = null
 function playArrivalShot() {
   if (!pendingArrival || modalOpen()) return
   const at = pendingArrival.npcWorldPos
+  filming = pendingArrival
   pendingArrival = null
   arrivalTimer = ARRIVAL_SECONDS
   arrivalAt.set(at.x, 0, at.y)
   arrivalPrevPitch = engine.pitch
   arrivalPrevYaw = engine.targetYaw
+  engine.setCinematicDistance(ARRIVAL_DISTANCE)
   // Look inland from the water, the way they are walking.
   arrivalYaw = Math.atan2(-at.x, -at.y)
   document.body.classList.add('cinematic')
@@ -2521,19 +2529,31 @@ function frame() {
   // lock makes the whole world appear to jitter when walking.
   if (arrivalTimer > 0) {
     arrivalTimer -= dt
-    // Faster pull than the walk-follow: this should read as a cut to the
-    // treeline, not as the camera wandering off.
+    /*
+     * Follow whoever is being filmed, from further back.
+     *
+     * The shot used to pull to a fixed point at the camera's ordinary farming
+     * distance, which is a few metres over a shoulder — far too close to
+     * establish anything, and by the time the player had dismissed the level-up
+     * the villager had walked out of it anyway. It now tracks their live
+     * position and pulls the boom out to a wide, high hold, so the beat reads
+     * as "look who has arrived on the island" rather than as the camera having
+     * slipped.
+     */
+    if (filming) arrivalAt.set(filming.npcWorldPos.x, 0, filming.npcWorldPos.y)
     engine.focus.lerp(arrivalAt, Math.min(1, dt * 3.2))
-    engine.pitch += (0.52 - engine.pitch) * Math.min(1, dt * 4)
+    engine.pitch += (ARRIVAL_PITCH - engine.pitch) * Math.min(1, dt * 3)
     const yawDiff = ((arrivalYaw - engine.targetYaw + Math.PI) % (Math.PI * 2)) - Math.PI
     engine.targetYaw += (yawDiff < -Math.PI ? yawDiff + Math.PI * 2 : yawDiff) * Math.min(1, dt * 3.5)
     if (arrivalTimer <= 0) {
       document.body.classList.remove('cinematic')
+      filming = null
       // A hard cut home. Cuts are cinematic language; a slow lerp back is just
       // seasickness.
       engine.pitch = arrivalPrevPitch
       engine.targetYaw = arrivalPrevYaw
       engine.yaw = arrivalPrevYaw
+      engine.setCinematicDistance(null)
     }
   } else {
     engine.focus.lerp(player.position, Math.min(1, dt * 6))
