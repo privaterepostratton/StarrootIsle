@@ -774,6 +774,7 @@ const landMapUi = new LandMapUi({
     { x: SHOP_POS.x, z: SHOP_POS.z, icon: 'shop', emoji: '🛒', label: 'Market' },
     { x: BARN_POS.x, z: BARN_POS.z, icon: 'barn', emoji: '🛖', label: 'Barn' },
   ],
+  neighboursArrived: () => hood.arrivedCount,
   buy: (id) => {
     const cost = worldPlots.nextPrice
     if (!worldPlots.canBuy(id, FARM_CENTRE)) {
@@ -1020,6 +1021,9 @@ hood.onArrivalSettled = (nb, at) => {
   popups.spawn(`${nb.profile.name} moves in!`, at, 'rare', 2.2)
   audio.play('levelup')
   hud.toast(`🏡 ${nb.profile.name} has cleared their plot`, 'good')
+  // Their plot is a farm now rather than thicket, and the land office's painted
+  // terrain is cached from whenever it was last opened.
+  landMapUi.invalidate()
 }
 
 

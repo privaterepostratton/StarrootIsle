@@ -20,10 +20,11 @@
   import * as THREE from 'three'
   import { LandMapUi } from '/src/ui/land-map.ts'
   import { WORLD_PLOTS } from '/src/game/world-plots.ts'
+  import { FARM_CENTRE, SHOP_POS, BARN_POS } from '/src/game/village.ts'
 
   const owned = new Set([0, 3])
   const reach = new Set([1, 5, 6])
-  const farm = new THREE.Vector3(-8, 0, -4)
+  const farm = FARM_CENTRE
   let coins = 12400
 
   const ui = new LandMapUi({
@@ -37,11 +38,12 @@
     coins: () => coins,
     price: () => 2500,
     buy: (id) => { coins -= 2500; owned.add(id) },
-    playerPos: () => new THREE.Vector3(-2, 0, 6),
+    playerPos: () => new THREE.Vector3(-20, 0, 7),
     farmCentre: () => farm,
+    neighboursArrived: () => Number(new URLSearchParams(location.search).get('nb') ?? 2),
     landmarks: () => [
-      { x: 4.5, z: -8, icon: 'shop', emoji: '🛒', label: 'Market' },
-      { x: 24, z: -13, icon: 'barn', emoji: '🛖', label: 'Barn' },
+      { x: SHOP_POS.x, z: SHOP_POS.z, icon: 'shop', emoji: '🛒', label: 'Market' },
+      { x: BARN_POS.x, z: BARN_POS.z, icon: 'barn', emoji: '🛖', label: 'Barn' },
     ],
   })
   ui.show()

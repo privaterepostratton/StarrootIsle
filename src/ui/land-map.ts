@@ -1,11 +1,15 @@
 import * as THREE from 'three'
 import { heightAt, isSand, WATER_LEVEL } from '../game/terrain'
 import {
-  inAnyPlot,
+  FENCE_HX,
+  FENCE_HZ,
+  NEIGHBOUR_SLOTS,
   onLane,
   PASTURE_CENTRE,
   PASTURE_RADIUS,
+  PLAYER_SLOT,
   VILLAGE_BOUNDS,
+  type FarmSlot,
 } from '../game/village'
 import { PLOT_SIZE, type WorldPlot } from '../game/world-plots'
 import { coinIconHtml, iconHtml } from './icons'
@@ -56,6 +60,13 @@ export interface LandMapActions {
   farmCentre(): THREE.Vector3
   /** Village fixtures — optional, because the map reads fine without them. */
   landmarks?(): LandMark[]
+  /**
+   * How many neighbours have moved in.
+   *
+   * Their plots are thicket until they arrive, so this is the difference
+   * between a chart of the village and a chart of the village as advertised.
+   */
+  neighboursArrived?(): number
 }
 
 /** World units shown. The valley is wider than this; the parcels are not. */
@@ -182,7 +193,18 @@ export class LandMapUi {
     if (w === 0 || h === 0) return
 
     if (!this.terrain) {
-      const farm = this.actions.farmCentre()
+      /*
+       * Which plots are farms and which are still trees.
+       *
+       * A neighbour's plot is thicket until they walk in, so painting all six
+       * as tilled fields would put five farms on the chart that the player
+       * cannot find on the ground. `invalidate()` is what keeps this honest
+       * afterwards — see the arrival hook in main.
+       */
+      const settled = this.actions.neighboursArrived?.() ?? NEIGHBOUR_SLOTS.length
+      const tilled = [PLAYER_SLOT, ...NEIGHBOUR_SLOTS.slice(0, settled)]
+      const thicket = NEIGHBOUR_SLOTS.slice(settled)
+
       const heights = new Float32Array(w * h)
       for (let py = 0; py < h; py++) {
         const z = py / PX - VIEW / 2
@@ -259,7 +281,7 @@ export class LandMapUi {
             r = 202
             g = 172
             b = 124
-          } else if (inAnyPlot(x, z)) {
+          } else if (tilled.some((s) => inSlot(x, z, s))) {
             // Fenced plots, tilled in rows so a farm reads as a farm.
             const row = Math.sin(z * 2.6) * 0.5 + 0.5
             r = 158 + row * 30
@@ -289,7 +311,18 @@ export class LandMapUi {
             b = 78 + t * 24 + patch * 10
 
             const wood = vnoise(x * 0.13 + 40, z * 0.13 + 40) * 0.62 + vnoise(x * 0.5, z * 0.5) * 0.38
-            const dense = Math.min(1, Math.max(0, (wood - 0.42) / 0.26)) * clearing(x, z)
+            let dense = Math.min(1, Math.max(0, (wood - 0.42) / 0.26)) * clearing(x, z)
+            /*
+             * An empty plot is not a meadow — it is the thicket the neighbour
+             * has yet to clear, and the map says so. Feathered at the edges:
+             * there is no fence around ground nobody has moved onto, and a hard
+             * rectangle of dark green in the middle of organic woodland reads as
+             * a UI element rather than as trees.
+             */
+            for (const s of thicket) {
+              const soft = thicketMask(x, z, s)
+              if (soft > 0) dense = Math.max(dense, soft * (0.62 + wood * 0.5))
+            }
             if (dense > 0) {
               // Canopy: a darker, bluer green, broken up by crown-sized blobs so
               // the mass has texture instead of being a stain.
@@ -491,6 +524,18 @@ export class LandMapUi {
       })
     }
   }
+}
+
+/** Inside a plot's fence. */
+function inSlot(x: number, z: number, s: FarmSlot) {
+  return Math.abs(x - s.x) < FENCE_HX && Math.abs(z - s.z) < FENCE_HZ
+}
+
+/** 1 in the middle of an unclaimed plot, fading out across its edge. */
+function thicketMask(x: number, z: number, s: FarmSlot) {
+  const fx = 1 - ramp(Math.abs(x - s.x), FENCE_HX - 2.5, FENCE_HX + 1)
+  const fz = 1 - ramp(Math.abs(z - s.z), FENCE_HZ - 2.5, FENCE_HZ + 1)
+  return fx * fz
 }
 
 /**

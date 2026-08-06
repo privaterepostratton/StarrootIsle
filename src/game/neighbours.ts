@@ -820,6 +820,17 @@ export class Neighbour {
         this.npcCurrent?.fadeOut(0.2)
         this.npcCurrent = walk
       }
+      /*
+       * Driven every frame of the walk, whatever the LOD says.
+       *
+       * This branch used to return before the mixer update at the bottom of
+       * the method, so the one time a villager is guaranteed to be on screen —
+       * the arrival, with the camera pulled back and holding on them — was the
+       * one time they slid across the valley in a frozen pose. The distance
+       * test is no help either: it measures from the *plot*, which is the far
+       * end of the walk, so most of the crossing sits outside ANIMATE_RANGE.
+       */
+      this.mixer.update(dt)
       return
     }
 
