@@ -70,6 +70,18 @@ const TILE = TILE_SIZE
 interface NeighbourBatches {
   fences: PropPlacement[]
   trays: PropPlacement[]
+  /**
+   * Which garden tier each tray belongs to, aligned with `trays`.
+   *
+   * A neighbour's beds arrive a tier at a time as their farm grows, so the tray
+   * batch cannot simply be sliced at the last arrival the way the fences and
+   * cottages are — it has to be filtered. Kept as a parallel array rather than
+   * a field on the placement because `PropPlacement` is the instancer's own
+   * shape and has no room for game state.
+   */
+  trayTier: number[]
+  /** Which neighbour each tray belongs to, aligned with `trays`. */
+  trayOwner: number[]
   benches: PropPlacement[]
   cottages: PropPlacement[]
   scarecrows: PropPlacement[]
@@ -184,6 +196,8 @@ export interface NeighbourPlot {
   pos: THREE.Vector3
   /** Checkerboard flag — the half of the bed that survives at mid detail. */
   checker: boolean
+  /** Garden tier this bed belongs to. Crops wait until the tier is broken. */
+  tier: number
 }
 
 /** Friendship milestones and what they pay out. */
@@ -227,6 +241,17 @@ export class Neighbour {
   /** True while Neighbourhood is walking this villager in from the beach. */
   walkingIn = false
 
+  /**
+   * How far their garden has grown: 1 on the day they move in, up to 3.
+   *
+   * They start with a patch the size of the player's first clearing and work
+   * outward, for the same reason the player does — a neighbour who arrives with
+   * a finished farm has nothing left to show you, and the street stops changing
+   * the moment everyone is in. Driven from the player's level by
+   * Neighbourhood.setGardenLevels.
+   */
+  gardenLevel = 1
+
   /** Put the villager somewhere and turn them to face their heading. */
   placeNpc(x: number, z: number, facing: number) {
     this.npcPos.set(x, z)
@@ -254,6 +279,8 @@ export class Neighbour {
     walls: Wall[],
     /** Shared batches, drawn once for the whole neighbourhood. */
     batches: NeighbourBatches,
+    /** Position in the arrival order — the batches tag their trays with it. */
+    readonly index: number,
   ) {
     this.centre = new THREE.Vector3(slot.x, 0, slot.z)
     this.gate = approachPos(slot)
@@ -351,6 +378,20 @@ export class Neighbour {
         const local = at(-2.6 + (gx - (PLOT_W - 1) / 2) * TILE, 0.4 + (gz - (PLOT_H - 1) / 2) * TILE)
         const pos = new THREE.Vector3(local.x, 0, local.z)
 
+        /*
+         * Which tier of the garden this bed belongs to.
+         *
+         * Measured outward from the middle of the patch, so a neighbour's farm
+         * grows the way the player's does — a small block first, then rings
+         * around it — rather than filling in rows from one edge, which reads as
+         * a loading bar.
+         */
+        const spread = Math.max(
+          Math.abs(gx - (PLOT_W - 1) / 2) / ((PLOT_W - 1) / 2),
+          Math.abs(gz - (PLOT_H - 1) / 2) / ((PLOT_H - 1) / 2),
+        )
+        const tier = spread < 0.34 ? 1 : spread < 0.7 ? 2 : 3
+
         // The same authored planter the player's tilled plots use, so the street
         // reads as one village rather than as the player's farm next to a
         // different game's. Collected for one instanced draw call rather than
@@ -363,6 +404,8 @@ export class Neighbour {
           rotationY: ((gx * 3 + gz * 7) % 4) * (Math.PI / 2),
           scale: tray.scale,
         })
+        batches.trayTier.push(tier)
+        batches.trayOwner.push(this.index)
 
         // Leave the rest of the bed fallow. Draw the die unconditionally so the
         // random stream — and therefore every crop below it — is unaffected by
@@ -381,6 +424,7 @@ export class Neighbour {
           model: null,
           pos,
           checker: (gx + gz) % 2 === 0,
+          tier,
         })
       }
     }
@@ -691,9 +735,18 @@ export class Neighbour {
 
   /** True when this plot's crops should exist at the current detail level. */
   private wantsModel(plot: NeighbourPlot) {
+    // Ground they have not broken yet grows nothing. Without this the crops of
+    // a tier still to come stood in mid-air over bare grass, which gives the
+    // whole growth schedule away.
+    if (plot.tier > this.gardenLevel) return false
     if (this.detailLevel === 2) return true
     if (this.detailLevel === 0) return false
     return plot.checker
+  }
+
+  /** Rebuild every crop — used when the garden grows a tier. */
+  refreshPlots() {
+    for (const plot of this.plots) this.rebuildPlot(plot)
   }
 
   private rebuildPlot(plot: NeighbourPlot) {
@@ -843,7 +896,7 @@ export class Neighbourhood {
     // Fences and planters are authored, textured models, so they cannot be baked
     // into each neighbour's vertex-coloured static mesh. Collected across all
     // five farms instead and drawn as one instanced batch each.
-    const batches: NeighbourBatches = { fences: [], trays: [], benches: [], cottages: [], scarecrows: [], flowerBeds: [], bushes: [] }
+    const batches: NeighbourBatches = { fences: [], trays: [], trayTier: [], trayOwner: [], benches: [], cottages: [], scarecrows: [], flowerBeds: [], bushes: [] }
 
     PROFILES.forEach((profile, i) => {
       const slot = NEIGHBOUR_SLOTS[i]
@@ -872,7 +925,7 @@ export class Neighbourhood {
       })
       const before = mark()
       const firstObstacle = obstacles.length
-      const neighbour = new Neighbour(profile, slot, obstacles, walls, batches)
+      const neighbour = new Neighbour(profile, slot, obstacles, walls, batches, i)
       this.group.add(neighbour.group)
       this.all.push(neighbour)
       this.ranges.push({ from: before, to: mark() })
@@ -993,11 +1046,28 @@ export class Neighbourhood {
    * cutscene about nothing.
    */
   restoreArrivedFor(level: number) {
+    const grew = this.setGardenLevels(level)
     this.targetArrived = Neighbourhood.arrivedCountFor(level)
+    const before = this.arrived
     this.applyArrived(this.targetArrived)
+    /*
+     * `applyArrived` early-returns when the count has not moved, which is the
+     * common case for a garden that has only *grown* — a save loaded at a high
+     * level has had everyone for ages. The beds still need redrawing.
+     */
+    if (grew && this.arrived === before && this.arrived > 0) {
+      this.rebuildBatches()
+      for (const nb of this.all) nb.refreshPlots()
+    }
   }
 
   setArrivedFor(level: number) {
+    // Their gardens grow with the player's level, arrived or not — see
+    // setGardenLevels. A change there needs the beds redrawn.
+    if (this.setGardenLevels(level) && this.arrived > 0) {
+      this.rebuildBatches()
+      for (const nb of this.all) nb.refreshPlots()
+    }
     this.targetArrived = Neighbourhood.arrivedCountFor(level)
     // Fewer than we have (a retirement) applies at once; more is walked in.
     if (this.targetArrived < this.arrived) this.applyArrived(this.targetArrived)
@@ -1083,6 +1153,27 @@ export class Neighbourhood {
     this.rebuildBatches()
   }
 
+  /**
+   * How grown each arrived neighbour's garden is, from the player's level.
+   *
+   * A neighbour moves in at level 3 + 2i and gains a tier every four levels
+   * after that, so the street keeps changing long after the last of them has
+   * arrived — by the time the player is deep into their own upgrades, the farms
+   * either side of them have visibly filled out too.
+   */
+  private setGardenLevels(level: number) {
+    let changed = false
+    this.all.forEach((nb, i) => {
+      const since = level - (3 + 2 * i)
+      const grown = Math.max(1, Math.min(3, 1 + Math.floor(since / 4)))
+      if (grown !== nb.gardenLevel) {
+        nb.gardenLevel = grown
+        changed = true
+      }
+    })
+    return changed
+  }
+
   /** Redraw the shared instanced batches from the neighbours who have arrived. */
   private rebuildBatches() {
     for (const mesh of this.batchMeshes) this.group.remove(mesh)
@@ -1099,7 +1190,25 @@ export class Neighbourhood {
       this.group.add(mesh)
     }
     add(models.plotFence, this.batches.fences, cut.fences)
-    add(models.plotTray, this.batches.trays, cut.trays)
+
+    /*
+     * The beds are filtered, not sliced.
+     *
+     * Everything else on a neighbour's farm arrives whole the day they move in,
+     * so a prefix of the batch is exactly right for it. Their beds do not: the
+     * garden grows outward a tier at a time, which means the visible set is
+     * "every tray whose owner is here *and* whose tier they have broken" —
+     * spread across the batch rather than sitting at the front of it.
+     */
+    const trays = this.batches.trays.filter((_, k) => {
+      const owner = this.batches.trayOwner[k]
+      return owner < this.arrived && this.batches.trayTier[k] <= this.all[owner].gardenLevel
+    })
+    if (trays.length > 0) {
+      const mesh = instanceModel(models.plotTray, trays)
+      this.batchMeshes.push(mesh)
+      this.group.add(mesh)
+    }
     add(models.bench, this.batches.benches, cut.benches)
     add(models.cottage, this.batches.cottages, cut.cottages)
     add(models.scarecrow, this.batches.scarecrows, cut.scarecrows)
