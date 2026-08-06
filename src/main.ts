@@ -768,6 +768,12 @@ const landMapUi = new LandMapUi({
   price: () => worldPlots.nextPrice,
   playerPos: () => player.position,
   farmCentre: () => FARM_CENTRE,
+  // Two fixtures the player already navigates by on the ground, so the chart
+  // can be read against what they remember rather than only against north.
+  landmarks: () => [
+    { x: SHOP_POS.x, z: SHOP_POS.z, icon: 'shop', emoji: '🛒', label: 'Market' },
+    { x: BARN_POS.x, z: BARN_POS.z, icon: 'barn', emoji: '🛖', label: 'Barn' },
+  ],
   buy: (id) => {
     const cost = worldPlots.nextPrice
     if (!worldPlots.canBuy(id, FARM_CENTRE)) {
@@ -964,6 +970,8 @@ hood.onArrivalStart = (nb, at) => {
 let pendingArrival: Neighbour | null = null
 /** A fixed spot waiting to be filmed — the crate, and anything like it later. */
 let pendingShot: THREE.Vector3 | null = null
+/** How far back that spot wants to be held from. Places are not all one size. */
+let pendingShotDistance = ARRIVAL_DISTANCE
 
 function playArrivalShot() {
   if (modalOpen()) return
@@ -971,12 +979,14 @@ function playArrivalShot() {
   // A place rather than a person: same hold, nothing to follow.
   if (pendingShot && !pendingArrival) {
     const at = pendingShot
+    const distance = pendingShotDistance
     pendingShot = null
+    pendingShotDistance = ARRIVAL_DISTANCE
     arrivalTimer = ARRIVAL_SECONDS
     arrivalAt.copy(at)
     arrivalPrevPitch = engine.pitch
     arrivalPrevYaw = engine.targetYaw
-    engine.setCinematicDistance(ARRIVAL_DISTANCE)
+    engine.setCinematicDistance(distance)
     arrivalYaw = Math.atan2(-at.x, -at.z)
     document.body.classList.add('cinematic')
     return
@@ -2052,6 +2062,14 @@ function syncStoreCrate() {
      * shop until somebody says so.
      */
     pendingShot = world.storeCratePos.clone()
+    /*
+     * A quarter wider than a person gets.
+     *
+     * The crate is small and the point of the shot is not the box — it is *the
+     * beach behind the farm*, which is where the player has to walk and which
+     * the tighter framing cropped down to a strip of sand.
+     */
+    pendingShotDistance = ARRIVAL_DISTANCE * 1.25
     hud.eventBanner('shop', '📦', 'A trader’s crate!', 'Washed up behind the farm — trade seeds here until the stall opens')
     audio.play('rare')
   } else hud.toast('📦 The crate is gone — the stall has opened', 'info')

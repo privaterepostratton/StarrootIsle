@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>land office harness</title>
+<!--
+  Static harness for the land office.
+
+  The game itself cannot be screenshotted headless — it runs a requestAnimationFrame
+  loop, so Chrome's virtual clock never goes idle. This page mounts the real panel
+  against the real stylesheet with stub actions, which does settle, so "what does
+  the map actually look like at this viewport" becomes a question with a picture
+  for an answer.
+
+  Dev-only; not referenced from the game.
+-->
+<link rel="stylesheet" href="/src/ui/styles.css">
+<style>html,body{margin:0;height:100%;background:#3d6b34}#ui{position:fixed;inset:0;pointer-events:none}</style>
+<div id="ui"></div>
+<script type="module">
+  import * as THREE from 'three'
+  import { LandMapUi } from '/src/ui/land-map.ts'
+  import { WORLD_PLOTS } from '/src/game/world-plots.ts'
+
+  const owned = new Set([0, 3])
+  const reach = new Set([1, 5, 6])
+  const farm = new THREE.Vector3(-8, 0, -4)
+  let coins = 12400
+
+  const ui = new LandMapUi({
+    survey: () =>
+      WORLD_PLOTS.map((plot) => ({
+        plot,
+        owned: owned.has(plot.id),
+        buyable: !owned.has(plot.id) && reach.has(plot.id),
+        distance: Math.hypot(plot.x - farm.x, plot.z - farm.z),
+      })),
+    coins: () => coins,
+    price: () => 2500,
+    buy: (id) => { coins -= 2500; owned.add(id) },
+    playerPos: () => new THREE.Vector3(-2, 0, 6),
+    farmCentre: () => farm,
+    landmarks: () => [
+      { x: 4.5, z: -8, icon: 'shop', emoji: '🛒', label: 'Market' },
+      { x: 24, z: -13, icon: 'barn', emoji: '🛖', label: 'Barn' },
+    ],
+  })
+  ui.show()
+  // Preselect on demand: ?sel=5 shows the deed card and the route line.
+  const sel = new URLSearchParams(location.search).get('sel')
+  if (sel !== null) ui.root?.querySelector(`.lp[data-id="${sel}"]`)?.click()
+  window.__land = ui
+</script>

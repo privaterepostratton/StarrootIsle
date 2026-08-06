@@ -5285,11 +5285,15 @@ body:has(#devPanel:not([style*='display: none'])) #help {
 
 /* ---------- land office ---------- */
 /*
- * A map beside a readout. The canvas has a fixed backing-store size and is
- * scaled by CSS, so it stays legible on a phone without re-sampling the
- * heightfield at every viewport — the click handler converts back through the
- * element's own rect for exactly that reason.
+ * A surveyor's chart in a frame, with a deed card beside it.
+ *
+ * The terrain is a canvas with a fixed backing store, scaled by CSS so it stays
+ * legible on a phone without re-sampling the heightfield at every viewport.
+ * Everything laid over it — parcels, pins, the route line — is DOM positioned in
+ * percent against the same square, so the two layers cannot drift apart at any
+ * size, and the interactive parts get hover, focus and animation for free.
  */
+
 /*
  * Full screen, unlike every other panel.
  *
@@ -5298,37 +5302,6 @@ body:has(#devPanel:not([style*='display: none'])) #help {
  * is that parcel, what is between here and it, what is left. Shrunk into a
  * dialog the map is a thumbnail, and a thumbnail cannot answer any of those.
  */
-/*
- * The header has to be restated at full screen.
- *
- * The shared panel head is sized for a dialog a few hundred pixels wide — at
- * full width its close button collapses into the corner and the title floats
- * with nothing to sit against. A full-screen view wants a proper bar.
- */
-#landMap .panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: clamp(10px, 1.6vh, 18px) clamp(14px, 3vw, 40px);
-  flex: 0 0 auto;
-}
-
-#landMap .panel-head h2 {
-  font-size: clamp(20px, 2.6vw, 28px);
-  margin: 0;
-}
-
-#landMap .panel-close {
-  position: static;
-  width: 44px;
-  height: 44px;
-  min-width: 44px;
-  font-size: 20px;
-  line-height: 1;
-  flex: 0 0 auto;
-}
-
 #landMap {
   position: fixed;
   inset: 0;
@@ -5360,12 +5333,126 @@ body:has(#devPanel:not([style*='display: none'])) #help {
   border: 0;
   display: flex;
   flex-direction: column;
+  /* Darker at the edges than a card is, because it *is* the screen: the
+     vignette is what keeps a full-bleed sheet of parchment from glaring. */
+  background-image:
+    radial-gradient(120% 90% at 50% 40%, rgba(255, 252, 244, 0.96) 0%, rgba(238, 219, 182, 0.95) 58%, rgba(196, 163, 116, 0.97) 100%),
+    url('/ui/parchment.png');
+  background-size: auto, 260px 260px;
+}
+
+/*
+ * The one rule the close button depended on.
+ *
+ * `.hidden` has no global definition in this stylesheet — every panel spells out
+ * its own `#id.hidden`. Without this line the id selector above kept winning on
+ * specificity, `hide()` set a class that changed nothing, and the ✕ looked
+ * broken while doing exactly what it was told.
+ */
+#landMap.hidden {
+  display: none;
+}
+
+/*
+ * The header has to be restated at full screen.
+ *
+ * The shared panel head is sized for a dialog a few hundred pixels wide — at
+ * full width its close button collapses into the corner and the title floats
+ * with nothing to sit against. A full-screen view wants a proper plank.
+ */
+#landMap .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex: 0 0 auto;
+  height: clamp(54px, 8vh, 68px);
+  padding: 0 clamp(10px, 2.4vw, 30px);
+  border: 12px solid transparent;
+  border-image: url('/ui/panel-header.png') 30 fill stretch;
+}
+
+#landMap .panel-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: clamp(19px, 2.4vw, 30px);
+  line-height: 1;
+  color: #fffaf0;
+  text-shadow:
+    -2px -2px 0 rgba(74, 42, 16, 0.9),
+    2px -2px 0 rgba(74, 42, 16, 0.9),
+    -2px 2px 0 rgba(74, 42, 16, 0.9),
+    2px 2px 0 rgba(74, 42, 16, 0.9),
+    0 2px 0 rgba(40, 22, 8, 0.55);
+}
+
+.lm-crest {
+  font-size: 0.95em;
+  filter: drop-shadow(0 2px 0 rgba(40, 22, 8, 0.5));
+}
+
+.lm-head-end {
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 1.4vw, 16px);
+}
+
+/* What the player can spend, next to the prices they are reading. */
+.lm-wallet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px 0 10px;
+  border-radius: 999px;
+  font-size: clamp(14px, 1.7vw, 18px);
+  font-weight: 900;
+  color: #4a3520;
+  background: linear-gradient(180deg, #fff6df, #f0d9a4);
+  border: 2px solid rgba(122, 82, 36, 0.55);
+  box-shadow: 0 3px 0 rgba(90, 58, 22, 0.4), inset 0 2px 0 rgba(255, 255, 255, 0.8);
+}
+
+.lm-wallet .inline-ico {
+  width: 20px;
+  height: 20px;
+}
+
+#landMap .panel-close {
+  position: static;
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  flex: 0 0 auto;
+  border: none;
+  background-color: transparent;
+  background-image: url('/ui/btn-close.png');
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-radius: 50%;
+  font-size: 0;
+  color: transparent;
+  cursor: pointer;
+  filter: drop-shadow(0 3px 0 rgba(80, 24, 16, 0.35));
+  transition: transform 0.12s var(--spring), filter 0.12s ease;
+}
+
+#landMap .panel-close:hover {
+  transform: translateY(-2px) rotate(90deg);
+  filter: brightness(1.08) drop-shadow(0 4px 0 rgba(80, 24, 16, 0.35));
+}
+
+#landMap .panel-close:active {
+  transform: translateY(2px) rotate(90deg);
 }
 
 .land-body {
   display: flex;
-  gap: clamp(12px, 2vw, 28px);
-  padding: clamp(8px, 1.5vh, 18px) clamp(12px, 3vw, 40px) clamp(12px, 2vh, 24px);
+  gap: clamp(12px, 2vw, 30px);
+  padding: clamp(8px, 1.6vh, 20px) clamp(12px, 2.6vw, 40px) clamp(12px, 2vh, 26px);
   align-items: center;
   justify-content: center;
   flex: 1 1 auto;
@@ -5373,27 +5460,533 @@ body:has(#devPanel:not([style*='display: none'])) #help {
   flex-wrap: wrap;
 }
 
+/* --- the frame ------------------------------------------------------------ */
+
+/*
+ * Wood around the chart, and studs in the corners.
+ *
+ * The map used to be a canvas with a 3px gold outline, which read as a widget.
+ * A frame with weight to it says the thing inside is a document — and the same
+ * hard ledge shadow every card in this game has keeps it in the same world.
+ */
+.land-plate {
+  position: relative;
+  width: min(74vh, 56vw);
+  aspect-ratio: 1;
+  padding: clamp(7px, 1.1vh, 13px);
+  border-radius: 24px;
+  background-image:
+    radial-gradient(circle at 16px 16px, rgba(255, 240, 205, 0.95) 0 2.5px, rgba(120, 80, 40, 0.55) 3px, transparent 3.6px),
+    radial-gradient(circle at calc(100% - 16px) 16px, rgba(255, 240, 205, 0.95) 0 2.5px, rgba(120, 80, 40, 0.55) 3px, transparent 3.6px),
+    radial-gradient(circle at 16px calc(100% - 16px), rgba(255, 240, 205, 0.95) 0 2.5px, rgba(120, 80, 40, 0.55) 3px, transparent 3.6px),
+    radial-gradient(circle at calc(100% - 16px) calc(100% - 16px), rgba(255, 240, 205, 0.95) 0 2.5px, rgba(120, 80, 40, 0.55) 3px, transparent 3.6px),
+    linear-gradient(155deg, #d8ac68 0%, #b1804a 38%, #8a6042 70%, #6d472c 100%);
+  box-shadow:
+    0 10px 0 rgba(92, 60, 28, 0.4),
+    0 26px 46px rgba(46, 30, 12, 0.45),
+    inset 0 2px 0 rgba(255, 236, 198, 0.55),
+    inset 0 -3px 0 rgba(70, 42, 18, 0.4);
+  flex: 0 0 auto;
+}
+
+.land-frame {
+  position: absolute;
+  inset: clamp(7px, 1.1vh, 13px);
+  border-radius: 15px;
+  overflow: hidden;
+  cursor: crosshair;
+  box-shadow: inset 0 0 0 2px rgba(64, 40, 16, 0.55);
+}
+
+/* Vignette and a printed lip, over the paint but under the markers. */
+.land-frame::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 34px rgba(58, 38, 14, 0.42),
+    inset 0 0 90px rgba(58, 38, 14, 0.22),
+    inset 0 2px 0 rgba(255, 255, 255, 0.18);
+}
+
 .land-canvas {
-  /* Square, and as big as the shorter axis allows. */
-  width: min(86vh, 62vw);
-  height: min(86vh, 62vw);
-  border-radius: 12px;
-  border: 3px solid rgba(212, 168, 68, 0.75);
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   background: #2b3a2b;
+}
+
+/* The paper the chart is printed on, laid over the paint. */
+.land-grain {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: url('/ui/parchment.png') repeat;
+  background-size: 200px 200px;
+  mix-blend-mode: multiply;
+  opacity: 0.26;
+}
+
+/* --- the route ------------------------------------------------------------ */
+
+.land-route {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.land-route path {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.route-shadow {
+  stroke: rgba(48, 30, 10, 0.5);
+  stroke-width: 1.5;
+}
+
+.route-line {
+  stroke: #ffe08a;
+  stroke-width: 0.8;
+  stroke-dasharray: 2.6 2.2;
+  animation: landDash 1.1s linear infinite;
+}
+
+@keyframes landDash {
+  to { stroke-dashoffset: -4.8; }
+}
+
+/* --- markers -------------------------------------------------------------- */
+
+.land-pins {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.land-pins > * {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+/*
+ * Three states, three weights.
+ *
+ * Owned is quiet and green — it is yours and needs no attention. For sale is the
+ * only thing on this map the player can act on, so it is the only thing that
+ * glows and moves. Out of reach is dim and hatched: still drawn, so the shape of
+ * what is coming can be read, but plainly not an option yet.
+ */
+.lp {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 14%;
   cursor: pointer;
+  pointer-events: auto;
+  transition: transform 0.16s var(--spring), filter 0.16s ease;
+}
+
+.lp-face {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid;
+}
+
+.lp-num {
+  position: relative;
+  font-weight: 900;
+  font-size: clamp(11px, 1.6vh, 17px);
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(20, 12, 0, 0.85), 0 0 8px rgba(0, 0, 0, 0.5);
+}
+
+.lp:hover,
+.lp:focus-visible {
+  transform: translate(-50%, -50%) scale(1.09);
+  z-index: 2;
+  outline: none;
+}
+
+.lp-owned .lp-face {
+  background: linear-gradient(180deg, rgba(150, 232, 128, 0.42), rgba(96, 186, 84, 0.32));
+  border-color: rgba(214, 255, 196, 0.92);
+  box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.25), 0 3px 10px rgba(20, 40, 12, 0.4);
+}
+
+.lp-sale .lp-face {
+  background: linear-gradient(180deg, rgba(255, 232, 150, 0.55), rgba(250, 190, 62, 0.38));
+  border-width: 3px;
+  border-color: #ffd464;
+  box-shadow:
+    inset 0 0 14px rgba(255, 255, 255, 0.4),
+    0 0 0 2px rgba(112, 66, 12, 0.35),
+    0 0 22px rgba(255, 196, 64, 0.75);
+  animation: lpPulse 2.1s ease-in-out infinite;
+}
+
+@keyframes lpPulse {
+  0%, 100% { box-shadow: inset 0 0 14px rgba(255, 255, 255, 0.4), 0 0 0 2px rgba(112, 66, 12, 0.35), 0 0 14px rgba(255, 196, 64, 0.5); }
+  50% { box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.55), 0 0 0 2px rgba(112, 66, 12, 0.35), 0 0 30px rgba(255, 206, 88, 0.95); }
+}
+
+.lp-locked .lp-face {
+  background:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.07) 0 5px, transparent 5px 10px),
+    rgba(24, 26, 22, 0.48);
+  border-color: rgba(255, 255, 255, 0.32);
+  border-style: dashed;
+}
+
+.lp-locked .lp-num {
+  opacity: 0.65;
+}
+
+/* The chosen parcel steps forward and gets a white ring — the same ring the
+   route line lands on, so the two read as one answer. */
+.lp.sel {
+  transform: translate(-50%, -50%) scale(1.12);
+  z-index: 3;
+}
+
+.lp.sel .lp-face {
+  border-color: #fffaf0;
+  box-shadow: 0 0 0 3px rgba(74, 42, 16, 0.45), 0 0 26px rgba(255, 255, 255, 0.6);
+  animation: none;
+}
+
+/* Price on the map, not only in the card: what a parcel costs is half of
+   deciding which one to walk to. */
+.lp-tag {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px 3px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-size: clamp(10px, 1.25vh, 13px);
+  font-weight: 900;
+  color: #4a3520;
+  background: linear-gradient(180deg, #fff3d4, #f4cf82);
+  border: 1.5px solid rgba(112, 70, 24, 0.6);
+  box-shadow: 0 2px 0 rgba(80, 50, 16, 0.4);
+}
+
+.lp-coin {
+  width: 13px;
+  height: 13px;
+}
+
+.lp-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 900;
+  color: #2f5f22;
+  background: linear-gradient(180deg, #ffffff, #d9f2c8);
+  border: 1.5px solid rgba(60, 110, 40, 0.6);
+  box-shadow: 0 2px 0 rgba(40, 70, 24, 0.35);
+}
+
+.lp-locked .lp-badge {
+  background: linear-gradient(180deg, #f2ece0, #cdc3ae);
+  border-color: rgba(70, 60, 44, 0.6);
+}
+
+.lp-lock {
+  width: 13px;
+  height: 13px;
   display: block;
 }
 
-.land-info {
-  flex: 0 1 320px;
-  min-width: 220px;
+/* Landmarks: the village fixtures the player already knows by sight. */
+.land-mark,
+.land-home {
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.land-mark-ico,
+.land-home-ico {
+  display: grid;
+  place-items: center;
+  width: clamp(22px, 3.4vh, 34px);
+  height: clamp(22px, 3.4vh, 34px);
+  border-radius: 50%;
+  font-size: clamp(13px, 2vh, 19px);
+  background: radial-gradient(circle at 50% 35%, rgba(255, 250, 236, 0.95), rgba(240, 220, 178, 0.9));
+  border: 2px solid rgba(96, 62, 26, 0.75);
+  box-shadow: 0 3px 0 rgba(60, 38, 14, 0.45), 0 6px 12px rgba(30, 20, 6, 0.35);
+}
+
+.land-home-ico {
+  background: radial-gradient(circle at 50% 35%, #fff6dc, #ffd478);
+  border-color: rgba(150, 92, 20, 0.85);
+}
+
+.land-mark-img {
+  width: 70%;
+  height: 70%;
+  object-fit: contain;
+}
+
+.land-mark-label {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: clamp(9px, 1.15vh, 12px);
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  color: #fff8e6;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.6);
+}
+
+/* You are here. */
+.land-you {
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.land-you-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2.5px solid #e8624c;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.land-you-ring {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  animation: landPing 1.9s ease-out infinite;
+}
+
+@keyframes landPing {
+  0% { transform: scale(1); opacity: 0.9; }
+  70% { transform: scale(3.4); opacity: 0; }
+  100% { transform: scale(3.4); opacity: 0; }
+}
+
+/* --- chart furniture ------------------------------------------------------ */
+
+.land-compass {
+  position: absolute;
+  top: 3.2%;
+  right: 3.2%;
+  z-index: 5;
+  width: clamp(46px, 11%, 92px);
+  height: auto;
+  pointer-events: none;
+  opacity: 0.9;
+  filter: drop-shadow(0 2px 3px rgba(20, 12, 0, 0.55));
+}
+
+.cp-ring {
+  fill: rgba(255, 248, 230, 0.14);
+  stroke: rgba(255, 248, 230, 0.85);
+  stroke-width: 2;
+}
+
+.cp-ring-thin {
+  fill: none;
+  stroke-width: 1;
+  stroke: rgba(255, 248, 230, 0.5);
+}
+
+.cp-star path {
+  fill: rgba(255, 250, 240, 0.9);
+  stroke: rgba(70, 44, 16, 0.6);
+  stroke-width: 1;
+}
+
+.cp-star .cp-n {
+  fill: #ffd464;
+}
+
+.cp-star .cp-minor {
+  fill: rgba(255, 250, 240, 0.55);
+  stroke-width: 0.6;
+}
+
+.cp-label {
+  fill: #fff8e6;
+  font-size: 13px;
+  font-weight: 900;
+  text-anchor: middle;
+  dominant-baseline: hanging;
+  paint-order: stroke;
+  stroke: rgba(60, 36, 12, 0.8);
+  stroke-width: 3;
+}
+
+/* 20 world metres, which is 20/130 of the view. */
+.land-scale {
+  position: absolute;
+  left: 3.2%;
+  bottom: 3.6%;
+  z-index: 5;
+  width: 15.38%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.land-scale-bar {
+  width: 100%;
+  height: 7px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(90deg, #fff8e6 0 25%, #4a3520 25% 50%);
+  border: 1.5px solid rgba(255, 248, 230, 0.9);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.land-scale b {
+  font-size: clamp(9px, 1.15vh, 12px);
+  color: #fff8e6;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+/* --- the deed card -------------------------------------------------------- */
+
+.land-side {
+  flex: 0 1 340px;
+  min-width: 240px;
   max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.lm-card {
+  padding: var(--s4);
+  border-radius: var(--r-lg);
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(180deg, rgba(255, 253, 247, 0.96), rgba(243, 229, 198, 0.94)),
+    url('/ui/parchment.png');
+  background-size: auto, 200px 200px;
+  border: 3px solid #b0854e;
+  box-shadow: 0 6px 0 rgba(110, 78, 40, 0.32), 0 16px 28px rgba(52, 34, 12, 0.28), inset 0 2px 0 rgba(255, 255, 255, 0.8);
+  animation: landCardIn 0.24s var(--spring);
+}
+
+@keyframes landCardIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.lm-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+
+.lm-card-head > div {
+  min-width: 0;
+}
+
+/* The parcel's number, as it appears on the map — the card and the square you
+   tapped have to be obviously the same thing. */
+.lm-card-num {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  font-size: 20px;
+  font-weight: 900;
+  color: #4a3520;
+  background: linear-gradient(180deg, #ffe9a8, #f0c264);
+  border: 2px solid rgba(122, 82, 36, 0.6);
+  box-shadow: 0 3px 0 rgba(90, 58, 22, 0.35), inset 0 2px 0 rgba(255, 255, 255, 0.7);
+}
+
+.lm-card-owned .lm-card-num {
+  background: linear-gradient(180deg, #d6f5c0, #96d17a);
+}
+
+.lm-card-locked .lm-card-num {
+  background: linear-gradient(180deg, #ece4d6, #c9bda6);
 }
 
 .land-info h3 {
-  margin: 0 0 4px;
+  margin: 0 0 2px;
   font-size: clamp(17px, 2vw, 22px);
   color: var(--ink);
+}
+
+.lm-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 var(--s3);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: rgba(160, 124, 70, 0.28);
+}
+
+.lm-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: 7px 10px;
+  background: rgba(255, 252, 244, 0.75);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.lm-stat b {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.lm-price-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  margin-bottom: var(--s3);
+  border-radius: var(--r-sm);
+  background: linear-gradient(180deg, rgba(255, 240, 200, 0.9), rgba(246, 220, 160, 0.9));
+  border: 2px solid rgba(180, 138, 62, 0.5);
 }
 
 .land-hint {
@@ -5405,26 +5998,131 @@ body:has(#devPanel:not([style*='display: none'])) #help {
 .land-sub {
   font-size: 13px;
   color: var(--ink-soft);
-  margin: 0 0 8px;
-  line-height: 1.4;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.lm-card-empty .land-sub {
+  margin-bottom: 4px;
+}
+
+.lm-progress {
+  margin-bottom: var(--s3);
+}
+
+.lm-tally {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: var(--s3);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: rgba(160, 124, 70, 0.28);
+}
+
+.lm-tally-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  background: rgba(255, 252, 244, 0.75);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.lm-tally-row b {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.lm-tally-price {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.lm-tally-price .inline-ico {
+  width: 15px;
+  height: 15px;
+}
+
+.lm-swatch {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 4px;
+  border: 2px solid;
+}
+
+.lm-row-owned .lm-swatch {
+  background: rgba(126, 208, 104, 0.6);
+  border-color: #5fa93c;
+}
+
+.lm-row-sale .lm-swatch {
+  background: rgba(255, 212, 100, 0.85);
+  border-color: #d99a1e;
+}
+
+.lm-row-locked .lm-swatch {
+  background: rgba(60, 60, 56, 0.5);
+  border-color: rgba(60, 60, 56, 0.75);
+  border-style: dashed;
+}
+
+.lm-progress span {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.lm-progress span b {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.lm-progress-bar {
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(122, 97, 68, 0.22);
+  border: 2px solid rgba(122, 97, 68, 0.35);
+  overflow: hidden;
+}
+
+.lm-progress-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #9ee06f, #5fa93c);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45);
+  transition: width 0.4s var(--spring);
 }
 
 .land-price {
   font-size: clamp(20px, 2.4vw, 26px);
   font-weight: 900;
   color: var(--ink);
-  margin: 6px 0 10px;
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
 .land-owned {
-  font-weight: 800;
+  margin: 0;
+  font-weight: 900;
   color: #3f7d2f;
 }
 
 .land-locked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
   font-size: 13px;
   color: #a2661f;
   line-height: 1.4;
@@ -5445,22 +6143,94 @@ body:has(#devPanel:not([style*='display: none'])) #help {
   background: none;
   cursor: pointer;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
+  transition: transform 0.12s var(--spring), filter 0.12s ease;
+}
+
+.land-buy:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.06);
+}
+
+.land-buy:active {
+  transform: translateY(2px);
 }
 
 .land-buy.disabled {
   filter: grayscale(0.7) brightness(0.9);
   cursor: default;
+  transform: none;
 }
 
+/* --- legend --------------------------------------------------------------- */
+
+.land-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  justify-content: center;
+}
+
+.lg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 5px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--ink);
+  background: rgba(255, 251, 240, 0.8);
+  border: 2px solid rgba(160, 124, 70, 0.45);
+}
+
+.lg::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 2px solid;
+}
+
+.lg-owned::before {
+  background: rgba(126, 208, 104, 0.6);
+  border-color: #5fa93c;
+}
+
+.lg-sale::before {
+  background: rgba(255, 212, 100, 0.75);
+  border-color: #d99a1e;
+}
+
+.lg-locked::before {
+  background: rgba(60, 60, 56, 0.55);
+  border-color: rgba(60, 60, 56, 0.8);
+  border-style: dashed;
+}
+
+/* --- portrait ------------------------------------------------------------- */
 
 @media (max-aspect-ratio: 1/1) {
-  .land-canvas {
-    width: min(92vw, 60vh);
-    height: min(92vw, 60vh);
+  .land-plate {
+    width: min(92vw, 54vh);
   }
 
-  .land-info {
+  .land-side {
     flex: 1 1 100%;
     max-width: none;
+  }
+
+  .lm-card {
+    padding: var(--s3);
+  }
+}
+
+/* Short landscape phones: the card has to give the map its height back. */
+@media (max-height: 480px) and (min-aspect-ratio: 1/1) {
+  .land-plate {
+    width: min(78vh, 48vw);
+  }
+
+  .land-legend {
+    display: none;
   }
 }
