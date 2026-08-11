@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { mat, ball, cyl, block, PALETTE } from './style'
+import { asset } from '../core/assets'
 import type { AnimalSpecies } from '../game/animals'
 
 /**
@@ -302,23 +303,116 @@ export function createAnimalModel(species: AnimalSpecies): AnimalRig {
   }
 }
 
-/** Floating bubble showing that a product is ready to collect. */
-export function createProductBubble(color: number): THREE.Group {
-  const g = new THREE.Group()
+/**
+ * Billboard nameplate above an animal's head.
+ *
+ * Sprite (not a mesh) so it faces the camera without a per-frame quaternion
+ * copy. Painted once at create — names don't change after roll/restore.
+ */
+export function createNameTag(name: string): THREE.Sprite {
+  const fontSize = 44
+  const padX = 22
+  const padY = 10
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')!
+  const font = `800 ${fontSize}px Fredoka, "Segoe UI Rounded", "Segoe UI", system-ui, sans-serif`
+  ctx.font = font
+  const textW = Math.ceil(ctx.measureText(name).width)
+  canvas.width = Math.max(64, textW + padX * 2)
+  canvas.height = fontSize + padY * 2
 
-  const bubble = new THREE.Mesh(
-    new THREE.SphereGeometry(0.17, 12, 10),
-    new THREE.MeshBasicMaterial({ color: 0xfdf6e4, transparent: true, opacity: 0.92, depthWrite: false }),
-  )
-  g.add(bubble)
+  // Resize clears the context — set font again before drawing.
+  ctx.font = font
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const cx = canvas.width / 2
+  const cy = canvas.height / 2
+  const r = canvas.height / 2
 
-  const item = new THREE.Mesh(
-    new THREE.SphereGeometry(0.095, 10, 8),
-    new THREE.MeshBasicMaterial({ color, depthWrite: false }),
-  )
-  item.position.z = 0.06
-  g.add(item)
+  ctx.beginPath()
+  ctx.moveTo(r, 0)
+  ctx.lineTo(canvas.width - r, 0)
+  ctx.quadraticCurveTo(canvas.width, 0, canvas.width, r)
+  ctx.lineTo(canvas.width, canvas.height - r)
+  ctx.quadraticCurveTo(canvas.width, canvas.height, canvas.width - r, canvas.height)
+  ctx.lineTo(r, canvas.height)
+  ctx.quadraticCurveTo(0, canvas.height, 0, canvas.height - r)
+  ctx.lineTo(0, r)
+  ctx.quadraticCurveTo(0, 0, r, 0)
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(36, 24, 12, 0.78)'
+  ctx.fill()
 
-  g.renderOrder = 900
-  return g
+  ctx.lineWidth = 6
+  ctx.strokeStyle = 'rgba(36, 24, 12, 0.95)'
+  ctx.strokeText(name, cx, cy + 1)
+  ctx.fillStyle = '#fff6e4'
+  ctx.fillText(name, cx, cy + 1)
+
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 4
+  const material = new THREE.SpriteMaterial({
+    map: tex,
+    transparent: true,
+    depthWrite: false,
+  })
+  const sprite = new THREE.Sprite(material)
+  const worldH = 0.2
+  sprite.scale.set((canvas.width / canvas.height) * worldH, worldH, 1)
+  return sprite
+}
+
+/** Product icon id under /ui/icons — same art the HUD / animal card use. */
+function productIconId(species: AnimalSpecies): string {
+  switch (species) {
+    case 'chicken':
+      return 'egg'
+    case 'sheep':
+      return 'wool'
+    case 'cow':
+      return 'milk'
+    case 'pig':
+      return 'truffle'
+  }
+}
+
+const productIconTextures = new Map<string, THREE.Texture>()
+const productIconLoader = new THREE.TextureLoader()
+
+function productIconTexture(id: string, onReady: (tex: THREE.Texture) => void) {
+  const cached = productIconTextures.get(id)
+  if (cached) {
+    onReady(cached)
+    return
+  }
+  productIconLoader.load(asset(`ui/icons/${id}.png`), (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace
+    productIconTextures.set(id, tex)
+    onReady(tex)
+  })
+}
+
+/**
+ * Floating ready marker — the same 2D product icon as the UI, not a 3D prop.
+ *
+ * Sprite so it billboards on its own (no camera quaternion copy needed).
+ */
+export function createProductBubble(species: AnimalSpecies): THREE.Sprite {
+  const material = new THREE.SpriteMaterial({
+    transparent: true,
+    depthWrite: false,
+    opacity: 0,
+  })
+  const sprite = new THREE.Sprite(material)
+  const size = 0.34
+  sprite.scale.set(size, size, 1)
+  sprite.renderOrder = 900
+
+  productIconTexture(productIconId(species), (tex) => {
+    material.map = tex
+    material.opacity = 1
+    material.needsUpdate = true
+  })
+  return sprite
 }

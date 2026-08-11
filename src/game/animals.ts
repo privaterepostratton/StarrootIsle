@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { createAnimalModel, createProductBubble, type AnimalRig } from '../assets/animal'
+import { createAnimalModel, createNameTag, createProductBubble, type AnimalRig } from '../assets/animal'
 import { MINOR_LAYER } from '../assets/style'
 
 /**
@@ -242,7 +242,9 @@ export interface Animal {
   timer: number
   /** True when a product is waiting to be collected. */
   ready: boolean
-  bubble: THREE.Group | null
+  bubble: THREE.Sprite | null
+  /** Always-on nameplate above the head. */
+  nameTag: THREE.Sprite
   /** Animation phase, offset per animal so a flock isn't in lockstep. */
   phase: number
   /** Seconds to stand still before choosing a new target. */
@@ -283,9 +285,16 @@ export class Pasture {
     const pos = randomPointInPasture()
     const grade = opts.grade ?? rollAnimalGrade()
     const trait = opts.trait ?? rollAnimalTrait()
+    const name = opts.name ?? rollName()
+    const nameTag = createNameTag(name)
+    nameTag.layers.set(MINOR_LAYER)
+    // Sit just above the head; the ready product floats higher on the same mast.
+    nameTag.position.y = rig.productAnchor.position.y
+    rig.root.add(nameTag)
+
     const animal: Animal = {
       def,
-      name: opts.name ?? rollName(),
+      name,
       grade,
       trait,
       rig,
@@ -295,6 +304,7 @@ export class Pasture {
       timer: opts.timer ?? def.interval * trait.speed,
       ready: opts.ready ?? false,
       bubble: null,
+      nameTag,
       phase: Math.random() * Math.PI * 2,
       idle: Math.random() * 2,
     }
@@ -305,9 +315,11 @@ export class Pasture {
 
   private showBubble(animal: Animal) {
     if (animal.bubble) return
-    const bubble = createProductBubble(animal.def.product.color)
+    const bubble = createProductBubble(animal.def.id)
     bubble.layers.set(MINOR_LAYER)
     bubble.traverse((c) => c.layers.set(MINOR_LAYER))
+    // Clear of the nameplate so egg + "Cinder" don't stack on one spot.
+    bubble.position.y = 0.3
     animal.rig.productAnchor.add(bubble)
     animal.bubble = bubble
   }
@@ -388,7 +400,7 @@ export class Pasture {
     return this.animals.filter((a) => a.ready).length
   }
 
-  update(dt: number, elapsed: number, camera: THREE.Camera) {
+  update(dt: number, elapsed: number) {
     for (const animal of this.animals) {
       // --- production ------------------------------------------------------
       if (!animal.ready) {
@@ -442,11 +454,13 @@ export class Pasture {
         : Math.sin(elapsed * 0.8 + animal.phase) * 0.22 - 0.12
 
       // --- bubble ----------------------------------------------------------
+      // Sprite billboards on its own — same as the name tag.
       if (animal.bubble) {
-        animal.bubble.position.y = Math.sin(elapsed * 2 + animal.phase) * 0.07
-        // Billboard so the product icon always faces the player.
-        animal.bubble.quaternion.copy(camera.quaternion)
+        animal.bubble.position.y = 0.3 + Math.sin(elapsed * 2 + animal.phase) * 0.07
       }
+      // Keep name tags lightly buoyant.
+      animal.nameTag.position.y =
+        animal.rig.productAnchor.position.y + Math.sin(elapsed * 1.4 + animal.phase) * 0.02
     }
   }
 

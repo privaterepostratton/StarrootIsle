@@ -5,7 +5,7 @@ import { pickGround, pickObjects, rayDistanceToPoint } from './core/picking'
 import { worldClicksSwallowed, swallowBackdropClick } from './core/click-guard'
 import { loadGroundTextures, loadParticleTextures } from './assets/textures'
 import { loadSkyTexture, Skybox } from './assets/skybox'
-import { loadModels, loadFarmerModel, loadCreatureModel, loadShopkeeperModel, loadFarmgirlModel } from './assets/models'
+import { loadModels, loadFarmerModel, loadCreatureModel, loadShopkeeperModel, loadFarmgirlModel, loadNeighbourModel } from './assets/models'
 import { createWorld, SHOP_POS, FARM_CENTRE, BARN_POS } from './game/world'
 import { inPlayerPlot, SPAWN } from './game/village'
 import { GuidePath } from './game/guide-path'
@@ -129,7 +129,7 @@ window.__loading?.(0.15, 'Loading the valley…')
 // Both must be resident before anything is built: the world reads ground
 // textures at construction, and the farm reads the planter model the first time
 // a plot is tilled — including while deserialising a save.
-const [, , , , , , , skyTex] = await Promise.all([
+const [, , , , , , , , , , , , skyTex] = await Promise.all([
   loadGroundTextures(),
   loadParticleTextures(),
   loadModels(),
@@ -142,6 +142,16 @@ const [, , , , , , , skyTex] = await Promise.all([
   loadShopkeeperModel(PLAYER_HEIGHT * 1.15),
   // A shade shorter than the shopkeeper — she reads as the younger of the two.
   loadFarmgirlModel(PLAYER_HEIGHT * 1.02),
+  // Bramble's body — Meshy friendly farmer with idle/walk/run in one file.
+  loadNeighbourModel('friendly-farmer', 'models/friendly-farmer.glb', PLAYER_HEIGHT),
+  // Pippa's body — Meshy green-thumb gardener.
+  loadNeighbourModel('green-thumb', 'models/green-thumb.glb', PLAYER_HEIGHT),
+  // Juniper's body — Meshy harvest guardian.
+  loadNeighbourModel('harvest-guardian', 'models/harvest-guardian.glb', PLAYER_HEIGHT),
+  // Marlow's body.
+  loadNeighbourModel('nehuman', 'models/nehuman.glb', PLAYER_HEIGHT),
+  // Odette's body — walk/run only; idle is synthesized from the walk pose.
+  loadNeighbourModel('girlfarm', 'models/girlfarm.glb', PLAYER_HEIGHT),
   loadSkyTexture(), // → skyTex
 ])
 /*
@@ -2901,7 +2911,7 @@ function frame() {
     const fog = engine.scene.fog
     updateGrass(elapsed, fog && 'near' in fog ? fog.near : undefined)
   }
-  pasture.update(dt, elapsed, engine.camera)
+  pasture.update(dt, elapsed)
   // The card shows a countdown, so it repaints with the clock it is counting.
   animalInfoUi.tick()
   wildlife.update(dt, elapsed, player.position)

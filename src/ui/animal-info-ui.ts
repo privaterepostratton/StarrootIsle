@@ -27,6 +27,8 @@ export class AnimalInfoUi {
   private readonly root: HTMLDivElement
   private readonly body: HTMLDivElement
   private animal: Animal | null = null
+  /** Last readiness painted onto the collect button — avoids rewriting it every frame. */
+  private paintedReady: boolean | null = null
 
   open = false
 
@@ -54,6 +56,7 @@ export class AnimalInfoUi {
   show(animal: Animal) {
     this.animal = animal
     this.open = true
+    this.paintedReady = null
     this.root.classList.remove('hidden')
     Input.clear()
     this.render()
@@ -62,16 +65,16 @@ export class AnimalInfoUi {
   close() {
     this.open = false
     this.animal = null
+    this.paintedReady = null
     this.root.classList.add('hidden')
     Input.clear()
   }
 
   /**
-   * Repaint while open, so the countdown counts.
+   * Keep the countdown moving while open — without rebuilding the DOM.
    *
-   * Driven from the frame loop rather than a timer of its own: the card shows
-   * seconds remaining, and a number that only moves when something else happens
-   * to redraw it reads as a broken clock.
+   * A full `render()` every frame used to tear down the Collect button between
+   * mousedown and mouseup, so the click never fired and the button looked dead.
    */
   tick() {
     if (!this.open || !this.animal) return
@@ -80,7 +83,7 @@ export class AnimalInfoUi {
       this.close()
       return
     }
-    this.render()
+    this.updateLive()
   }
 
   private render() {
@@ -119,6 +122,7 @@ export class AnimalInfoUi {
 
     const collect = document.createElement('button')
     collect.className = 'buy'
+    collect.dataset.acCollect = '1'
     collect.disabled = !animal.ready
     collect.innerHTML = animal.ready
       ? `${iconHtml('harvest', '🧺', 'inline-ico')} Collect ${def.product.name}`
@@ -126,9 +130,39 @@ export class AnimalInfoUi {
     collect.addEventListener('click', () => {
       if (!this.animal?.ready) return
       this.onCollect(this.animal)
+      this.paintedReady = null
       this.render()
     })
     this.body.appendChild(collect)
+    this.paintedReady = animal.ready
+  }
+
+  /** Progress bar, countdown, and collect affordance — leaves the button node alone. */
+  private updateLive() {
+    const animal = this.animal
+    if (!animal) return
+
+    const interval = productInterval(animal)
+    const remaining = Math.max(0, animal.timer)
+    const progress = animal.ready ? 1 : Math.min(1, 1 - remaining / interval)
+
+    const bar = this.body.querySelector('.ac-bar i') as HTMLElement | null
+    if (bar) bar.style.width = `${Math.round(progress * 100)}%`
+
+    const when = this.body.querySelector('.ac-when') as HTMLElement | null
+    if (when) {
+      when.textContent = animal.ready ? 'Ready to collect' : `Ready in ${fmt(remaining)}`
+    }
+
+    if (this.paintedReady === animal.ready) return
+
+    const collect = this.body.querySelector('[data-ac-collect]') as HTMLButtonElement | null
+    if (!collect) return
+    collect.disabled = !animal.ready
+    collect.innerHTML = animal.ready
+      ? `${iconHtml('harvest', '🧺', 'inline-ico')} Collect ${animal.def.product.name}`
+      : 'Not ready yet'
+    this.paintedReady = animal.ready
   }
 }
 

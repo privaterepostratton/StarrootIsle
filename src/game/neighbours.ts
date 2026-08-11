@@ -13,6 +13,7 @@ import {
   modelGroup,
   fitToHeight,
   cloneFarmer,
+  cloneNeighbourModel,
   PROP_HEIGHT,
   type FarmerModel,
   type PropPlacement,
@@ -157,6 +158,11 @@ export interface NeighbourProfile {
   /** Crop they plant most often. */
   favourite: string
   level: number
+  /**
+   * Optional authored body id (see loadNeighbourModel). When set, this neighbour
+   * uses that GLB instead of a shirt-tinted clone of the shared villager.
+   */
+  model?: string
 }
 
 const PROFILES: NeighbourProfile[] = [
@@ -164,26 +170,31 @@ const PROFILES: NeighbourProfile[] = [
     id: 'pippa', name: 'Pippa', blurb: 'Swears by turnips. Will not be argued with.',
     wallColor: 0xf2e2c4, roofColor: 0xc4483c, shirt: 0xe0655c, hair: 0x8a4a2a,
     favourite: 'turnip', level: 4,
+    model: 'green-thumb',
   },
   {
     id: 'bramble', name: 'Bramble', blurb: 'Grows berries, eats most of them.',
     wallColor: 0xe4dcc8, roofColor: 0x4a7a8c, shirt: 0x5c9ce0, hair: 0x2f2b26,
     favourite: 'strawberry', level: 7,
+    model: 'friendly-farmer',
   },
   {
     id: 'juniper', name: 'Juniper', blurb: 'Corn. Rows and rows of corn.',
     wallColor: 0xf0e8d0, roofColor: 0x6b8f4a, shirt: 0x7ac45c, hair: 0xd8a53f,
     favourite: 'corn', level: 10,
+    model: 'harvest-guardian',
   },
   {
     id: 'marlow', name: 'Marlow', blurb: 'Claims to have grown a rainbow melon once.',
     wallColor: 0xe8dcd4, roofColor: 0x8a5a9c, shirt: 0xa06ff2, hair: 0x4a3a5a,
     favourite: 'melon', level: 13,
+    model: 'nehuman',
   },
   {
     id: 'odette', name: 'Odette', blurb: 'Only dragonfruit. Nothing else is worth the soil.',
     wallColor: 0xf4e0e8, roofColor: 0xc44a7a, shirt: 0xe8459b, hair: 0x2f2b26,
     favourite: 'dragonfruit', level: 17,
+    model: 'girlfarm',
   },
 ]
 
@@ -534,13 +545,16 @@ export class Neighbour {
 
     // --- the farmer -------------------------------------------------------
     /*
-     * The same authored rig as the player, tinted toward the profile's shirt
-     * colour. The tint is blended most of the way back to white before it
-     * multiplies the texture: at full saturation it dyes skin, hat and all,
-     * and the villager reads as a statue of paint rather than a person.
+     * Most neighbours are the shared villager, tinted toward the profile's
+     * shirt. A profile with `model` brings its own painted body instead — no
+     * shirt multiply, or the albedo (skin, hat, cloth) all dye the same colour.
      */
-    const tint = new THREE.Color(profile.shirt).lerp(new THREE.Color(0xffffff), 0.55)
-    this.farmer = cloneFarmer(tint.getHex())
+    if (profile.model) {
+      this.farmer = cloneNeighbourModel(profile.model)
+    } else {
+      const tint = new THREE.Color(profile.shirt).lerp(new THREE.Color(0xffffff), 0.55)
+      this.farmer = cloneFarmer(tint.getHex())
+    }
     this.mixer = new THREE.AnimationMixer(this.farmer.root)
     const action = (clip?: THREE.AnimationClip) => (clip ? this.mixer.clipAction(clip) : null)
     this.npcIdleAction = action(this.farmer.idle)

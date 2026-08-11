@@ -657,19 +657,19 @@ let shopkeeper: ShopkeeperModel | null = null
 let farmgirl: ShopkeeperModel | null = null
 
 /**
- * Load a standing villager: one idle body plus a wave clip from a second file.
+ * Load a standing villager: idle + wave.
  *
- * Shared because every greeter in the valley is authored the same way — a Meshy
- * biped exported once per animation — and the fix-ups below (emissive, shadow
- * flags, joint-measured scaling) are properties of that pipeline rather than of
- * any one character.
+ * `wavePath` is optional — newer Meshy packs ship idle/wave (and more) in one
+ * GLB. Older greeters still use a second clip-only file.
  */
-async function loadGreeter(bodyPath: string, wavePath: string, targetHeight: number): Promise<ShopkeeperModel> {
+async function loadGreeter(
+  bodyPath: string,
+  wavePath: string | null,
+  targetHeight: number,
+): Promise<ShopkeeperModel> {
   const loader = new GLTFLoader()
-  const [body, wave] = await Promise.all([
-    loader.loadAsync(asset(bodyPath)),
-    loader.loadAsync(asset(wavePath)),
-  ])
+  const body = await loader.loadAsync(asset(bodyPath))
+  const waveGltf = wavePath ? await loader.loadAsync(asset(wavePath)) : null
 
   const root = body.scene
   root.traverse((o) => {
@@ -701,11 +701,18 @@ async function loadGreeter(bodyPath: string, wavePath: string, targetHeight: num
   const span = (hi - lo) * HEAD_ALLOWANCE
   if (span > 1e-3) root.scale.multiplyScalar(targetHeight / span)
 
-  return { root, idle: body.animations[0], wave: wave.animations[0] }
+  const idle =
+    namedClip(body.animations, /idle/i) ?? body.animations[0]
+  const waveSource = waveGltf?.animations ?? body.animations
+  const wave =
+    namedClip(waveSource, /wave/i) ?? (waveGltf ? waveGltf.animations[0] : undefined)
+
+  return { root, idle, wave }
 }
 
 export async function loadShopkeeperModel(targetHeight: number): Promise<ShopkeeperModel> {
-  shopkeeper ??= await loadGreeter('models/shopkeeper.glb', 'models/shopkeeper-wave.glb', targetHeight)
+  // Packed Meshy export: Idle + Wave_for_Help in one file.
+  shopkeeper ??= await loadGreeter('models/iles2.glb', null, targetHeight)
   return shopkeeper
 }
 
@@ -715,7 +722,8 @@ export function getShopkeeperModel(): ShopkeeperModel {
 }
 
 export async function loadFarmgirlModel(targetHeight: number): Promise<ShopkeeperModel> {
-  farmgirl ??= await loadGreeter('models/farmgirl.glb', 'models/farmgirl-wave.glb', targetHeight)
+  // Packed Meshy export: Idle + Wave_for_Help in one file.
+  farmgirl ??= await loadGreeter('models/barn-npc.glb', null, targetHeight)
   return farmgirl
 }
 
@@ -835,6 +843,110 @@ export function getFarmgirlModel(): ShopkeeperModel {
  */
 export function cloneFarmer(tint?: number): FarmerModel {
   const src = getFarmerModel()
+  const root = cloneSkinned(src.root)
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh) return
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    if (tint !== undefined) {
+      const mat = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material).clone() as THREE.MeshStandardMaterial
+      mat.color = new THREE.Color(tint)
+      mesh.material = mat
+    }
+  })
+  return { root, idle: src.idle, walk: src.walk, run: src.run, pick: src.pick }
+}
+
+/**
+ * Extra neighbour bodies — same FarmerModel contract as the shared villager,
+ * but each id is its own Meshy export (often one GLB with idle/walk/run packed
+ * together, rather than four files).
+ */
+const neighbourBodies = new Map<string, FarmerModel>()
+
+/**
+ * Load a one-file neighbour body. Clips are picked by name from that file
+ * (Idle / Walking / Running), matching Meshy's merged-animation exports.
+ */
+export async function loadNeighbourModel(
+  id: string,
+  bodyPath: string,
+  targetHeight: number,
+): Promise<FarmerModel> {
+  const existing = neighbourBodies.get(id)
+  if (existing) return existing
+
+  const loader = new GLTFLoader()
+  const body = await loader.loadAsync(asset(bodyPath))
+  const root = body.scene
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh) return
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      makeLit(m as THREE.MeshStandardMaterial)
+    }
+  })
+
+  root.updateMatrixWorld(true)
+  let lo = Infinity
+  let hi = -Infinity
+  const p = new THREE.Vector3()
+  root.traverse((o) => {
+    if (!(o as THREE.Bone).isBone) return
+    o.getWorldPosition(p)
+    lo = Math.min(lo, p.y)
+    hi = Math.max(hi, p.y)
+  })
+  const HEAD_ALLOWANCE = 1.14
+  const span = (hi - lo) * HEAD_ALLOWANCE
+  if (span > 1e-3) root.scale.multiplyScalar(targetHeight / span)
+
+  const walk = namedClip(body.animations, /walk/i)
+  const idle = namedClip(body.animations, /idle/i) ?? (walk ? holdFirstFrame(walk, 'Idle') : undefined)
+  const model: FarmerModel = {
+    root,
+    idle,
+    walk,
+    run: namedClip(body.animations, /run/i),
+  }
+  neighbourBodies.set(id, model)
+  return model
+}
+
+/**
+ * A one-frame "Idle" built from the first pose of another clip.
+ *
+ * Some Meshy exports only ship Walking/Running. Neighbours still need something
+ * to loop while standing, and leaving the mixer empty drops them into bind pose.
+ */
+function holdFirstFrame(clip: THREE.AnimationClip, name: string): THREE.AnimationClip {
+  const tracks = clip.tracks.map((track) => {
+    const stride = track.getValueSize()
+    const head = Array.from(track.values.slice(0, stride))
+    const Track = track.constructor as new (n: string, times: number[], values: number[]) => THREE.KeyframeTrack
+    return new Track(track.name, [0, 1 / 30], [...head, ...head])
+  })
+  return new THREE.AnimationClip(name, 1 / 30, tracks)
+}
+
+export function getNeighbourModel(id: string): FarmerModel {
+  const src = neighbourBodies.get(id)
+  if (!src) throw new Error(`Neighbour model "${id}" not loaded — call loadNeighbourModel() first`)
+  return src
+}
+
+/**
+ * Independent skinned copy for one neighbour.
+ *
+ * No shirt tint by default: these bodies ship with their own painted outfit, and
+ * multiplying a colour over the whole material dyes skin and hat the same as
+ * cloth. Pass `tint` only when the export is meant to be recolored.
+ */
+export function cloneNeighbourModel(id: string, tint?: number): FarmerModel {
+  const src = getNeighbourModel(id)
   const root = cloneSkinned(src.root)
   root.traverse((o) => {
     const mesh = o as THREE.Mesh
