@@ -44,8 +44,10 @@ export const WATER_LEVEL = -0.9
 export const WALK_LIMIT = 106
 
 // --- palette -----------------------------------------------------------------
-/** Warm shore tint — must stay R/G-led over B so the sand-map mix recognises it. */
-const C_SAND = new THREE.Color(0xe8d09a)
+/** Warm shore tint — must stay R/G-led over B so the sand-map mix recognises it.
+ *  Isle-opening ivory (#EFE3C8, spec §1): sand must never read grey, and R−B
+ *  stays ≥ 0.15 in sRGB so the shader's sandW gate below still detects sand. */
+const C_SAND = new THREE.Color(0xefe3c8)
 const C_GRASS = new THREE.Color(0x7ec850)
 const C_GRASS_D = new THREE.Color(0x5fa83c)
 const C_ROCK = new THREE.Color(0xa8a9a2)

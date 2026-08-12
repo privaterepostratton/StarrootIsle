@@ -205,7 +205,67 @@ export const CROPS: CropDef[] = [
     fruitColor: 0xb8d8ff, leafColor: 0x4a5a8c, accentColor: 0xfff4c0,
     yield: 1, xp: 900, harvests: 9, regrowSeconds: 240, baseWeight: 0.3, unlockLevel: 18,
   },
+
+  /*
+   * --- opening crops -------------------------------------------------------
+   *
+   * The two species below exist for the Isle Opening (docs/ISLE-OPENING-SPEC.md)
+   * and sit outside the economy on purpose: they are never sold as seeds, never
+   * stocked (shop stock filters on unlockLevel, and 999 is past MAX_LEVEL
+   * forever), grant no XP (the opening grants zero XP by contract), and are
+   * exempted by id from the invariants in economy.test.ts — see
+   * OPENING_CROP_IDS below. They live in CROPS rather than a side table so the
+   * whole crop pipeline (planting, growth stages, save/restore, the bag UI's
+   * seed listing) works on them without special cases.
+   */
+  {
+    // The first thing the player ever grows. growSeconds 30 is the number that
+    // matters: GROW_TIME_SCALE is 3, so ripeness lands at 90 real seconds
+    // unwatered — the sundial-ring target the spec sets. Hardcoding 90 here
+    // would triple it. One harvest of one fruit, so six beds pay out exactly
+    // the spec's five ordinaries and one odd.
+    id: 'sun-tomato', name: 'Sun Tomato', emoji: '🍅', form: 'bush', fruit: 'ribbed',
+    seedCost: 0, sellPrice: 20, growSeconds: 30,
+    // Like the mystery sprout below, this species' plant is authored rather
+    // than massed from form/fruit: assets/opening/sun-tomato.ts builds all five
+    // states, and Farm swaps it in at the same seam. The field-scale bush the
+    // tables produce reads as a green nub at the opening's close camera, which
+    // is no use in a beat whose whole job is "pick the fruit".
+    //
+    // These colours are the model's, mirrored here so everything downstream
+    // that tints from the def — the produce doober, the bag icon, the harvest
+    // blip — matches the fruit the player just plucked. Deep and a touch
+    // under-saturated: the postfx grade multiplies saturation by 1.2 and dawn
+    // light warms it further, and the shop tomato's brighter red goes
+    // fluorescent under both.
+    fruitColor: 0xc4402c, leafColor: 0x4a9a3c, accentColor: 0x3f8434,
+    yield: 1, xp: 0, harvests: 1, regrowSeconds: 0, baseWeight: 0.3, unlockLevel: 999,
+  },
+  {
+    // The unmarked seed. Planted in session one, visibly does nothing (9999
+    // grow-seconds is ~8 hours real — it never ripens on its own; the first
+    // return flips it to 'emerged' by scripting progress, not by waiting).
+    // Its model does not come from the form/fruit tables at all: Farm swaps in
+    // createMysterySprout (assets/opening/mystery-sprout.ts) for this id, so
+    // the form/fruit/colour fields below are type-completeness, not art.
+    id: 'mystery-sprout', name: 'Mystery Sprout', emoji: '🌱', form: 'flower', fruit: 'bloom',
+    seedCost: 0, sellPrice: 1, growSeconds: 9999,
+    // Cool blue-violet, mirroring the model. The opening's world is entirely
+    // warm, so this is the only cold hue on screen — which is the point.
+    fruitColor: 0xa9a4d2, leafColor: 0x515a86, accentColor: 0xefe3c8,
+    yield: 1, xp: 0, harvests: 1, regrowSeconds: 0, baseWeight: 0.1, unlockLevel: 999,
+  },
 ]
+
+/**
+ * Crops that belong to the opening rather than to the economy.
+ *
+ * The economy tests skip these ids (their prices are placeholders, not tuning),
+ * and anything reasoning about the purchase ladder should too. Their
+ * unlockLevel of 999 already keeps them out of shop stock, trader pools and
+ * request pools, all of which filter on `unlockLevel <= playerLevel`.
+ */
+export const OPENING_CROP_IDS: ReadonlySet<string> = new Set(['sun-tomato', 'mystery-sprout'])
 
 export const CROP_BY_ID = new Map(CROPS.map((c) => [c.id, c]))
 

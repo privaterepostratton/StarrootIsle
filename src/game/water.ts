@@ -164,11 +164,22 @@ const fragmentShader = /* glsl */ `
      * it inside a couple of units puts that band right where the bed shelves,
      * which is where the eye already expects the change.
      */
-    vec3 waterColor = mix(uShallowColor, uDeepColor, clamp(vDepth / 2.0, 0.0, 1.0));
+    vec3 waterColor = mix(uShallowColor, uDeepColor, smoothstep(1.0, 2.6, vDepth));
 
-    // Translucency — how much of the bed survives. Beer-Lambert style falloff
-    // so shallow edges read as clear and deep centres as solid.
-    float absorb = 1.0 - exp(-vDepth * 0.85);
+    /*
+     * Translucency — how much of the bed survives.
+     *
+     * Beer-Lambert falloff, but a steep one. At the gentle rate this used to
+     * run, water under a metre of depth was mostly the sand bed showing
+     * through, so the whole shelf between the surf and the drop-off came out
+     * pale ivory-blue and the turquoise never appeared anywhere on screen:
+     * by the depth at which the body colour finally won, the band ramp above
+     * had already carried it halfway to azure. Absorbing faster hands the
+     * shelf to the shallow colour while it is still turquoise, which is what
+     * makes the band a band. The very edge still reads clear — at a couple of
+     * centimetres of depth this is near zero either way.
+     */
+    float absorb = 1.0 - exp(-vDepth * 2.6);
     vec3 body = mix(refracted, waterColor, absorb);
 
     /**
@@ -203,8 +214,12 @@ const fragmentShader = /* glsl */ `
      */
     float ripple = sin(vWorldPos.x * 3.4 + uTime * 1.8) * cos(vWorldPos.z * 3.1 - uTime * 1.4);
     float surf = 1.0 - smoothstep(0.0, depthPx * (5.0 + ripple * 2.2), vDepth);
-    float wash = 1.0 - smoothstep(0.0, depthPx * 17.0, vDepth);
-    color = mix(color, uFoamColor, clamp(surf * 0.85 + wash * 0.16, 0.0, 1.0));
+    // The wash was seventeen pixels of whitening laid over the shallows, which
+    // on a low beach camera (where fwidth is large) spread into the pale haze
+    // that was eating the turquoise. Narrower and brighter: a hot foam edge
+    // right on the waterline, and the colour left alone a pixel behind it.
+    float wash = 1.0 - smoothstep(0.0, depthPx * 8.0, vDepth);
+    color = mix(color, uFoamColor, clamp(surf * 0.95 + wash * 0.14, 0.0, 1.0));
 
     /*
      * Painted ripple streaks.
@@ -288,15 +303,31 @@ export class Water {
         uReflection: { value: this.reflectionRT.texture },
         uRefraction: { value: this.refractionRT.texture },
         uTextureMatrix: { value: this.textureMatrix },
-        uShallowColor: { value: new THREE.Color(0x7ae6ee) },
+        // Isle-opening palette (spec §1): banded turquoise shallows falling to
+        // azure. Greener and a touch darker than the old cyan so the band reads
+        // as tropical water against the ivory sand rather than as swimming-pool
+        // glass; authored slightly desaturated because the postfx grade
+        // multiplies saturation by 1.2.
+        uShallowColor: { value: new THREE.Color(0x3ec8c0) },
         // Not near-black. A deep tone this dark plus any reflection at all leaves
         // the middle of a lake reading as a hole rather than as water.
         //
-        // Pushed bluer and more saturated with the coast: a lake is small enough
-        // that its colour is mostly borrowed from the sky, but an open sea fills
-        // a third of the frame and has to carry a colour of its own.
-        uDeepColor: { value: new THREE.Color(0x1566d6) },
-        uFoamColor: { value: new THREE.Color(0xeaf7fb) },
+        // Azure rather than the old primary blue: a lake is small enough that
+        // its colour is mostly borrowed from the sky, but an open sea fills a
+        // third of the frame and has to carry a colour of its own — this one
+        // sits between the shallows and the horizon instead of shouting.
+        uDeepColor: { value: new THREE.Color(0x1b6fa8) },
+        /*
+         * Foam, warm rather than cold.
+         *
+         * A blue-white foam line is correct under a midday sky and wrong under
+         * this one: the opening is pinned just after dawn, everything on the
+         * beach is lit warm, and a cold rim on the waterline read as a chalk
+         * outline drawn between the sand and the sea. Warm off-white also
+         * gives the foam somewhere to be *brighter* than the ivory sand it
+         * breaks onto, which is what makes the edge legible.
+         */
+        uFoamColor: { value: new THREE.Color(0xf6f2e4) },
         uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
         uSunColor: { value: new THREE.Color(0xffffff) },
         uCameraPos: { value: new THREE.Vector3() },
@@ -311,7 +342,19 @@ export class Water {
          * a mirror at grazing angles, which is where a reflection is convincing
          * anyway.
          */
-        uReflectivity: { value: 0.55 },
+        /*
+         * Reflectivity down again, 0.55 → 0.34, for the opening's beach shot.
+         *
+         * From a low over-the-shoulder camera almost the entire sea is seen at
+         * a grazing angle, which is exactly where fresnel swings the surface
+         * toward mirror — so the frame filled with reflected dawn sky and the
+         * water came out pale white-blue near the shore and flat navy further
+         * out, with no palette of its own anywhere. The body colour has to win
+         * that argument: it is carrying the spec's turquoise-to-azure band, and
+         * a mirror carries nothing. Enough reflection is left that the surface
+         * still brightens toward the horizon and the sun path still lands.
+         */
+        uReflectivity: { value: 0.34 },
       },
     })
 

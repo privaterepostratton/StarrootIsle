@@ -2,7 +2,9 @@ import * as THREE from 'three'
 import { MINOR_LAYER } from '../assets/style'
 import { getGroundTextures, tiled } from '../assets/textures'
 import { getModels } from '../assets/models'
-import { createCropModel } from '../assets/crops'
+import { createCropModel, type CropModelOptions } from '../assets/crops'
+import { createMysterySprout } from '../assets/opening/mystery-sprout'
+import { createSunTomatoModel } from '../assets/opening/sun-tomato'
 import { createSparkle, type Sparkle } from '../assets/sparkle'
 import { createPlotMarkers, type PlotMarkerField } from '../assets/plot-marker'
 import { createPlotHighlight, type PlotHighlight } from '../assets/plot-highlight'
@@ -217,6 +219,14 @@ export interface Tile {
   pos: THREE.Vector3
 }
 
+/**
+ * The name the opening contract (docs/OPENING-CONTRACT.md §2.6) uses for a
+ * farm tile. The same object as `Tile` — the alias exists so opening modules
+ * can compile against the contract's vocabulary without this file renaming a
+ * type that every other caller already imports.
+ */
+export type FarmTile = Tile
+
 /** What the player can do to a tile right now. */
 export type TileAction = 'till' | 'plant' | 'water' | 'harvest' | 'none'
 
@@ -370,7 +380,7 @@ export class Farm {
           sprinkler: null,
           water: 0,
           soil: null,
-          pos: this.tileWorldPos(gx, gz),
+          pos: this.tileCentre(gx, gz),
         })
       }
     }
@@ -538,12 +548,25 @@ export class Farm {
     return tile.gz * GRID_W + tile.gx
   }
 
-  private tileWorldPos(gx: number, gz: number) {
+  /** Renamed from tileWorldPos: that name is now the public tile-centre query
+   *  the opening contract specifies (see tileWorldPos below). */
+  private tileCentre(gx: number, gz: number) {
     return new THREE.Vector3(
       this.origin.x + (gx - (GRID_W - 1) / 2) * TILE_SIZE,
       this.origin.y,
       this.origin.z + (gz - (GRID_H - 1) / 2) * TILE_SIZE,
     )
+  }
+
+  /**
+   * World position of a tile's centre, as a fresh vector.
+   *
+   * Contract §2.6: goat pathing and the sundial rings both need somewhere to
+   * aim, and handing out `tile.pos` itself would let a caller's `.add()` walk
+   * the farm's own grid out from under it.
+   */
+  tileWorldPos(tile: Tile): THREE.Vector3 {
+    return tile.pos.clone()
   }
 
   tileAt(gx: number, gz: number): Tile | null {
@@ -664,6 +687,107 @@ export class Farm {
     this.placeStartingPlots()
     if (animate) this.sproutBeds()
     return true
+  }
+
+  // --- opening scripted API (docs/OPENING-CONTRACT.md §2.6) ---------------
+  //
+  // The Isle Opening replaces the instant four-bed handover with six beds the
+  // player digs one hold at a time, on ground they cleared themselves. These
+  // verbs are the farm's side of that: each one is an existing action with its
+  // gate lifted, never a parallel implementation — the beds they make are
+  // ordinary tiles, so growth, harvest and save/restore all come for free.
+
+  /**
+   * The farm exists (level 1) with ZERO plots placed. Idempotent.
+   *
+   * The opening's replacement for openClearing: the ground is broken the
+   * moment the chaos pocket is cleared, but the *beds* arrive one at a time
+   * under the player's own shovel (digBedAt), so nothing is pre-placed here.
+   */
+  openBare(): void {
+    if (this.exists) return
+    this.level = 1
+  }
+
+  /**
+   * Place one bed at the free grid cell nearest worldPos, with the rise
+   * animation, exempt from the plot-purchase rules during the opening: no
+   * adjacency requirement (the first bed has no neighbour to touch) and no
+   * cost (nothing in the opening costs — contract rule 2). Still bounded by
+   * the level-1 garden span: six beds fit its sixteen tiles with room over.
+   *
+   * Returns the tile, or null if the farm is not open or every cell is taken.
+   */
+  digBedAt(worldPos: THREE.Vector3): FarmTile | null {
+    if (!this.exists) return null
+
+    let best: Tile | null = null
+    let bestDist = Infinity
+    for (const tile of this.tiles) {
+      if (tile.placed || tile.sprinkler || !this.withinSpan(tile)) continue
+      const d = Math.hypot(worldPos.x - tile.pos.x, worldPos.z - tile.pos.z)
+      if (d < bestDist) {
+        bestDist = d
+        best = tile
+      }
+    }
+    if (!best) return null
+
+    this.setPlaced(best, true)
+    this.till(best)
+
+    // The same rise every bed in sproutBeds gets, minus the ripple stagger —
+    // one bed dug by hand comes up under the shovel, right now.
+    if (best.soil) {
+      this.rising.push({
+        soil: best.soil,
+        y: best.soil.position.y,
+        scale: best.soil.scale.x,
+        t: 0,
+      })
+      best.soil.visible = false
+    }
+    return best
+  }
+
+  /**
+   * Plant bypassing the shop/seed/unlock/mutation gates, with a forced rarity.
+   *
+   * The opening's two scripted plantings go through here: the odd tomato
+   * ('gold' — which is what routes it down the rarity-tint model path, the
+   * same gold every organic jackpot wears) and the mystery seed. The caller
+   * owns seed-count bookkeeping; this only puts the plant in the ground.
+   *
+   * mutationsUnlocked stays false and no rarity is ever rolled — contract
+   * rule (§7.15): scripted rarity must be the *only* rarity in the opening.
+   */
+  plantScripted(tile: FarmTile, cropId: string, rarity: 'common' | 'gold'): void {
+    if (!this.plant(tile, cropId, 1, this.clock)) return
+    const crop = tile.crop
+    if (!crop || crop.rarity === rarity) return
+
+    crop.rarity = rarity
+    // Rebuild so the model wears the forced rarity's tint, then re-arm the
+    // plant-in pop that plant() started and the rebuild discarded — a scripted
+    // seed should land exactly like a hand-planted one.
+    this.refreshCropModel(tile, crop.stage, this.clock)
+    crop.tweenAt = this.clock
+    crop.tweenFrom = 0.06
+    this.applyCropScale(crop, this.clock)
+  }
+
+  /**
+   * Public wrapper over the private model refresh.
+   *
+   * Two scripted callers: re-tinting after a rarity change, and the first
+   * return's mystery emergence (script `crop.progress` past the first stage
+   * boundary — 0.4 clears it — then call this; the rebuilt model comes back
+   * in its 'emerged' state via buildCropModel).
+   */
+  refreshTile(tile: FarmTile): void {
+    const crop = tile.crop
+    if (!crop) return
+    this.refreshCropModel(tile, stageForProgress(crop.progress), this.clock)
   }
 
   /**
@@ -964,6 +1088,37 @@ export class Farm {
    */
   mutationsUnlocked = false
 
+  /**
+   * Build the model for a crop at a stage — the one seam every planted model
+   * passes through.
+   *
+   * Exists for the two opening species, whose models are not grown from the
+   * form/fruit tables like every other crop's but are bespoke props in
+   * `assets/opening/`. Interposing here (the only two call sites are plant and
+   * refreshCropModel) means the rest of the pipeline — tiles, progress,
+   * save/restore, exit animation — treats them as ordinary crops, which is the
+   * whole reason they are crops at all.
+   *
+   * The Sun Tomato is bespoke for a framing reason rather than a fictional one.
+   * The shared tables are tuned for a *field*, where a ripe bush stands about
+   * three quarters of a unit because a hundred and sixty of them read as
+   * texture; the opening puts six plants under a low over-the-shoulder camera
+   * and asks the player to pick each one by hand, and at that distance the
+   * table-built bush is a green nub. `createSunTomatoModel` matches
+   * `createCropModel`'s contract exactly (origin on the soil, `baseScale`,
+   * `stretch`, `update`), so nothing downstream can tell the difference.
+   *
+   * Stage maps to state: 0 is the dormant nub, anything above is emerged. The
+   * first return scripts the emergence by pushing `progress` past the first
+   * stage boundary and calling refreshTile — never by waiting out the 9999
+   * grow-seconds, which exist precisely so it cannot happen organically.
+   */
+  private buildCropModel(def: CropDef, stage: number, opts: CropModelOptions) {
+    if (def.id === 'mystery-sprout') return createMysterySprout(stage >= 1 ? 'emerged' : 'dormant')
+    if (def.id === 'sun-tomato') return createSunTomatoModel(stage, opts)
+    return createCropModel(def, stage, opts)
+  }
+
   plant(tile: Tile, cropId: string, luck = 1, elapsed = -1) {
     if (tile.state !== 'tilled' || tile.crop || tile.sprinkler) return false
     const def = CROP_BY_ID.get(cropId)
@@ -974,7 +1129,7 @@ export class Farm {
     const rarity = this.mutationsUnlocked ? rollRarity(luck + this.sprinklerLuck(tile)) : 'common'
     const sizeRoll = sizeRollFor(seed)
 
-    const model = createCropModel(def, 0, { seed, rarityColor: RARITY_BY_ID.get(rarity)?.color })
+    const model = this.buildCropModel(def, 0, { seed, rarityColor: RARITY_BY_ID.get(rarity)?.color })
     model.position.copy(tile.pos)
     model.position.y += soilSurfaceY()
     this.group.add(model)
@@ -1178,7 +1333,7 @@ export class Farm {
     this.group.remove(crop.model)
     disposeTree(crop.model)
 
-    const model = createCropModel(crop.def, stage, {
+    const model = this.buildCropModel(crop.def, stage, {
       seed: crop.seed,
       rarityColor: RARITY_BY_ID.get(crop.rarity)?.color,
     })
@@ -1244,6 +1399,16 @@ export class Farm {
    * is left for this to do is one number.
    */
   private applyCropScale(crop: PlantedCrop, elapsed: number) {
+    /*
+     * Models authored at final size opt out of growth scaling entirely.
+     *
+     * Only the mystery sprout sets this. Its progress crawls at 1/9999 per
+     * second, so the continuous-growth ramp would pin it at GROW_FROM_SCALE
+     * forever — a third-size prop under a plant whose entire job is to be
+     * taller than everything around it.
+     */
+    if (crop.model.userData.fixedScale) return
+
     const base = crop.model.userData.baseScale as THREE.Vector3 | undefined
     const girth = base?.x ?? 1
     // How much taller than wide the model is, so the ceiling still measures the
@@ -1284,6 +1449,16 @@ export class Farm {
   // --- per-frame ----------------------------------------------------------
 
   /**
+   * The last elapsed time update() saw.
+   *
+   * Exists for the opening's scripted verbs (plantScripted, refreshTile),
+   * whose contract signatures carry no elapsed parameter — they need a
+   * timestamp for the model tweens, and "whenever the farm last ticked" is
+   * within a frame of the truth, which is all a tween's start time needs.
+   */
+  private clock = 0
+
+  /**
    * `ctx` carries the current weather and hour so crops can mutate. `luck`
    * scales mutation odds. `onMutate` fires once per mutation gained, so the
    * caller can toast it.
@@ -1300,6 +1475,8 @@ export class Farm {
     /** Season growth multiplier for a given crop. */
     seasonGrowth?: (crop: CropDef) => number,
   ) {
+    this.clock = elapsed
+
     /*
      * Drive the marker field's own clock rather than reading the world elapsed
      * time: its appear ripple has to start from zero each time the shovel is
@@ -1340,6 +1517,10 @@ export class Farm {
 
       const crop = tile.crop
       if (!crop) continue
+
+      // Self-animating crop models get their tick. Only the mystery sprout
+      // carries one — its bud's faint pulse — but the hook is generic.
+      ;(crop.model.userData.update as ((t: number) => void) | undefined)?.(elapsed)
 
       const tileLuck = luck + this.sprinklerLuck(tile)
 

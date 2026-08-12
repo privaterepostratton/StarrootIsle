@@ -32,7 +32,10 @@ export interface RarityDef {
 /** Ordered rarest-first: rolling walks this list and takes the first hit. */
 export const RARITIES: RarityDef[] = [
   { id: 'rainbow', name: 'Rainbow', emoji: '🌈', multiplier: 50, chance: 0.004, color: 0xff7ae0 },
-  { id: 'gold', name: 'Gold', emoji: '✨', multiplier: 15, chance: 0.022, color: 0xf5c518 },
+  // Lotto gold. Unified with LOTTO_GOLD (opening/types.ts): gold means *luck*,
+  // and it has to be the same gold everywhere it appears — the odd tomato's
+  // streaks, the lotto-tell burst, and every rarity tint after it.
+  { id: 'gold', name: 'Gold', emoji: '✨', multiplier: 15, chance: 0.022, color: 0xf2c14e },
   { id: 'silver', name: 'Silver', emoji: '⚪', multiplier: 4, chance: 0.075, color: 0xd8dee6 },
   { id: 'common', name: 'Common', emoji: '', multiplier: 1, chance: 1, color: null },
 ]

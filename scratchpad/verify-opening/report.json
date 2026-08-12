@@ -1,0 +1,14 @@
+{
+  "when": "2026-08-11T23:46:13.083Z",
+  "port": "5216",
+  "beat": "5",
+  "shotsOnly": false,
+  "results": [
+    {
+      "id": "run",
+      "status": "fail",
+      "reason": "Inspected target navigated or closed"
+    }
+  ],
+  "pageErrors": []
+}

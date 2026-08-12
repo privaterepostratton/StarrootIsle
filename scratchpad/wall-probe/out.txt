@@ -1,0 +1,14 @@
+obstacles: 51
+gapCentre: -40.60, 0.00
+nearest collider edge to tile grid: 1.28u at (-40.6, -7.0) r=1.5
+x=-43 open z runs: -8.0..8.0
+x=-42 open z runs: -8.0..-7.6 | -1.7..1.7 | 7.5..8.0
+x=-41 open z runs: -1.5..1.5
+x=-40 open z runs: -2.0..2.0
+x=-39 open z runs: -7.3..7.1
+instances: 443
+nearest instance origin to tile grid: 1.72u at (-39.5, 6.8)
+nearest instance origin to shovel: 6.14u
+nearest instance origin to crate: 10.23u
+nearest instance origin to spawn: 11.77u
+after dispose, colliders off: true

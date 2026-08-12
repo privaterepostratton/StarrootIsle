@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>vfx lab</title>
+    <style>
+      html, body { margin: 0; background: #86b7c9; overflow: hidden; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      // Deterministic clock: the lotto rig runs on performance.now(), so the lab
+      // owns that clock and can step it frame by frame.
+      let fakeNow = 0
+      const realNow = performance.now.bind(performance)
+      performance.now = () => fakeNow
+
+      const THREE = await import('/node_modules/three/build/three.module.js')
+      const { EffectComposer } = await import('/node_modules/three/examples/jsm/postprocessing/EffectComposer.js')
+      const { RenderPass } = await import('/node_modules/three/examples/jsm/postprocessing/RenderPass.js')
+      const { UnrealBloomPass } = await import('/node_modules/three/examples/jsm/postprocessing/UnrealBloomPass.js')
+      const { Bursts } = await import('/src/assets/burst.ts')
+      const { createIslandBreath, playLottoTell, createOddShimmer } = await import('/src/assets/opening/vfx.ts')
+
+      const W = window.innerWidth
+      const H = window.innerHeight
+      const renderer = new THREE.WebGLRenderer({ antialias: true })
+      renderer.setSize(W, H)
+      renderer.toneMapping = THREE.NoToneMapping
+      document.body.appendChild(renderer.domElement)
+
+      const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0x8fc4d8)
+      const camera = new THREE.PerspectiveCamera(52, W / H, 0.3, 480)
+      camera.layers.enable(1)
+      camera.position.set(0, 6.2, 12)
+      camera.lookAt(0, 1.1, 0)
+
+      scene.add(new THREE.HemisphereLight(0xffe8c8, 0x486b3a, 1.1))
+      const sun = new THREE.DirectionalLight(0xffe1b0, 1.5)
+      sun.position.set(-6, 9, 5)
+      scene.add(sun)
+
+      // Grass, the way the shipped frames look today.
+      const grass = new THREE.Mesh(
+        new THREE.PlaneGeometry(80, 80),
+        new THREE.MeshLambertMaterial({ color: 0x4f8a3d }),
+      )
+      grass.rotation.x = -Math.PI / 2
+      scene.add(grass)
+
+      // Loam pocket, the way the cleared ground is meant to look.
+      const loam = new THREE.Mesh(
+        new THREE.CircleGeometry(3.4, 40),
+        new THREE.MeshLambertMaterial({ color: 0x3a2a1e }),
+      )
+      loam.rotation.x = -Math.PI / 2
+      loam.position.set(-4.5, 0.01, 0)
+      loam.scale.set(1, 0.7, 1)
+      scene.add(loam)
+
+      const bursts = new Bursts()
+      scene.add(bursts.group)
+
+      const breathLoam = createIslandBreath({ centre: new THREE.Vector3(-4.5, 0, 0), w: 6, d: 4 })
+      const breathGrass = createIslandBreath({ centre: new THREE.Vector3(4.5, 0, 0), w: 6, d: 4 })
+      scene.add(breathLoam.object, breathGrass.object)
+
+      // A stand-in fruit: plump, red, at bed height near the camera.
+      const fruit = new THREE.Mesh(
+        new THREE.SphereGeometry(0.34, 20, 14),
+        new THREE.MeshLambertMaterial({ color: 0xc23a2a }),
+      )
+      fruit.position.set(0.2, 0.9, 4.2)
+      scene.add(fruit)
+      const bed = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6, 0.2, 1.6),
+        new THREE.MeshLambertMaterial({ color: 0x4a3324 }),
+      )
+      bed.position.set(0.2, 0.1, 4.2)
+      scene.add(bed)
+
+      const shimmer = createOddShimmer()
+      shimmer.object.position.copy(fruit.position)
+      shimmer.object.position.y -= 0.3
+      scene.add(shimmer.object)
+
+      const composer = new EffectComposer(renderer)
+      composer.addPass(new RenderPass(scene, camera))
+      composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.58, 0.7, 0.8))
+
+      const audio = { play() {} }
+      let slowLeft = 0
+      let slowScale = 1
+      const slowMo = (s, k) => { slowLeft = s; slowScale = k }
+
+      /**
+       * Step the whole lab to `seconds`, firing the tell at `fireAt` (real
+       * seconds). Game updates honour the slow-mo scale; the rig's own clock
+       * does not — exactly like the shipped frame loop.
+       */
+      window.__sim = async (seconds, fireAt = -1, small = false) => {
+        const step = 1 / 60
+        let elapsed = 0
+        let fired = false
+        breathLoam.start()
+        breathGrass.start()
+        for (let i = 0; i * step < seconds; i++) {
+          const real = i * step
+          fakeNow = real * 1000
+          if (!fired && fireAt >= 0 && real >= fireAt) {
+            fired = true
+            playLottoTell({ at: fruit.position.clone(), bursts, audio, slowMo, small })
+          }
+          let dt = step
+          if (slowLeft > 0) {
+            slowLeft -= step
+            dt = step * slowScale
+          }
+          elapsed += dt
+          breathLoam.update(dt, elapsed)
+          breathGrass.update(dt, elapsed)
+          bursts.update(dt, elapsed)
+          shimmer.update(elapsed)
+          composer.render()
+        }
+        return { elapsed: elapsed.toFixed(2), real: realNow() > 0 }
+      }
+
+      window.__look = (px, py, pz, tx, ty, tz) => {
+        camera.position.set(px, py, pz)
+        camera.lookAt(tx, ty, tz)
+      }
+      window.__ready = true
+    </script>
+  </body>
+</html>

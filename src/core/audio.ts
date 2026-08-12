@@ -63,6 +63,41 @@ export type Sfx =
   | 'dismiss'
   | 'place'
   | 'collect'
+  // --- Isle Opening (docs/OPENING-CONTRACT.md §2.9). Samples live under
+  // sfx/opening/. Contract-named ids first; file-variant extras after. Any id
+  // whose file is missing falls back to the synth (or stays silent) — never
+  // fatal. 'lotto-chime' is the ONLY sound allowed to pair with LOTTO_GOLD.
+  | 'shovel-pull'
+  | 'vine-snap'
+  | 'frond-sweep'
+  | 'wood-crack'
+  | 'basket-crunch'
+  | 'stone-pry'
+  | 'amphora-chime'
+  | 'dig-thunk'
+  | 'seed-plop'
+  | 'tomato-pluck'
+  | 'lotto-chime'
+  | 'goat-bleat'
+  | 'treeline-rustle'
+  | 'crate-creak'
+  | 'pouch-rustle'
+  | 'charcoal'
+  | 'gull'
+  | 'wave-nudge'
+  // Variant takes / extra opening one-shots backed by real files.
+  | 'vine-strain'
+  | 'stone-pop'
+  | 'sprout-pip'
+  | 'dig-thunk-2'
+  | 'goat-bleat-2'
+  | 'step-sand-1'
+  | 'step-sand-2'
+  // Ambient beds authored as loops. play() runs them once end-to-end (~20 s);
+  // for seamless looping, decode them on `ctx` directly with loop = true.
+  | 'wave-bed-loop'
+  | 'palm-wind-loop'
+  | 'tern-colony-loop'
 
 /** Sample path per oneshot. Rain is handled separately as a loop. */
 const SFX_SAMPLES: Record<Sfx, string> = {
@@ -91,10 +126,42 @@ const SFX_SAMPLES: Record<Sfx, string> = {
   dismiss: 'sfx/dismiss.mp3',
   place: 'sfx/place.mp3',
   collect: 'sfx/collect.mp3',
+  // Isle Opening one-shots. Contract ids map onto the generated filenames
+  // (dig-thunk → dig-thunk-1 etc.); 'wave-nudge' has no dedicated file — the
+  // 20 s wave-bed loop is far too long for a nudge — so it points at a path
+  // that does not exist and rides the synth fallback below by design.
+  'shovel-pull': 'sfx/opening/shovel-pull.mp3',
+  'vine-snap': 'sfx/opening/vine-snap.mp3',
+  'frond-sweep': 'sfx/opening/frond-sweep.mp3',
+  'wood-crack': 'sfx/opening/wood-crack.mp3',
+  'basket-crunch': 'sfx/opening/basket-crunch.mp3',
+  'stone-pry': 'sfx/opening/stone-pry.mp3',
+  'amphora-chime': 'sfx/opening/amphora-chime.mp3',
+  'dig-thunk': 'sfx/opening/dig-thunk-1.mp3',
+  'seed-plop': 'sfx/opening/seed-plop.mp3',
+  'tomato-pluck': 'sfx/opening/tomato-pluck.mp3',
+  'lotto-chime': 'sfx/opening/lotto-chime.mp3',
+  'goat-bleat': 'sfx/opening/goat-bleat-1.mp3',
+  'treeline-rustle': 'sfx/opening/treeline-rustle.mp3',
+  'crate-creak': 'sfx/opening/crate-creak.mp3',
+  'pouch-rustle': 'sfx/opening/pouch-linen.mp3',
+  charcoal: 'sfx/opening/charcoal-sketch.mp3',
+  gull: 'sfx/opening/gull-cry.mp3',
+  'wave-nudge': 'sfx/opening/wave-nudge.mp3',
+  'vine-strain': 'sfx/opening/vine-strain.mp3',
+  'stone-pop': 'sfx/opening/stone-pop.mp3',
+  'sprout-pip': 'sfx/opening/sprout-pip.mp3',
+  'dig-thunk-2': 'sfx/opening/dig-thunk-2.mp3',
+  'goat-bleat-2': 'sfx/opening/goat-bleat-2.mp3',
+  'step-sand-1': 'sfx/opening/step-sand-1.mp3',
+  'step-sand-2': 'sfx/opening/step-sand-2.mp3',
+  'wave-bed-loop': 'sfx/opening/wave-bed-loop.mp3',
+  'palm-wind-loop': 'sfx/opening/palm-wind-loop.mp3',
+  'tern-colony-loop': 'sfx/opening/tern-colony-loop.mp3',
 }
 
 export class Audio {
-  private ctx: AudioContext | null = null
+  private audioCtx: AudioContext | null = null
   private master: GainNode | null = null
   private musicGain: GainNode | null = null
   private sfxGain: GainNode | null = null
@@ -117,6 +184,43 @@ export class Audio {
   masterVolume = 0.9
   musicVolume = 0.16
   sfxVolume = 0.55
+
+  /**
+   * The raw WebAudio context, or null until the first user gesture unlocks
+   * audio. Exposed for systems that schedule their own sources against the
+   * context clock (the opening's phase-locked music stems decode and start on
+   * it directly, so three loops share one sample-accurate start time).
+   */
+  get ctx(): AudioContext | null {
+    return this.audioCtx
+  }
+
+  /**
+   * The music bus gain node. Anything connected here rides the player's music
+   * volume slider and the master mute exactly like the built-in soundtrack.
+   * Only valid once `ctx` is non-null — callers must check `ctx` first; asking
+   * for the bus before the gesture unlock is a programming error.
+   */
+  get musicBus(): GainNode {
+    if (!this.musicGain) throw new Error('Audio.musicBus read before the audio context was unlocked')
+    return this.musicGain
+  }
+
+  /**
+   * While true, the built-in day/night soundtrack holds silent (both loop
+   * elements paused; hour changes tracked but never audible). The opening's
+   * stem music owns the music bus for the whole first session, and without
+   * this the lagoon loop would start underneath it at the unlock gesture.
+   * Setting it back to false lets the normal soundtrack resume, which is what
+   * `OpeningMusic.fadeToGameMusic()` does while its stems fade out — a 3 s
+   * crossfade for free.
+   */
+  setSoundtrackSuppressed(on: boolean) {
+    this.soundtrackSuppressed = on
+    this.syncSoundtrack()
+  }
+
+  private soundtrackSuppressed = false
 
   /** True when the game must be silent regardless of the Sound toggle. */
   private isSilent() {
@@ -141,7 +245,7 @@ export class Audio {
     this.hiddenSuspended = true
     this.refreshMaster()
     this.syncSoundtrack()
-    void this.ctx?.suspend()
+    void this.audioCtx?.suspend()
   }
 
   /**
@@ -154,7 +258,7 @@ export class Audio {
   resumeFromHidden() {
     this.hiddenSuspended = false
     this.refreshMaster()
-    if (!this.isSilent()) void this.ctx?.resume()
+    if (!this.isSilent()) void this.audioCtx?.resume()
     this.syncSoundtrack()
   }
 
@@ -184,23 +288,23 @@ export class Audio {
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     if (!Ctor) return
 
-    this.ctx = new Ctor()
-    this.master = this.ctx.createGain()
+    this.audioCtx = new Ctor()
+    this.master = this.audioCtx.createGain()
     this.master.gain.value = this.isSilent() ? 0 : this.masterVolume
-    this.master.connect(this.ctx.destination)
-    if (this.hiddenSuspended) void this.ctx.suspend()
+    this.master.connect(this.audioCtx.destination)
+    if (this.hiddenSuspended) void this.audioCtx.suspend()
 
     // Music sits well under SFX — it is background, and the player needs to
     // hear the coin chime over it without ducking.
-    this.musicGain = this.ctx.createGain()
+    this.musicGain = this.audioCtx.createGain()
     this.musicGain.gain.value = this.musicVolume
     this.musicGain.connect(this.master)
 
-    this.sfxGain = this.ctx.createGain()
+    this.sfxGain = this.audioCtx.createGain()
     this.sfxGain.gain.value = this.sfxVolume
     this.sfxGain.connect(this.master)
 
-    this.rainGain = this.ctx.createGain()
+    this.rainGain = this.audioCtx.createGain()
     this.rainGain.gain.value = 0
     this.rainGain.connect(this.sfxGain)
 
@@ -210,7 +314,7 @@ export class Audio {
 
   /** Decode every oneshot + the rain bed. Failures leave that id on synth. */
   private async loadSamples() {
-    const ctx = this.ctx
+    const ctx = this.audioCtx
     if (!ctx) return
     await Promise.all(
       (Object.entries(SFX_SAMPLES) as [Sfx, string][]).map(async ([id, path]) => {
@@ -239,7 +343,7 @@ export class Audio {
 
   /** Play a decoded sample through the SFX bus. Returns false if unavailable. */
   private playSample(id: Sfx, gain = 1, rate = 1): boolean {
-    const ctx = this.ctx
+    const ctx = this.audioCtx
     const buf = this.buffers.get(id)
     if (!ctx || !this.sfxGain || !buf) return false
     const src = ctx.createBufferSource()
@@ -260,7 +364,7 @@ export class Audio {
   }
 
   private syncRain(on: boolean) {
-    const ctx = this.ctx
+    const ctx = this.audioCtx
     if (!ctx || !this.rainGain) return
     const now = ctx.currentTime
     this.rainGain.gain.cancelScheduledValues(now)
@@ -300,22 +404,22 @@ export class Audio {
 
   /** Hook day + night loops into the music bus. */
   private startSoundtrack() {
-    if (!this.ctx || !this.musicGain || this.dayEl) return
+    if (!this.audioCtx || !this.musicGain || this.dayEl) return
 
     this.dayEl = this.makeLoop(MUSIC_DAY)
     this.nightEl = this.makeLoop(MUSIC_NIGHT)
     this.musicNight = isNightHour(this.hour)
 
-    this.dayBus = this.ctx.createGain()
-    this.nightBus = this.ctx.createGain()
+    this.dayBus = this.audioCtx.createGain()
+    this.nightBus = this.audioCtx.createGain()
     this.dayBus.gain.value = this.musicNight ? 0 : 1
     this.nightBus.gain.value = this.musicNight ? 1 : 0
     this.dayBus.connect(this.musicGain)
     this.nightBus.connect(this.musicGain)
 
     try {
-      this.ctx.createMediaElementSource(this.dayEl).connect(this.dayBus)
-      this.ctx.createMediaElementSource(this.nightEl).connect(this.nightBus)
+      this.audioCtx.createMediaElementSource(this.dayEl).connect(this.dayBus)
+      this.audioCtx.createMediaElementSource(this.nightEl).connect(this.nightBus)
       this.musicGraphOk = true
     } catch {
       // Fallback: play one element straight to speakers.
@@ -329,11 +433,14 @@ export class Audio {
 
   /** Crossfade (or hard-swap on fallback) to the track for the current hour. */
   private ensureTrack() {
+    // Held silent: leave the crossfade state alone entirely. When suppression
+    // lifts, syncSoundtrack() re-runs this and the right track catches up.
+    if (this.soundtrackSuppressed) return
     const wantNight = isNightHour(this.hour)
     if (wantNight === this.musicNight) return
     this.musicNight = wantNight
 
-    if (!this.musicGraphOk || !this.ctx || !this.dayBus || !this.nightBus) {
+    if (!this.musicGraphOk || !this.audioCtx || !this.dayBus || !this.nightBus) {
       // Single-element fallback: pause both, play the active one.
       this.dayEl?.pause()
       this.nightEl?.pause()
@@ -345,7 +452,7 @@ export class Audio {
       return
     }
 
-    const now = this.ctx.currentTime
+    const now = this.audioCtx.currentTime
     const rising = wantNight ? this.nightBus : this.dayBus
     const falling = wantNight ? this.dayBus : this.nightBus
     const risingEl = wantNight ? this.nightEl : this.dayEl
@@ -371,7 +478,7 @@ export class Audio {
   /** Pause/resume loops to match mute / hidden-tab state. */
   private syncSoundtrack() {
     if (!this.dayEl || !this.nightEl) return
-    if (this.isSilent()) {
+    if (this.isSilent() || this.soundtrackSuppressed) {
       this.dayEl.pause()
       this.nightEl.pause()
       return
@@ -418,8 +525,8 @@ export class Audio {
 
   /** Ramp rather than snap — an instant gain change clicks audibly. */
   private applyGain(node: GainNode | null, value: number) {
-    if (!node || !this.ctx) return
-    node.gain.setTargetAtTime(value, this.ctx.currentTime, 0.04)
+    if (!node || !this.audioCtx) return
+    node.gain.setTargetAtTime(value, this.audioCtx.currentTime, 0.04)
   }
 
   setHour(hour: number) {
@@ -450,7 +557,7 @@ export class Audio {
       sweepTo?: number
     } = {},
   ) {
-    const ctx = this.ctx
+    const ctx = this.audioCtx
     if (!ctx) return
 
     const at = opts.at ?? ctx.currentTime
@@ -481,7 +588,7 @@ export class Audio {
   private noise(
     opts: { at?: number; duration?: number; gain?: number; freq?: number; q?: number; type?: BiquadFilterType; sweepTo?: number } = {},
   ) {
-    const ctx = this.ctx
+    const ctx = this.audioCtx
     if (!ctx) return
 
     const at = opts.at ?? ctx.currentTime
@@ -523,7 +630,7 @@ export class Audio {
    * nothing else here needs to change.
    */
   play(sfx: Sfx, opts: { gain?: number; rate?: number } = {}) {
-    const ctx = this.ctx
+    const ctx = this.audioCtx
     if (!ctx || this.isSilent()) return
     // Prefer the recorded clip; synth stays as a silent-failure fallback.
     if (this.playSample(sfx, opts.gain ?? 1, opts.rate ?? 1)) return
@@ -631,6 +738,119 @@ export class Audio {
       case 'collect':
         this.tone(660, { type: 'triangle', duration: 0.1, gain: 0.14, sweepTo: 880 })
         break
+
+      // --- Isle Opening fallbacks. Real samples exist for nearly all of
+      // these; the synths below only fire if a file 404s or fails to decode,
+      // so they aim for "recognisably the right event", not beauty.
+
+      case 'shovel-pull':
+        // Wet shhk of sand giving way, then the release pop.
+        this.noise({ duration: 0.35, freq: 500, sweepTo: 180, gain: 0.3, q: 0.8 })
+        this.tone(240, { type: 'sine', at: now + 0.3, duration: 0.12, gain: 0.22, sweepTo: 520 })
+        break
+
+      case 'vine-strain':
+      case 'crate-creak':
+        // Slow creak: a low saw bending downward.
+        this.tone(160, { type: 'sawtooth', duration: 0.4, gain: 0.08, sweepTo: 110 })
+        this.noise({ duration: 0.35, freq: 700, sweepTo: 400, gain: 0.08, q: 3 })
+        break
+
+      case 'vine-snap':
+        this.noise({ duration: 0.07, freq: 2400, gain: 0.26, q: 1.2 })
+        this.tone(320, { type: 'triangle', duration: 0.09, gain: 0.14, sweepTo: 180 })
+        break
+
+      case 'frond-sweep':
+      case 'treeline-rustle':
+      case 'pouch-rustle':
+        // Dry leaf/linen rustle — broadband hiss with a falling centre.
+        this.noise({ duration: sfx === 'treeline-rustle' ? 0.6 : 0.25, freq: 3200, sweepTo: 1400, gain: 0.16, q: 0.6 })
+        break
+
+      case 'wood-crack':
+        this.noise({ duration: 0.08, freq: 900, gain: 0.32, q: 1.5 })
+        this.noise({ at: now + 0.07, duration: 0.1, freq: 600, gain: 0.26, q: 1.5 })
+        break
+
+      case 'basket-crunch':
+        this.noise({ duration: 0.2, freq: 1100, sweepTo: 500, gain: 0.28, q: 0.9 })
+        break
+
+      case 'stone-pry':
+        // Grit scrape under a heavy fundamental.
+        this.noise({ duration: 0.45, freq: 260, sweepTo: 140, gain: 0.3, q: 0.6 })
+        this.tone(70, { type: 'sine', duration: 0.35, gain: 0.2 })
+        break
+
+      case 'stone-pop':
+        this.tone(140, { type: 'sine', duration: 0.14, gain: 0.3, sweepTo: 60 })
+        this.noise({ duration: 0.1, freq: 500, gain: 0.18, q: 1 })
+        break
+
+      case 'amphora-chime':
+        // Terracotta clink: two close inharmonic partials, quickly damped.
+        this.tone(1180, { type: 'sine', duration: 0.22, gain: 0.16 })
+        this.tone(1560, { type: 'sine', duration: 0.16, gain: 0.1, detune: 14 })
+        break
+
+      case 'dig-thunk':
+      case 'dig-thunk-2':
+        this.noise({ duration: 0.2, freq: 300, sweepTo: 110, gain: 0.34, q: 0.7 })
+        this.tone(85, { type: 'sine', duration: 0.13, gain: 0.24, sweepTo: 50 })
+        break
+
+      case 'seed-plop':
+        this.tone(600, { type: 'sine', duration: 0.09, gain: 0.16, sweepTo: 260 })
+        break
+
+      case 'sprout-pip':
+        this.tone(1320, { type: 'triangle', duration: 0.07, gain: 0.1, sweepTo: 1760 })
+        break
+
+      case 'tomato-pluck':
+        this.tone(midiToHz(root + 9), { type: 'triangle', duration: 0.12, gain: 0.24 })
+        this.noise({ duration: 0.08, freq: 1800, gain: 0.08, q: 2 })
+        break
+
+      case 'lotto-chime': {
+        // Sits deliberately OUTSIDE the current key bed (tritone off the root)
+        // so it pricks the ear — the lotto grammar must never blend in.
+        const off = root + 6
+        this.tone(midiToHz(off + 24), { type: 'sine', duration: 0.5, gain: 0.16 })
+        this.tone(midiToHz(off + 31), { type: 'sine', at: now + 0.07, duration: 0.6, gain: 0.13 })
+        this.tone(midiToHz(off + 36), { type: 'sine', at: now + 0.14, duration: 0.8, gain: 0.1, detune: 5 })
+        break
+      }
+
+      case 'goat-bleat':
+      case 'goat-bleat-2':
+        // A wobbling saw is as close as an oscillator gets to a bleat.
+        this.tone(420, { type: 'sawtooth', duration: 0.3, gain: 0.1, sweepTo: 340 })
+        this.tone(420, { type: 'sawtooth', duration: 0.3, gain: 0.07, detune: 30, sweepTo: 360 })
+        break
+
+      case 'charcoal':
+        this.noise({ duration: 0.3, freq: 2600, sweepTo: 1800, gain: 0.08, q: 0.5 })
+        break
+
+      case 'gull':
+        // Falling high cry, twice.
+        this.tone(1900, { type: 'triangle', duration: 0.24, gain: 0.1, sweepTo: 1200 })
+        this.tone(1900, { type: 'triangle', at: now + 0.28, duration: 0.2, gain: 0.08, sweepTo: 1250 })
+        break
+
+      case 'wave-nudge':
+        // The 20 s idle nudge: one soft wave wash running up and hissing out.
+        // This is the one opening id with no sample by design (§SFX_SAMPLES).
+        this.noise({ duration: 1.1, freq: 400, sweepTo: 900, gain: 0.14, q: 0.5 })
+        this.noise({ at: now + 0.9, duration: 0.8, freq: 1400, sweepTo: 500, gain: 0.1, q: 0.5 })
+        break
+
+      case 'step-sand-1':
+      case 'step-sand-2':
+        this.noise({ duration: 0.12, freq: 480, sweepTo: 220, gain: 0.18, q: 0.7 })
+        break
     }
   }
 
@@ -640,7 +860,7 @@ export class Audio {
    */
   update() {
     if (!this.started || !this.dayEl || !this.nightEl) return
-    if (this.isSilent()) {
+    if (this.isSilent() || this.soundtrackSuppressed) {
       if (!this.dayEl.paused) this.dayEl.pause()
       if (!this.nightEl.paused) this.nightEl.pause()
       return

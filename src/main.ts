@@ -6,15 +6,15 @@ import { worldClicksSwallowed, swallowBackdropClick } from './core/click-guard'
 import { loadGroundTextures, loadParticleTextures } from './assets/textures'
 import { loadSkyTexture, Skybox } from './assets/skybox'
 import { loadModels, loadFarmerModel, loadCreatureModel, loadShopkeeperModel, loadFarmgirlModel, loadNeighbourModel } from './assets/models'
-import { createWorld, SHOP_POS, FARM_CENTRE, BARN_POS } from './game/world'
+import { createWorld, SHOP_POS, FARM_CENTRE, BARN_POS, type Obstacle } from './game/world'
 import { inPlayerPlot, SPAWN } from './game/village'
 import { GuidePath } from './game/guide-path'
 import { TargetRings, type RingTarget } from './game/target-rings'
 import { preloadImages } from './ui/preload-images'
-import { groundHeight } from './game/terrain'
+import { groundHeight, isSand, isWalkable } from './game/terrain'
 import { updateGrass } from './game/vegetation'
 import { Farm, GARDEN_LEVELS, TILE_SIZE, type Tile } from './game/farm'
-import { CROPS, CROP_BY_ID } from './game/crops'
+import { CROPS, CROP_BY_ID, OPENING_CROP_IDS, growSecondsFor } from './game/crops'
 import { rng } from './assets/style'
 import { Player, PLAYER_HEIGHT } from './game/player'
 import { HOTBAR_SLOTS, Inventory } from './game/inventory'
@@ -51,7 +51,7 @@ import { harvestPlateHtml } from './ui/harvest-plate'
 import { MATERIAL_BY_ID } from './game/materials'
 import { LandMapUi } from './ui/land-map'
 import { Stock } from './game/stock'
-import { Audio } from './core/audio'
+import { Audio, type Sfx } from './core/audio'
 import { Pets, type EggDef } from './game/pets'
 import { PetUi } from './ui/pet-ui'
 import { Neighbourhood, type Neighbour } from './game/neighbours'
@@ -84,6 +84,30 @@ import { TouchControls } from './ui/touch'
 import { enableAutoFullscreen } from './ui/fullscreen'
 import { coinIconHtml, iconHtml, mutationIconHtml } from './ui/icons'
 import * as Save from './game/save'
+// --- the isle opening (docs/OPENING-CONTRACT.md / docs/ISLE-OPENING-SPEC.md) --
+import { OpeningSequencer } from './game/opening/sequencer'
+import { forgetOpening, loadOpening } from './game/opening/opening-save'
+import {
+  BEAT_ORDER,
+  type BeatId,
+  type FirstReturnPlan,
+  type HoldTarget,
+  type OpeningStats,
+  type OpeningStringKey,
+  type TideDrop,
+} from './game/opening/types'
+import { HoldInput } from './game/opening/hold-input'
+import { ChaosPocket, type ChaosDrop } from './game/opening/chaos-pocket'
+import type { ChaosKind } from './assets/opening/chaos-props'
+import { BeachProps } from './game/opening/beach-props'
+import { JungleWall } from './game/opening/jungle-wall'
+import { createJournalProp } from './assets/opening/beach-models'
+import { Tideline } from './game/opening/tideline'
+import { GoatArrival, type GoatPhase } from './game/opening/goat'
+import { Butterflies } from './game/opening/butterflies'
+import { OpeningUi } from './ui/opening/opening-ui'
+import { OpeningMusic } from './game/opening/music'
+import { createIslandBreath, playLottoTell } from './assets/opening/vfx'
 
 /*
  * `?new` starts a genuinely fresh farm, and it is the only thing that can.
@@ -117,6 +141,10 @@ if (freshStart) {
   // all — the one state a fresh start must never produce.
   forgetFtue()
   forgetUpgradeTour()
+  // Same coupling for the opening's own record (contract §3.2): a wiped save
+  // that still remembers a finished opening would boot a veteran onto an empty
+  // beach with no wake, no crate, and no way to earn the farm back.
+  forgetOpening()
 }
 declare global {
   interface Window {
@@ -323,6 +351,9 @@ let elapsed = 0
 
 /** Award XP and surface any level-ups, including their payouts. */
 function grantXp(amount: number) {
+  // The opening grants zero XP and zero coins (contract rule 5) — and a
+  // level-up screen over the wake would be every rule broken at once.
+  if (openingActive()) return
   for (const { level, reward } of progression.addXp(amount)) {
     // Crop unlocks live on the crop, so the banner looks up what this level
     // actually opened rather than the reward table repeating itself.
@@ -620,6 +651,9 @@ const plotUi = new PlotUi(inventory, {
     grantXp(Math.round(got.def.xp * got.amount * Math.min(8, valueMultiplier(got.rarity, got.mutations))))
   },
   instantGrow: (tile, cost) => {
+    // The mystery sprout's bloom is future content: no coin may force it
+    // (progress ≥ 2/3 would put its two-state model into a stage it lacks).
+    if (tile.crop?.def.id === 'mystery-sprout') return
     if (!inventory.spend(cost)) return
     farm.instantGrow(tile, elapsed)
     audio.play('instant-grow')
@@ -1287,9 +1321,25 @@ const neighbourPlotUi = new NeighbourPlotUi({
   },
 })
 
+/**
+ * The opening's input freeze (contract §3.1): true during the wake, the goat
+ * shot and the journal — the three moments the opening owns the screen whole.
+ * Between them the player roams freely and `modalOpen()` reads false as usual.
+ */
+let openingCinematic = false
+
+/**
+ * The opening sequencer, or null on any boot that owes no opening and no first
+ * return. Every suppression gate in this file reads it through
+ * `openingActive()` rather than holding its own flag, so the handover flips
+ * every channel back on in the same frame the record turns 'done'.
+ */
+let isleSeq: OpeningSequencer | null = null
+
 /** Anything that swallows input: movement, picking and prompts all stand down. */
 const modalOpen = () =>
   arrivalTimer > 0 ||
+  openingCinematic ||
   // The UI editor covers the screen with its own click catcher, so letting the
   // game keep reading input would have the farmer walking around underneath a
   // drag gesture. This is the one choke point that already gates movement,
@@ -1312,8 +1362,64 @@ const panelOpen = () =>
 // --- restore ----------------------------------------------------------------
 window.__loading?.(0.9, 'Waking the neighbours…')
 const saved = await Save.load()
-// FTUE starts only on a genuinely fresh farm; see ftue.ts for the resume rules.
-const ftue = new Ftue(!saved, (id) => audio.play(id))
+
+/*
+ * Who runs the opening — the §3.2 decision table, decided exactly once.
+ *
+ * `shouldRun` also owns the legacy row's side effect: a pre-update save with no
+ * opening record is stamped done (and first-return done) inside this call, so
+ * a veteran never wakes on the beach and never meets the mystery sprout.
+ */
+const openingRuns = OpeningSequencer.shouldRun(!!saved)
+/** The beat this boot resumes at — staging replays snap instead of animate for
+ *  everything before it. 'wake' means a genuinely fresh player. */
+const isleBootBeat: BeatId = loadOpening()?.beat ?? 'wake'
+
+/**
+ * Live gate for every suppression in this file. Before the sequencer is
+ * constructed (module evaluation is still running — the restore path can toast
+ * about offline growth *before* the opening block below executes) the boot
+ * decision stands in for it, so a mid-opening resume is silent from its very
+ * first statement.
+ */
+function openingActive(): boolean {
+  return isleSeq ? isleSeq.active : openingRuns
+}
+
+/*
+ * Text-channel gates (§4.2), applied at the throat rather than at fifty call
+ * sites: while the opening is active nothing may render a word that is not in
+ * OPENING_STRINGS, and toasts/popups/banners are exactly the channels that
+ * speak uninvited (offline catch-up, autosave quality drops, dev buttons).
+ * Wrapping the methods once is also what keeps this true for every *future*
+ * call site, which a per-caller guard could never promise.
+ */
+{
+  const rawToast = hud.toast.bind(hud)
+  hud.toast = (message, kind) => {
+    if (!openingActive()) rawToast(message, kind)
+  }
+  const rawBanner = hud.eventBanner.bind(hud)
+  hud.eventBanner = (iconId, emoji, name, sub) => {
+    if (openingActive()) return
+    if (sub === undefined) rawBanner(iconId, emoji, name)
+    else rawBanner(iconId, emoji, name, sub)
+  }
+  const rawPopup = popups.spawn.bind(popups)
+  popups.spawn = (text, at, kind, life, variant) => {
+    if (openingActive()) return
+    rawPopup(text, at, kind ?? 'normal', life ?? 1.5, variant ?? '')
+  }
+}
+
+/*
+ * The old FTUE never starts fresh any more — the opening *is* session one.
+ * Constructed with `freshFarm: false` always (contract §3.2): a device with a
+ * stored mid-tutorial step still resumes it (legacy players keep their coach),
+ * but a fresh farm gets the isle opening instead, and the handover writes the
+ * FTUE key to 'done' so the coach can never wake afterwards.
+ */
+const ftue = new Ftue(false, (id) => audio.play(id))
 
 /**
  * The second tour, and the coin to follow it with.
@@ -1379,13 +1485,1657 @@ if (saved) {
   // The clearing is implied by the farm: if any ground is owned, it was cut.
   if (farm.exists) {
     clearing.restoreOpened()
-    syncGardenFence()
+    // Mid-opening resumes keep the garden wild — the fence belongs to the
+    // handover (§4.3), not to the restore.
+    if (!openingRuns) syncGardenFence()
   }
   // Any seeds at all, or any progress, means the beach was already combed.
   if (farm.exists || inventory.seedCount(BEACH_SEED_CROP) > 0) beachSeeds.restoreEmptied()
 
   const away = Save.offlineSeconds(saved.savedAt)
   if (away > 20) catchUp(away, 'while you were away')
+}
+
+// --- the isle opening --------------------------------------------------------
+/*
+ * Session one, rebuilt: wake → crate → shovel → refusal → chaos pocket → dig &
+ * plant → tide line → first harvest & first roll → the goat. The sequencer
+ * (game/opening/sequencer.ts) owns *which beat we are in*; everything in this
+ * section is staging — construct, reveal, point — and every staging function is
+ * idempotent so resume and jumpTo can replay the whole chain safely.
+ *
+ * Nothing below is allocated on a veteran's boot: the modules exist only when
+ * this device is owed the opening, or its session-2 first return.
+ */
+
+/** Scene parent for every opening prop (engine.scene is a Scene, the opening
+ *  modules take a Group — and one group also makes teardown legible). */
+let isleGroup: THREE.Group | null = null
+let isleUi: OpeningUi | null = null
+let isleHold: HoldInput | null = null
+let islePocket: ChaosPocket | null = null
+let isleBeach: BeachProps | null = null
+let isleTideline: Tideline | null = null
+let isleGoat: GoatArrival | null = null
+let isleButterflies: Butterflies | null = null
+let isleMusic: OpeningMusic | null = null
+let isleBreath: ReturnType<typeof createIslandBreath> | null = null
+/**
+ * The jungle wall (spec asset manifest, environment 5–8).
+ *
+ * The single largest thing on screen during the opening, and the reason the
+ * first build read as a lawn: the valley's own treeline is a sparse ring of
+ * 5.6-unit trees with daylight between every trunk, so the beach camera saw
+ * sky, mountains and sea straight through the "jungle". This is a dense
+ * horseshoe of layered foliage wrapped around the chaos pocket with exactly
+ * one doorway to the sea — the wayfinding is architectural, which is what lets
+ * the opening keep its promise of no arrows.
+ *
+ * Opening-only. See the handover for why, and for the collider walk-out.
+ */
+let isleWall: JungleWall | null = null
+/** The wall's entries in the shared world obstacle array, kept so the handover
+ *  can take them out of the world (the wall's own dispose cannot: it hands its
+ *  colliders to an array it does not own). */
+let isleWallObstacles: Obstacle[] = []
+
+/*
+ * The lotto tell's slow-mo (§5.4) — THE permanent grammar hook. A global dt
+ * multiplier applied immediately after engine.tick(), wound down on the REAL
+ * clock so it can never persist past its window, clamped so no caller can
+ * request a slideshow. Audio runs on the audio context's own clock, so the
+ * chime plays full speed over slowed visuals — per spec.
+ */
+let slowMoLeft = 0
+let slowMoScale = 1
+function slowMo(seconds: number, scale: number) {
+  slowMoLeft = Math.min(0.6, Math.max(0, seconds))
+  slowMoScale = Math.min(1, Math.max(0.05, scale))
+}
+
+// --- the opening's camera ----------------------------------------------------
+/*
+ * Spec §2: "over-the-shoulder three-quarter, low orbit, close enough that the
+ * avatar's hands read. Camera frames *up the cross* by default (jungle above,
+ * sea behind)."
+ *
+ * The first build inherited the farming camera for everything but the wake —
+ * distance 8, pitch 0.3, and a yaw that pointed down the valley — and it made
+ * the opening look like a diorama of a beach rather than like standing on one.
+ * Three separate numbers were wrong and all three matter:
+ *
+ *  - **Distance.** The farming default is the widest framing the game has,
+ *    because farming is a survey activity. The opening is the opposite: six
+ *    plants, one crate, one shovel, and a hold gesture on each. At 4.8 the
+ *    avatar is a third of the frame and the hands read; at 8 they are a smudge.
+ *  - **Pitch.** 0.3 looks *down* at the island. The whole point of the jungle
+ *    wall is that it stands over you, and you cannot loom over a camera that is
+ *    already above your head. 0.17 puts the lens near shoulder height, which
+ *    is what pushes the treeline into the top of the frame.
+ *  - **Yaw.** Held at WAKE_YAW for the whole opening rather than handed back at
+ *    the sit-up. That is the "up the cross" rule: jungle up-frame (+x), sea
+ *    behind the camera (-x). Handing yaw back at the sit-up spun the world a
+ *    quarter turn the moment the player took control, and every beat after it
+ *    was framed by accident.
+ *
+ * The player's own camera preferences are captured at construction and given
+ * back, intact, at the handover — the opening borrows the boom, it does not
+ * keep it. Orbit and look still work throughout; only the framing we *open*
+ * each beat on is ours.
+ */
+/** Camera yaw that looks inland (+x): boom on the sea side of the farmer. */
+const WAKE_YAW = -Math.PI / 2
+/** Farmer facing for the lying pose: head pointing inland, sea behind. */
+const WAKE_FACING = Math.PI / 2
+
+/** Cheek-in-the-sand: as close as the boom's obstacle clamp allows. */
+const WAKE_CAM_DIST = 3.8
+const WAKE_CAM_PITCH = 0.1
+/**
+ * Focus sits at the player's feet and the rig looks 1.15 above it — right for
+ * someone standing, a metre over the head of someone lying down. Dropping the
+ * focus point puts the look-at back on the face.
+ */
+const WAKE_CAM_FOCUS_DROP = 0.5
+
+/** The opening's working framing, beats 2–8. Low, close, up the cross. */
+const ISLE_CAM_DIST = 4.8
+const ISLE_CAM_PITCH = 0.17
+
+/**
+ * The goat shot, per phase: distance and pitch.
+ *
+ * The arrival is the session's cliffhanger and the look-at-player is, per spec,
+ * the most important animation in the opening — "it must feel like being
+ * *seen*". A goat is knee-high; at the old fixed distance of 15 it was a cream
+ * speck at the treeline and the one-second hold read as nothing at all. The
+ * shot now closes as the animal does, and at `look` it drops to eye level with
+ * it, which is the only framing in which being looked at by an animal works.
+ */
+const GOAT_SHOT: Record<GoatPhase, { d: number; pitch: number }> = {
+  idle: { d: ISLE_CAM_DIST, pitch: ISLE_CAM_PITCH },
+  rustle: { d: 6.4, pitch: 0.2 },
+  emerge: { d: 5.4, pitch: 0.17 },
+  walk: { d: 4.8, pitch: 0.16 },
+  sniff: { d: 3.9, pitch: 0.15 },
+  eat: { d: 3.9, pitch: 0.15 },
+  look: { d: 2.9, pitch: 0.08 },
+  bleat: { d: 3.3, pitch: 0.1 },
+  bound: { d: 6.0, pitch: 0.2 },
+  done: { d: ISLE_CAM_DIST, pitch: ISLE_CAM_PITCH },
+}
+
+/**
+ * How far to drop the goat's focus point so the rig's +1.15 look-at height
+ * lands on the animal's head instead of sailing over its back.
+ */
+const GOAT_EYE_DROP = 0.85
+
+// --- wake choreography state -------------------------------------------------
+let wakePhase: 'lying' | 'sitting' | 'up' = 'up'
+let wakeSitTimer = 0
+let wakeNudgeTimer = 20
+let isleFadeEl: HTMLDivElement | null = null
+
+/**
+ * The player's camera preferences, captured once at opening construction and
+ * restored whole at the handover. Distance is not stored: `setCinematicDistance(null)`
+ * already hands the boom back to whatever the player had.
+ */
+let isleCamPrevPitch = 0
+let isleCamPrevYaw = 0
+
+/** Live cinematic distance target, so the goat shot can retune it per phase
+ *  without fighting the beat-level framing. */
+let isleCamDist = ISLE_CAM_DIST
+let isleCamPitch = ISLE_CAM_PITCH
+/**
+ * Seconds of pitch settle still owed.
+ *
+ * The camera eases to the opening's framing and then *stops writing pitch*, so
+ * a player who drags to look up at the canopy keeps the angle they chose. A
+ * cinematic that never lets go of the lens is a cutscene, and the opening is
+ * not one.
+ */
+let isleCamSettle = 0
+
+// --- goat shot / journal state -----------------------------------------------
+let isleGoatShot = false
+let goatPrevPhase: GoatPhase = 'idle'
+let isleJournalDismissed = false
+let isleJournalProp: THREE.Group | null = null
+let isleJournalTimer = -1
+
+// --- prompt / refusal state --------------------------------------------------
+/** A string temporarily louder than the hold candidate ('sand', 'notYours'). */
+let islePromptOverride: { key: OpeningStringKey; pos: THREE.Vector3; t: number } | null = null
+let refusalCooldown = 0
+let refusalPour: { x: number; z: number; t: number } | null = null
+
+// --- progress bookkeeping ----------------------------------------------------
+let isleTidePicked = 0
+let isleFirstPickDone = false
+let breathStopTimer = -1
+let isleDigSpots: THREE.Vector3[] = []
+let isleDigTargets: HoldTarget[] = []
+let isleShovelWrapped: HoldTarget | null = null
+let isleOddTarget: HoldTarget | null = null
+let isleOddDone = false
+let isleGoldRipeStanding = false
+let isleCurrentTargets: HoldTarget[] = []
+let isleStatsSnapshot: OpeningStats | null = null
+let isleLastChip: number | null = -1
+
+// --- first-return (session 2) state ------------------------------------------
+let returnStaged = false
+let returnMysteryTile: Tile | null = null
+let returnMysterySeen = false
+let revisitEligible = false
+let revisitTimer = -1
+let revisitTuftCollected = false
+let returnMarked = false
+
+/** Where the goat's coat tuft snags (goat.ts TUFT_POS — mirrored for the
+ *  session-2 pulse marker; the collect itself goes through tuftTargetNear). */
+const TUFT_MARK = { x: -25.3, z: -7.7 }
+
+/** Clear-sound per chaos kind — every destruction gets its own voice. */
+const CHAOS_CLEAR_SFX: Record<ChaosKind, Sfx> = {
+  vine: 'vine-snap',
+  frond: 'frond-sweep',
+  driftwood: 'wood-crack',
+  'morning-glory': 'vine-snap',
+  basket: 'basket-crunch',
+  stone: 'stone-pop',
+  amphora: 'amphora-chime',
+}
+
+// --- ambient fauna, thinned to the manifest ----------------------------------
+/*
+ * Spec's ambient set for the opening is deliberately tiny: **two** black rock
+ * crabs, a gecko, three terns, two butterflies. The valley carries sixteen
+ * bright orange hermit crabs, which is the right number for a beach nobody is
+ * looking at closely and completely wrong for the opening's low, close camera:
+ * beat 1 and beat 4 came back with a dozen loud red dots strewn across ivory
+ * sand and green grass, and every one of them pulled the eye off the crate,
+ * the shovel and the treeline gap. Restraint is the whole note.
+ *
+ * Two things happen while the opening runs, both undone at the handover:
+ *
+ *  1. **Cull to two.** The pair nearest the wake spot are kept; the rest are
+ *     hidden after `Critters.update` has had its say (it owns `visible`, so
+ *     re-hiding downstream of it is the only place the decision sticks).
+ *  2. **Retint to basalt.** The kept pair get their own material clone tinted
+ *     to the spec's volcanic near-black `#2A2622`, warmed a touch so they read
+ *     as shell rather than as a hole. Cloned, never shared, so the valley's
+ *     other fourteen — and every crab after the handover — stay orange.
+ */
+const OPENING_CRABS = 2
+/** Volcanic rock, one step warm of the spec's `#2A2622` so a crab on wet sand
+ *  reads as a creature rather than as a shadow. */
+const ROCK_CRAB_TINT = 0x39322b
+
+interface IsleCrab {
+  object: THREE.Object3D
+  kept: boolean
+  /** The material this mesh arrived with, so the handover can put it back. */
+  restore: { mesh: THREE.Mesh; material: THREE.Material | THREE.Material[] }[]
+}
+let isleCrabs: IsleCrab[] | null = null
+
+/** Pick the two crabs nearest the wake spot and blacken them. Idempotent. */
+function isleThinCrabsOnce() {
+  if (isleCrabs) return
+  const ranked = critters.group.children
+    .map((object) => ({
+      object,
+      d: Math.hypot(object.position.x - SPAWN.x, object.position.z - SPAWN.z),
+    }))
+    .sort((a, b) => a.d - b.d)
+  isleCrabs = ranked.map((entry, i) => {
+    const kept = i < OPENING_CRABS
+    const restore: IsleCrab['restore'] = []
+    if (kept) {
+      entry.object.traverse((o) => {
+        const mesh = o as THREE.Mesh
+        if (!mesh.isMesh || Array.isArray(mesh.material)) return
+        restore.push({ mesh, material: mesh.material })
+        // Clone before touching: the crab GLB's material is shared by every
+        // crab on the island, and tinting it in place would blacken the lot.
+        const tinted = (mesh.material as THREE.Material).clone() as THREE.MeshLambertMaterial
+        if (tinted.color) tinted.color.setHex(ROCK_CRAB_TINT)
+        mesh.material = tinted
+      })
+    }
+    return { object: entry.object, kept, restore }
+  })
+}
+
+/** Hold the beach at two crabs. Called after Critters.update, which owns
+ *  `visible` and would otherwise turn the hidden fourteen back on. */
+function isleHoldCrabs() {
+  if (!isleCrabs) isleThinCrabsOnce()
+  for (const crab of isleCrabs!) if (!crab.kept) crab.object.visible = false
+}
+
+/** Give the beach its sixteen orange hermit crabs back. */
+function isleRestoreCrabs() {
+  if (!isleCrabs) return
+  for (const crab of isleCrabs) {
+    for (const { mesh, material } of crab.restore) {
+      ;(mesh.material as THREE.Material).dispose()
+      mesh.material = material
+    }
+  }
+  isleCrabs = null
+}
+
+/** Scratch vectors for the tap router — never handed to anything that keeps. */
+const isleTapVec = new THREE.Vector3()
+
+function isleSeedsLeft(): number {
+  return inventory.seedCount('sun-tomato') + inventory.seedCount('mystery-sprout')
+}
+
+/**
+ * Top the opening seeds back up to exactly 6 + 1, counting everything a seed
+ * can have become (bag, planted, picked). Autosaves run on a 10 s clock, so a
+ * refresh between the crate tap and the next save would otherwise eat the
+ * pouch — refusal-never-failure extends to the browser's close button.
+ */
+function isleEnsureSeeds() {
+  let sun = inventory.seedCount('sun-tomato')
+  let mystery = inventory.seedCount('mystery-sprout')
+  for (const t of farm.tiles) {
+    if (t.crop?.def.id === 'sun-tomato') sun++
+    else if (t.crop?.def.id === 'mystery-sprout') mystery++
+  }
+  for (const s of inventory.produce.values()) if (s.cropId === 'sun-tomato') sun += s.count
+  if (loadOpening()?.mysteryPlanted) mystery = Math.max(mystery, 1)
+  if (sun < 6) inventory.giveSeed('sun-tomato', 6 - sun)
+  if (mystery < 1) inventory.giveSeed('mystery-sprout', 1)
+}
+
+/** Walk the farmer to `gap` units short of a point (tap-to-approach). */
+function isleMoveNear(x: number, z: number, gap: number) {
+  const dx = player.position.x - x
+  const dz = player.position.z - z
+  const d = Math.hypot(dx, dz) || 1
+  player.moveTo(isleTapVec.set(x + (dx / d) * gap, 0, z + (dz / d) * gap))
+}
+
+/**
+ * Wrap a module-owned hold target so the farmer's body strains with it.
+ * The pocket's targets drive their prop rigs; the player's two-hand brace is
+ * the integrator's to add. Wrappers keep the underlying identity semantics:
+ * they are only rebuilt on retarget events, never per frame, because
+ * HoldInput cancels any in-flight hold whose exact object vanishes.
+ */
+function isleWrapStrain(t: HoldTarget): HoldTarget {
+  return {
+    ...t,
+    onProgress: (p) => {
+      if (p === 0) {
+        // The strain voice at commit: elastic creak for the soft pulls, grit
+        // for the pry. Release sounds live in CHAOS_CLEAR_SFX.
+        if (t.id.includes('vine') || t.id.includes('glory')) audio.play('vine-strain', { gain: 0.7 })
+        else if (t.id.includes('stone')) audio.play('stone-pry', { gain: 0.7 })
+      }
+      player.setStrain(p)
+      t.onProgress?.(p)
+    },
+    onCancel: () => {
+      player.setStrain(0)
+      t.onCancel?.()
+    },
+    onComplete: () => {
+      player.setStrain(0)
+      t.onComplete()
+    },
+  }
+}
+
+/**
+ * Deliver a chaos payout: silent inventory credit, satchel blip, a small
+ * 'produce' doober arc for the eye (never 'coin'/'xp' — the opening grants
+ * neither), and the kind's destruction sound.
+ */
+function isleGrantDrop(at: THREE.Vector3, drop: ChaosDrop, kind: ChaosKind) {
+  if (drop.material) {
+    inventory.addMaterial(drop.material, drop.amount)
+    isleUi?.blipMaterial(drop.material, drop.amount)
+    doobers.spawn(at, 'produce', Math.min(3, drop.amount + 1), 0)
+  }
+  if (drop.keepable) {
+    inventory.addMaterial(drop.keepable, 1)
+    isleUi?.blipMaterial('keepable', 1)
+  }
+  audio.play(CHAOS_CLEAR_SFX[kind])
+}
+
+/** The tide's gifts: keepables into the materials map, wood/fibre for the
+ *  practical washups, and the session-2 impossible glass gets the small tell. */
+function isleTideCollect(at: THREE.Vector3, drop: TideDrop) {
+  isleTidePicked++
+  audio.play('collect')
+  bursts.emit(at, 10, [0x9fe8b5, 0xd8e8e0], { kind: 'spark', speed: 2.2, life: 0.6, scale: 0.08 })
+  if (drop.id === 'driftwood-stick') {
+    inventory.addMaterial('wood', 1)
+    isleUi?.blipMaterial('wood', 1)
+  } else if (drop.id === 'rope-coil') {
+    inventory.addMaterial('fiber', 1)
+    isleUi?.blipMaterial('fiber', 1)
+  } else {
+    inventory.addMaterial(drop.id, 1)
+    isleUi?.blipMaterial('keepable', 1)
+  }
+  if (drop.lotto) {
+    playLottoTell({ at: at.clone(), bursts, audio, slowMo, small: true })
+    isleUi?.pulseAt(null)
+  }
+}
+
+// --- staging (idempotent, replayed by the sequencer on resume/jumpTo) --------
+
+/** Fade-from-white over the wake. DOM because it must cover the HUD layer too;
+ *  no text, so the string budget never sees it. */
+function isleWakeFade() {
+  if (isleFadeEl) return
+  const el = document.createElement('div')
+  el.style.cssText =
+    'position:fixed;inset:0;background:#fff;z-index:60;pointer-events:none;opacity:1;' +
+    'transition:opacity 2.4s ease 0.4s'
+  document.body.appendChild(el)
+  isleFadeEl = el
+  requestAnimationFrame(() => {
+    el.style.opacity = '0'
+  })
+  window.setTimeout(() => {
+    el.remove()
+    if (isleFadeEl === el) isleFadeEl = null
+  }, 3400)
+}
+
+function isleStageWake() {
+  wakePhase = 'lying'
+  wakeNudgeTimer = 20
+  openingCinematic = true
+  player.cancelMove()
+  player.position.set(SPAWN.x, groundHeight(SPAWN.x, SPAWN.z), SPAWN.z)
+  player.playOpeningPose('lie')
+  // Low and close: cheek-in-the-sand framing, sea behind, jungle looming.
+  isleCamPitch = WAKE_CAM_PITCH
+  isleCamDist = WAKE_CAM_DIST
+  engine.pitch = WAKE_CAM_PITCH
+  engine.yaw = WAKE_YAW
+  engine.targetYaw = WAKE_YAW
+  engine.setCinematicDistance(WAKE_CAM_DIST)
+  engine.focus.copy(player.position)
+  engine.focus.y -= WAKE_CAM_FOCUS_DROP
+  isleWakeFade()
+}
+
+/**
+ * Hand the boom back to the opening's working framing.
+ *
+ * Shared by the sit-up settle, the end of the goat shot and `isleSnapWake`, so
+ * there is exactly one description of what "the opening camera" is. Yaw is
+ * deliberately NOT restored to the player's preference here — up-the-cross is
+ * the opening's framing rule and it holds until the handover.
+ */
+function isleCamPlay(snap: boolean) {
+  isleCamPitch = ISLE_CAM_PITCH
+  isleCamDist = ISLE_CAM_DIST
+  engine.setCinematicDistance(ISLE_CAM_DIST)
+  if (snap) {
+    engine.pitch = ISLE_CAM_PITCH
+    engine.yaw = WAKE_YAW
+    engine.targetYaw = WAKE_YAW
+    isleCamSettle = 0
+  } else {
+    isleCamSettle = 1.6
+  }
+}
+
+/** The first input of the game — the body, not a UI. */
+function isleWakeTap() {
+  if (wakePhase !== 'lying') return
+  wakePhase = 'sitting'
+  wakeSitTimer = 0.9
+  player.playOpeningPose('situp')
+  // This tap is also the audio unlock gesture; OpeningMusic.start() has been
+  // polling for the context since boot and catches it within 120 ms.
+  audio.play('gull')
+  bursts.emit(player.position, 8, [0xe8dcc0, 0xd9c9a8], {
+    kind: 'puff',
+    speed: 0.7,
+    life: 0.6,
+    scale: 0.12,
+    jitter: 0.4,
+  })
+}
+
+/** Undo a live wake that the sequencer has moved past: `jumpTo` (dev/verify)
+ *  can land while the wake cinematic is still holding input — beat is no
+ *  longer 'wake', so isleFrame's choreography would never release it and every
+ *  tap/hold would be eaten forever. Snap the farmer up and give the camera
+ *  back. Boot-resume is a no-op here (wakePhase starts 'up'). */
+function isleSnapWake() {
+  if (wakePhase === 'up') return
+  wakePhase = 'up'
+  openingCinematic = false
+  player.clearOpeningPose()
+  isleCamPlay(true)
+  if (isleFadeEl) {
+    isleFadeEl.remove()
+    isleFadeEl = null
+  }
+}
+
+/** Fire onBeatStart staging. `replay` = this beat is behind the beat the
+ *  sequencer is heading for, so snap state instead of animating it. The target
+ *  is the sequencer's current beat (it is assigned before staging replays);
+ *  during the constructor's synchronous replay the binding is still null, so
+ *  the boot record's beat — the same value — stands in. Computing replay
+ *  against the live target rather than the boot beat is what keeps a
+ *  mid-session `jumpTo` from re-running the wake cinematic live (which would
+ *  freeze input for good, since the choreography only advances while the
+ *  sequencer's beat is still 'wake'). */
+function isleStage(beat: BeatId) {
+  const target = isleSeq ? isleSeq.beat : isleBootBeat
+  const replay = BEAT_ORDER.indexOf(beat) < BEAT_ORDER.indexOf(target)
+  switch (beat) {
+    case 'wake':
+      if (!replay) isleStageWake()
+      else isleSnapWake()
+      break
+    case 'crate':
+      if (replay) {
+        isleBeach?.restore({ crate: true, shovel: false })
+        isleEnsureSeeds()
+        if (isleBeach) isleUi?.bornSatchel(isleBeach.cratePos)
+      }
+      break
+    case 'shovel':
+      if (replay) {
+        isleBeach?.restore({ crate: true, shovel: true })
+        player.setTool('shovel')
+      }
+      isleRetargetHolds()
+      break
+    case 'clearing':
+      if (replay) {
+        islePocket?.restore({ cleared: true })
+        farm.openBare()
+      } else {
+        // The wayfinding actors: living, ignorable, never an arrow (§4.1).
+        isleLeadButterflies()
+      }
+      isleRetargetHolds()
+      break
+    case 'plant':
+      farm.openBare()
+      isleComputeDigSpots()
+      if (replay) isleEnsureSeeds()
+      isleRetargetHolds()
+      break
+    case 'grow':
+      // Beat 7 runs in parallel with the ring: the tide line fills the wait.
+      // Not respawned when resuming past it — re-gifting forever would let a
+      // refresh farm the beach.
+      if (!replay) isleTideline?.spawnSet(1)
+      break
+    case 'harvest':
+      isleRetargetHolds()
+      break
+    case 'arrival':
+      isleStartGoatShot(false)
+      break
+    case 'done':
+      break
+  }
+  isleSyncMusicLayers()
+}
+
+/** Bring the stems in line with a resumed beat (L2 = pocket cleared, L3 =
+ *  first ordinary picked). Live entries fire from their own moments. */
+function isleSyncMusicLayers() {
+  if (!isleMusic || !isleSeq) return
+  const bi = BEAT_ORDER.indexOf(isleSeq.beat)
+  if (bi >= BEAT_ORDER.indexOf('plant')) isleMusic.enterLayer(2)
+  if (bi >= BEAT_ORDER.indexOf('harvest')) {
+    for (const s of inventory.produce.values()) {
+      if (s.cropId === 'sun-tomato') {
+        isleMusic.enterLayer(3)
+        isleFirstPickDone = true
+        break
+      }
+    }
+  }
+}
+
+// --- dig & plant -------------------------------------------------------------
+
+/**
+ * The six-and-a-spare bed spots: the free level-1 garden cells nearest the
+ * pocket mouth, fixed for the session so their HoldTarget identities (and the
+ * verify driver's `dig-N` ids) stay stable. digBedAt snaps each hold to the
+ * real farm tile under it.
+ */
+function isleComputeDigSpots() {
+  if (isleDigSpots.length > 0 || !islePocket) return
+  const { half, offset } = farm.gardenExtents()
+  const cx = FARM_CENTRE.x + offset
+  const cz = FARM_CENTRE.z + offset
+  const pocket = islePocket.centre
+  const cands = farm.tiles.filter(
+    (t) =>
+      !t.placed &&
+      !t.sprinkler &&
+      Math.abs(t.pos.x - cx) <= half &&
+      Math.abs(t.pos.z - cz) <= half,
+  )
+  cands.sort(
+    (a, b) =>
+      Math.hypot(a.pos.x - pocket.x, a.pos.z - pocket.z) -
+      Math.hypot(b.pos.x - pocket.x, b.pos.z - pocket.z),
+  )
+  isleDigSpots = cands.slice(0, 7).map((t) => t.pos.clone())
+  isleDigTargets = isleDigSpots.map((pos, i) => ({
+    id: `dig-${i}`,
+    kind: 'dig' as const,
+    pos,
+    radius: 1.5,
+    duration: 1.0,
+    verb: 'dig' as const,
+    onProgress: (p: number) => player.setStrain(p),
+    onCancel: () => player.setStrain(0),
+    onComplete: () => isleDigComplete(i),
+  }))
+}
+
+function isleDigComplete(i: number) {
+  player.setStrain(0)
+  const tile = farm.digBedAt(isleDigSpots[i])
+  audio.play(i % 2 ? 'dig-thunk-2' : 'dig-thunk')
+  player.playAction('shovel')
+  if (tile) {
+    bursts.emit(tile.pos, 10, [0x5a4632, 0x33281e], {
+      kind: 'puff',
+      speed: 0.9,
+      life: 0.6,
+      scale: 0.16,
+      jitter: 0.4,
+    })
+  }
+  isleRetargetHolds()
+}
+
+/**
+ * Plant into a dug bed: sun tomatoes first (the sixth planted carries the
+ * scripted 'gold' — the odd one, every player's first roll), then the mystery
+ * seed once the stamped ones are gone. No cost, no XP, no text.
+ */
+function islePlantAt(tile: Tile) {
+  let planted = false
+  if (inventory.seedCount('sun-tomato') > 0) {
+    let sun = 0
+    let gold = 0
+    for (const t of farm.tiles) {
+      if (t.crop?.def.id === 'sun-tomato') {
+        sun++
+        if (t.crop.rarity === 'gold') gold++
+      }
+    }
+    inventory.takeSeed('sun-tomato')
+    farm.plantScripted(tile, 'sun-tomato', sun >= 5 && gold === 0 ? 'gold' : 'common')
+    planted = true
+  } else if (inventory.seedCount('mystery-sprout') > 0) {
+    inventory.takeSeed('mystery-sprout')
+    farm.plantScripted(tile, 'mystery-sprout', 'common')
+    isleSeq?.notify('mystery-planted', { tile: { x: tile.gx, z: tile.gz } })
+    planted = true
+  }
+  if (!planted) return
+  player.playAction('hoe')
+  audio.play('seed-plop')
+  bursts.emit(tile.pos, 6, [0x5a4632, 0x33281e], {
+    kind: 'puff',
+    speed: 0.6,
+    life: 0.5,
+    scale: 0.1,
+    jitter: 0.35,
+  })
+  isleRetargetHolds()
+}
+
+/** Tap-pick an ordinary ripe tomato. The odd one refuses the tap — it is a
+ *  hold, and the difference is the lesson. */
+function islePickOrdinary(tile: Tile) {
+  const got = farm.harvest(tile, elapsed)
+  if (!got) return
+  inventory.addProduce(got.def, got.amount, got.rarity, got.mutations, got.weightKg)
+  isleUi?.clearSundial(`bed-${tile.gx}-${tile.gz}`)
+  isleUi?.blipHarvest(got.amount)
+  audio.play('tomato-pluck')
+  bursts.emit(tile.pos, 8, [0xd9553a, 0x4fa83d], { kind: 'shard', speed: 2.6, life: 0.6 })
+  if (!isleFirstPickDone) {
+    isleFirstPickDone = true
+    isleMusic?.enterLayer(3)
+  }
+}
+
+/** The first roll: hold-pick the odd tomato, and the lotto grammar fires —
+ *  gold burst, chime, 0.3 s slow-mo. Established here, identical forever. */
+function islePickOdd(tile: Tile) {
+  player.setStrain(0)
+  const got = farm.harvest(tile, elapsed)
+  if (!got) return
+  inventory.addProduce(got.def, got.amount, got.rarity, got.mutations, got.weightKg)
+  isleUi?.clearSundial(`bed-${tile.gx}-${tile.gz}`)
+  isleUi?.blipHarvest(got.amount)
+  const at = tile.pos.clone()
+  at.y += 1
+  playLottoTell({ at, bursts, audio, slowMo })
+  isleOddTarget = null
+  isleOddDone = true
+  isleRetargetHolds()
+}
+
+/**
+ * Rebuild HoldInput's target list from world state. Event-driven — beat
+ * changes, clears, digs, plants — never per frame: HoldInput compares targets
+ * by identity, and a fresh list mid-hold would cancel the player's grip.
+ */
+function isleRetargetHolds() {
+  if (!isleHold || !isleSeq) return
+  const targets: HoldTarget[] = []
+  const bi = BEAT_ORDER.indexOf(isleSeq.beat)
+
+  if (bi >= BEAT_ORDER.indexOf('shovel') && isleBeach) {
+    const t = isleBeach.shovelHoldTarget()
+    if (t) {
+      // One stable underlying target for the shovel's whole life → one wrapper.
+      if (!isleShovelWrapped) isleShovelWrapped = isleWrapStrain(t)
+      targets.push(isleShovelWrapped)
+    } else {
+      isleShovelWrapped = null
+    }
+  }
+
+  if (bi >= BEAT_ORDER.indexOf('clearing') && islePocket) {
+    for (const t of islePocket.holdTargets()) targets.push(isleWrapStrain(t))
+  }
+
+  if (isleSeq.beat === 'plant' || isleSeq.beat === 'grow') {
+    // Six beds, plus a seventh spot while the unmarked seed is still in the
+    // satchel — the quiet invitation to plant it.
+    const dug = farm.tiles.filter((t) => t.placed).length
+    const allow = (inventory.seedCount('mystery-sprout') > 0 ? 7 : 6) - dug
+    let offered = 0
+    for (let i = 0; i < isleDigTargets.length && offered < Math.max(0, allow); i++) {
+      const tile = farm.tileNear(isleDigSpots[i], 0.4)
+      if (tile?.placed) continue
+      targets.push(isleDigTargets[i])
+      offered++
+    }
+  }
+
+  if (bi >= BEAT_ORDER.indexOf('harvest')) {
+    if (!isleOddTarget && !isleOddDone) {
+      const goldTile = farm.tiles.find(
+        (t) => t.crop?.def.id === 'sun-tomato' && t.crop.rarity === 'gold' && t.crop.progress >= 1,
+      )
+      if (goldTile) {
+        isleOddTarget = {
+          id: 'odd-fruit',
+          kind: 'odd-fruit',
+          pos: goldTile.pos,
+          radius: 1.6,
+          duration: 0.9,
+          verb: null, // the odd harvest gets no text — the grammar carries it
+          onProgress: (p) => player.setStrain(p),
+          onCancel: () => player.setStrain(0),
+          onComplete: () => islePickOdd(goldTile),
+        }
+      }
+    }
+    if (isleOddTarget) targets.push(isleOddTarget)
+  }
+
+  isleCurrentTargets = targets
+  isleHold.setTargets(targets)
+}
+
+// --- refusal -----------------------------------------------------------------
+
+/** The game's one poetic denial: try, watch the sand pour back, hear why. */
+function isleRefuse(x: number, z: number) {
+  refusalCooldown = 2.8
+  const y = groundHeight(x, z)
+  player.playAction(isleBeach?.shovelPulled ? 'shovel' : 'hoe')
+  audio.play('dig-thunk')
+  bursts.emit(new THREE.Vector3(x, y + 0.15, z), 10, [0xe8dcc0, 0xd4c39e], {
+    kind: 'shard',
+    speed: 2.2,
+    life: 0.5,
+    scale: 0.09,
+    jitter: 0.4,
+  })
+  refusalPour = { x, z, t: 0.5 }
+  islePromptOverride = { key: 'sand', pos: new THREE.Vector3(x, y + 0.4, z), t: 2.6 }
+  // The butterflies renew the invitation each time the sand says no.
+  isleLeadButterflies()
+  isleSeq?.notify('sand-refused')
+}
+
+/**
+ * Send the pair from wherever the player is standing to the treeline gap.
+ *
+ * Two changes from the contract's fixed `(-52, 5) → (-40, 0)` route. The start
+ * is the player's own position, because the point of the refusal beat is that
+ * the sand said no *here* and the answer is over *there* — a pair of insects
+ * that begins its circuit ten units away is scenery, not an invitation, and at
+ * a fifth of a unit across they were also simply too small to notice at that
+ * range. The destination is the wall's own `gapCentre` rather than a hand-typed
+ * coordinate, so the doorway and the thing pointing at it can never drift
+ * apart.
+ */
+function isleLeadButterflies() {
+  const from = new THREE.Vector3(player.position.x + 1.2, 0, player.position.z)
+  const to = isleWall ? isleWall.gapCentre : new THREE.Vector3(-40, groundHeight(-40, 0), 0)
+  isleButterflies?.lead(from, to)
+}
+
+// --- the opening tap router --------------------------------------------------
+
+/**
+ * Screen-space entry: HoldInput's tap fallthrough (mouse) and TouchControls'
+ * onTap both land here while the opening is active.
+ */
+function isleScreenTap(clientX: number, clientY: number) {
+  if (!isleSeq || !isleSeq.active) return
+  if (panelOpen() || isEditingUi()) return
+  if (isleSeq.beat === 'wake' || openingCinematic) {
+    isleWorldTap(0, 0) // the wake tap is "anywhere"; cinematic taps are eaten
+    return
+  }
+  const hit = pickGround(engine, clientX, clientY)
+  if (hit) isleWorldTap(hit.x, hit.z)
+}
+
+/**
+ * World-space tap router (§3.1): crate → beds/plant/pick → tide line →
+ * amphora → sand refusal → tap-to-move. Desktop parity: tap-to-move exists
+ * during the opening only.
+ */
+function isleWorldTap(x: number, z: number): boolean {
+  if (!isleSeq || !isleSeq.active || !isleBeach || !islePocket || !isleTideline) return false
+  const beat = isleSeq.beat
+
+  if (beat === 'wake') {
+    isleWakeTap()
+    return true
+  }
+  if (openingCinematic) return true
+
+  const px = player.position.x
+  const pz = player.position.z
+
+  // 1. The crate — the first discrete act.
+  if (!isleBeach.crateOpened) {
+    const c = isleBeach.cratePos
+    if (Math.hypot(x - c.x, z - c.z) < 1.8) {
+      if (isleBeach.tapCrate(player.position)) audio.play('crate-creak')
+      else isleMoveNear(c.x, c.z, 1.4)
+      return true
+    }
+  }
+
+  // 2. Beds: plant into a dug bed, tap-pick a ripe ordinary.
+  if (farm.exists) {
+    const tile = farm.tileNear(isleTapVec.set(x, 0, z), TILE_SIZE * 0.9)
+    if (tile?.placed && !tile.sprinkler) {
+      if (!tile.crop && isleSeedsLeft() > 0) {
+        if (Math.hypot(px - tile.pos.x, pz - tile.pos.z) < 2.6) islePlantAt(tile)
+        else isleMoveNear(tile.pos.x, tile.pos.z, 0.2)
+        return true
+      }
+      if (tile.crop?.def.id === 'sun-tomato' && tile.crop.progress >= 1) {
+        if (tile.crop.rarity !== 'common') return true // the odd one is a hold
+        if (Math.hypot(px - tile.pos.x, pz - tile.pos.z) < 2.6) islePickOrdinary(tile)
+        else isleMoveNear(tile.pos.x, tile.pos.z, 0.2)
+        return true
+      }
+    }
+  }
+
+  // 3. Tide-line washups: tap-collect in reach, walk over otherwise.
+  {
+    const near = isleTideline.targetNear(player.position)
+    if (near && Math.hypot(near.at.x - x, near.at.z - z) < 1.6) {
+      near.collect() // onCollect (isleTideCollect) does the granting
+      return true
+    }
+    for (const at of isleTideline.positions()) {
+      if (Math.hypot(at.x - x, at.z - z) < 1.4) {
+        isleMoveNear(at.x, at.z, 0.9)
+        return true
+      }
+    }
+  }
+
+  // 4. The amphora shard — the pocket's single tap-collect.
+  {
+    const shard = islePocket.tapTargetNear(player.position)
+    if (shard && Math.hypot(x - px, z - pz) < 2.8) {
+      isleGrantDrop(player.position.clone(), shard.collect(), 'amphora')
+      isleRetargetHolds()
+      return true
+    }
+  }
+
+  // Refusal, never failure: a planting attempt on dry sand (spec beat 4).
+  if (
+    isleBeach.crateOpened &&
+    (beat === 'shovel' || beat === 'clearing' || beat === 'plant') &&
+    refusalCooldown <= 0 &&
+    isSand(x, z) &&
+    Math.hypot(x - px, z - pz) < 2.6
+  ) {
+    isleRefuse(x, z)
+    return true
+  }
+
+  // 5. Tap-to-move.
+  if (isWalkable(x, z)) player.moveTo(isleTapVec.set(x, 0, z))
+  return true
+}
+
+// --- the goat, the journal, the handover -------------------------------------
+
+/** Beat 9 (or the session-2 revisit): letterboxed shot on the treeline, no
+ *  title text ever. The opening run also freezes input; the revisit does not. */
+function isleStartGoatShot(revisit: boolean) {
+  if (!isleGoat) return
+  isleGoatShot = true
+  /*
+   * Open on the rustle framing rather than easing in from wherever the player
+   * left the boom: the two seconds of leaves-only anticipation are the shot,
+   * and a camera still travelling through them spends them on itself.
+   */
+  isleCamDist = GOAT_SHOT.rustle.d
+  engine.setCinematicDistance(isleCamDist)
+  document.body.classList.add('cinematic')
+  if (!revisit) openingCinematic = true
+  const beds = isleBedPositions()
+  if (revisit) isleGoat.beginReturnVisit(beds, () => player.position)
+  else isleGoat.begin(beds, () => player.position)
+}
+
+function isleBedPositions(): THREE.Vector3[] {
+  const planted = farm.tiles.filter((t) => t.placed && t.crop).map((t) => t.pos.clone())
+  if (planted.length > 0) return planted
+  return farm.tiles.filter((t) => t.placed).map((t) => t.pos.clone())
+}
+
+/** End of the goat run: hard cut home, then (in the opening) the sketch. */
+function isleGoatDone(leftTuft: boolean) {
+  isleGoatShot = false
+  document.body.classList.remove('cinematic')
+  /*
+   * A hard cut home — cuts are cinematic language, a slow lerp back is just
+   * seasickness. In the opening "home" is the opening's own framing; in the
+   * session-2 revisit the opening is over and the boom belongs to the player.
+   */
+  if (isleSeq?.active) isleCamPlay(true)
+  else {
+    engine.pitch = isleCamPrevPitch
+    engine.targetYaw = isleCamPrevYaw
+    engine.yaw = isleCamPrevYaw
+    engine.setCinematicDistance(null)
+  }
+  if (isleSeq?.active) {
+    // The avatar sits, pulls the logbook, and sketches what it saw.
+    player.playOpeningPose('sketch')
+    if (!isleJournalProp && isleGroup) {
+      isleJournalProp = createJournalProp()
+      const px = player.position.x + Math.sin(player.heading) * 0.55
+      const pz = player.position.z + Math.cos(player.heading) * 0.55
+      isleJournalProp.position.set(px, groundHeight(px, pz), pz)
+      isleJournalProp.rotation.y = player.heading + Math.PI
+      isleGroup.add(isleJournalProp)
+    }
+    audio.play('charcoal')
+    isleJournalTimer = 0.8
+  } else if (leftTuft) {
+    isleUi?.pulseAt(
+      new THREE.Vector3(TUFT_MARK.x, groundHeight(TUFT_MARK.x, TUFT_MARK.z) + 0.5, TUFT_MARK.z),
+      0.5,
+    )
+  }
+}
+
+/**
+ * Handover (§4.3, in order): chrome rebirth → record done (already stamped by
+ * the sequencer) → world systems resume (every gate reads openingActive, now
+ * false) → FTUE key marked done → music crossfade → hold input retired.
+ */
+function isleHandover() {
+  isleUi?.end()
+  openingCinematic = false
+  isleGoatShot = false
+  document.body.classList.remove('cinematic')
+  /*
+   * The boom goes back to the player, whole: distance, pitch and the yaw the
+   * opening borrowed to frame up the cross. This is also the cut that covers
+   * the jungle wall being struck below — the world changes shape and the
+   * camera changes angle in the same frame, which is how a set change is
+   * supposed to be hidden.
+   */
+  engine.setCinematicDistance(null)
+  engine.pitch = isleCamPrevPitch
+  engine.targetYaw = isleCamPrevYaw
+  engine.yaw = isleCamPrevYaw
+  isleCamSettle = 0
+  /*
+   * Strike the jungle wall.
+   *
+   * It is an opening-only set piece and its east arm sits at x ≈ -20.8, in the
+   * lane between the finished farm and the village — the horseshoe exists to
+   * make the clearing feel like the only ordered place on the island, and once
+   * the island is the player's the same geometry is a fence around their farm.
+   * `dispose()` releases the colliders it owns, but they were pushed into the
+   * shared world array and the *camera's* boom-clearance pass does not read
+   * `off`, so the entries are also walked out of the world by hand — otherwise
+   * the camera would keep flinching at a horseshoe of invisible trees forever.
+   */
+  if (isleWall) {
+    isleWall.dispose()
+    isleWall = null
+    for (const o of isleWallObstacles) {
+      o.off = true
+      o.r = 0
+      o.x = 1e6
+      o.z = 1e6
+    }
+    isleWallObstacles = []
+  }
+  // The valley's own ambient life comes back with the rest of the world.
+  isleRestoreCrabs()
+  beachSeeds.group.visible = true
+  flotsam.group.visible = true
+  player.clearOpeningPose()
+  player.setStrain(0)
+  player.setTool('none')
+  if (isleJournalProp && isleGroup) {
+    isleGroup.remove(isleJournalProp)
+    isleJournalProp = null
+  }
+  isleBreath?.stop()
+  // The garden formalises itself as the game begins: fence and router in sync.
+  syncGardenFence()
+  hud.updateShovel(shovelMode(), farm.nextPlotCost)
+  // The coach never wakes: the opening was session one.
+  try {
+    localStorage.setItem('sv-ftue', 'done')
+  } catch {
+    /* storage off */
+  }
+  isleMusic?.fadeToGameMusic()
+  if (isleHold) {
+    isleHold.enabled = false
+    isleHold.setTargets([])
+  }
+  isleCurrentTargets = []
+}
+
+// --- first return (session 2, §3.3) ------------------------------------------
+
+function isleReturnStart(plan: FirstReturnPlan) {
+  returnStaged = true
+  // (1) The mystery bed emerged — never auto-revealed; a tap says its one line.
+  if (plan.mysteryBed) {
+    const bed = plan.mysteryBed
+    const tile = farm.tiles.find((t) => t.gx === bed.x && t.gz === bed.z)
+    if (tile?.crop && tile.crop.def.id === 'mystery-sprout') {
+      tile.crop.progress = 0.4
+      farm.refreshTile(tile)
+      returnMysteryTile = tile
+    }
+  }
+  // (2) The tide turned over: set 2, with the impossible glass marked.
+  isleTideline?.spawnSet(2)
+  const glints = isleTideline?.positions() ?? []
+  const glass = glints[2] ?? glints[glints.length - 1] ?? null
+  if (glass) isleUi?.pulseAt(glass, 0.5)
+  // (3) The goat comes back if something is growing, on its own clock.
+  revisitEligible =
+    plan.goatRevisit && farm.tiles.some((t) => t.crop !== null && t.crop.def.id !== 'mystery-sprout')
+  if (revisitEligible) revisitTimer = 60 + Math.random() * 60
+}
+
+/** One-shot "You didn't plant this." — the mystery keeps its secret. */
+function isleNotYours(tile: Tile) {
+  returnMysterySeen = true
+  islePromptOverride = { key: 'notYours', pos: tile.pos.clone().setY(tile.pos.y + 1.0), t: 3 }
+  audio.play('sprout-pip')
+}
+
+/**
+ * Return-session world taps, hooked into interactAt: washups, the mystery
+ * sprout's line, and the goat's coat tuft. Returns true when consumed.
+ */
+function returnWorldTap(x: number, z: number): boolean {
+  if (!isleSeq || isleSeq.active || !isleTideline) return false
+
+  const near = isleTideline.targetNear(player.position)
+  if (near && Math.hypot(near.at.x - x, near.at.z - z) < 1.6) {
+    near.collect()
+    return true
+  }
+
+  if (returnStaged) {
+    const tile = farm.tileNear(isleTapVec.set(x, 0, z), TILE_SIZE * 0.9)
+    if (tile?.crop?.def.id === 'mystery-sprout') {
+      isleNotYours(tile)
+      return true
+    }
+    const tuft = isleGoat?.tuftTargetNear(player.position)
+    if (tuft && Math.hypot(x - player.position.x, z - player.position.z) < 3) {
+      tuft.collect()
+      revisitTuftCollected = true
+      isleUi?.pulseAt(null)
+      audio.play('pouch-rustle')
+      // The want-slot fills: the journal page returns with its token.
+      isleUi?.showJournal(() => {})
+      return true
+    }
+  }
+  return false
+}
+
+// --- per-frame drivers -------------------------------------------------------
+
+/** Everything the sequencer advances on, assembled from module getters —
+ *  the ftueStats pattern. Harvest counts derive from the produce map, so a
+ *  mid-beat refresh restores them from the normal autosave for free. */
+function isleBuildStats(): OpeningStats {
+  let bedsDug = 0
+  let sunStanding = 0
+  let sunRipe = 0
+  let mysteryStanding = 0
+  isleGoldRipeStanding = false
+  for (const t of farm.tiles) {
+    if (t.placed && !t.sprinkler) bedsDug++
+    const c = t.crop
+    if (!c) continue
+    if (c.def.id === 'sun-tomato') {
+      sunStanding++
+      if (c.progress >= 1) {
+        sunRipe++
+        if (c.rarity === 'gold') isleGoldRipeStanding = true
+      }
+    } else if (c.def.id === 'mystery-sprout') mysteryStanding++
+  }
+  let ordPicked = 0
+  let oddPicked = false
+  for (const s of inventory.produce.values()) {
+    if (s.cropId !== 'sun-tomato') continue
+    if (s.rarity === 'gold') oddPicked = true
+    else ordPicked += s.count
+  }
+  return {
+    satUp: wakePhase === 'up',
+    crateOpened: isleBeach?.crateOpened ?? false,
+    shovelPulled: isleBeach?.shovelPulled ?? false,
+    requiredChaosLeft: islePocket?.requiredLeft ?? 0,
+    pocketCleared: islePocket?.cleared ?? false,
+    bedsDug,
+    seedsPlanted: sunStanding + mysteryStanding + ordPicked + (oddPicked ? 1 : 0),
+    tomatoesRipe: sunRipe + ordPicked + (oddPicked ? 1 : 0),
+    ordinariesPicked: ordPicked,
+    oddPicked,
+    tidePicked: isleTidePicked,
+    goatDone: isleGoat?.done ?? false,
+    journalDismissed: isleJournalDismissed,
+  }
+}
+
+/** THE one contextual prompt, resolved by priority: an override string, the
+ *  live hold, a plantable bed, the nearest candidate, a washup in reach. */
+function islePromptSync() {
+  const ui = isleUi
+  if (!ui || !isleSeq || !isleHold) return
+  if (islePromptOverride) return // the shared block below owns it
+  if (openingCinematic || !isleSeq.active) {
+    ui.setPrompt(null)
+    return
+  }
+  const holding = isleHold.holding
+  if (holding?.verb) {
+    ui.setPrompt(holding.verb, holding.pos)
+    return
+  }
+  const beat = isleSeq.beat
+  if (beat === 'plant' && isleSeedsLeft() > 0) {
+    let best: Tile | null = null
+    let bestD = 2.6
+    for (const t of farm.tiles) {
+      if (!t.placed || t.crop || t.sprinkler) continue
+      const d = Math.hypot(t.pos.x - player.position.x, t.pos.z - player.position.z)
+      if (d < bestD) {
+        bestD = d
+        best = t
+      }
+    }
+    if (best) {
+      ui.setPrompt('plant', best.pos)
+      return
+    }
+  }
+  const cand = isleHold.candidate
+  if (cand?.verb) {
+    ui.setPrompt(cand.verb, cand.pos)
+    return
+  }
+  if ((beat === 'grow' || beat === 'harvest') && isleTideline) {
+    const near = isleTideline.targetNear(player.position)
+    if (near) {
+      ui.setPrompt('pick', near.at)
+      return
+    }
+  }
+  ui.setPrompt(null)
+}
+
+/** The standalone soft-pulse marker — crate, shovel, washups, the next spot
+ *  to dig. Ivory, never gold, max one, and never during a cinematic. */
+function isleMarkSync() {
+  const ui = isleUi
+  if (!ui || !isleSeq) return
+  if (!isleSeq.active || openingCinematic) {
+    if (isleSeq.active) ui.pulseAt(null)
+    return
+  }
+  const beat = isleSeq.beat
+  if (beat === 'crate' && isleBeach && !isleBeach.crateOpened) {
+    ui.pulseAt(isleTapVec.copy(isleBeach.cratePos).setY(isleBeach.cratePos.y + 0.55), 0.7)
+  } else if (beat === 'shovel' && isleBeach && !isleBeach.shovelPulled) {
+    ui.pulseAt(isleTapVec.copy(isleBeach.shovelPos).setY(isleBeach.shovelPos.y + 0.5), 0.55)
+  } else if (beat === 'plant') {
+    const next = isleCurrentTargets.find((t) => t.kind === 'dig')
+    if (next) ui.pulseAt(isleTapVec.copy(next.pos).setY(next.pos.y + 0.25), 0.6)
+    else ui.pulseAt(null)
+  } else if (beat === 'grow' && isleTideline && isleTideline.remaining > 0) {
+    let best: THREE.Vector3 | null = null
+    let bestD = Infinity
+    for (const at of isleTideline.positions()) {
+      const d = Math.hypot(at.x - player.position.x, at.z - player.position.z)
+      if (d < bestD) {
+        bestD = d
+        best = at
+      }
+    }
+    if (best) ui.pulseAt(best, 0.5)
+  } else {
+    ui.pulseAt(null)
+  }
+}
+
+/** Sundial rings per planted opening bed (the game's timer iconography). The
+ *  mystery's ring sits at nearly zero forever — visibly doing nothing is its
+ *  whole first-session story. */
+function isleSundialSync() {
+  if (!isleUi) return
+  for (const t of farm.tiles) {
+    const c = t.crop
+    if (!c || !OPENING_CROP_IDS.has(c.def.id)) continue
+    const key = `bed-${t.gx}-${t.gz}`
+    if (c.progress >= 1) isleUi.clearSundial(key)
+    else isleUi.sundial(key, t.pos, c.progress)
+  }
+}
+
+/** The opening's per-frame heartbeat. Runs in both modes (opening + return);
+ *  a veteran boot has isleSeq null and pays one comparison. */
+function isleFrame(dt: number) {
+  if (!isleSeq) return
+  const ui = isleUi
+
+  if (isleSeq.active) {
+    // Wake choreography: nudge, sit-up timer, face-down orientation.
+    if (isleSeq.beat === 'wake') {
+      if (wakePhase === 'lying') {
+        wakeNudgeTimer -= dt
+        if (wakeNudgeTimer <= 0) {
+          // The world nudges, never a popup: a wave runs up near the feet.
+          wakeNudgeTimer = 20
+          audio.play('gull')
+          audio.play('wave-nudge')
+          bursts.emit(
+            new THREE.Vector3(player.position.x - 1.6, player.position.y + 0.1, player.position.z),
+            12,
+            [0xdff2ff, 0x9fd8e2],
+            { kind: 'shard', speed: 1.6, life: 0.7, scale: 0.1, jitter: 0.5 },
+          )
+        }
+      } else if (wakePhase === 'sitting') {
+        wakeSitTimer -= dt
+        if (wakeSitTimer <= 0) {
+          wakePhase = 'up'
+          openingCinematic = false
+          /*
+           * "the camera settles behind the shoulder" — a settle, not a cut.
+           * The boom eases out from the cheek-in-the-sand 3.8 to the working
+           * 4.8 on setCinematicDistance's own slow ramp, and the pitch lifts
+           * with it in the settle below. Yaw is untouched: the frame the player
+           * woke up in is the frame they stand up into.
+           */
+          isleCamPlay(false)
+        }
+      }
+      // Lying/sitting orientation: head inland, sea behind. Player.update owns
+      // rotation.y every frame, so the override rides after it.
+      if (wakePhase !== 'up') player.object.rotation.y = WAKE_FACING
+    }
+
+    /*
+     * The pitch settle, run here rather than inside isleCameraDrive so it
+     * survives the frame the beat flips from 'wake' to 'crate' — the drive's
+     * wake branch stops firing that frame, and the boom would otherwise be
+     * left halfway to the framing it was easing toward. Times out on purpose:
+     * see isleCamSettle.
+     */
+    if (isleCamSettle > 0 && !isleGoatShot) {
+      isleCamSettle -= dt
+      engine.pitch += (isleCamPitch - engine.pitch) * Math.min(1, dt * 2.2)
+    }
+
+    if (refusalCooldown > 0) refusalCooldown -= dt
+    if (refusalPour) {
+      refusalPour.t -= dt
+      if (refusalPour.t <= 0) {
+        // The second half of the refusal: the sand pours back into the hole.
+        bursts.emit(
+          new THREE.Vector3(
+            refusalPour.x,
+            groundHeight(refusalPour.x, refusalPour.z) + 0.1,
+            refusalPour.z,
+          ),
+          8,
+          [0xe8dcc0, 0xd4c39e],
+          { kind: 'puff', speed: 0.5, life: 0.7, scale: 0.14, jitter: 0.3 },
+        )
+        refusalPour = null
+      }
+    }
+
+    // Advance-by-observation: the world moves the record, never the reverse.
+    const stats = isleBuildStats()
+    isleStatsSnapshot = stats
+    isleSeq.update(dt, stats)
+
+    if (isleSeq.active) {
+      if (!openingCinematic) isleHold?.update(dt, player.position)
+      // The odd target is born the frame its fruit ripens (no event fires for
+      // ripeness; this is the one polled retarget).
+      if (isleSeq.beat === 'harvest' && !isleOddTarget && !isleOddDone && isleGoldRipeStanding) {
+        isleRetargetHolds()
+      }
+      islePromptSync()
+      isleMarkSync()
+      isleSundialSync()
+      const chip = isleSeq.beat === 'plant' ? isleSeedsLeft() : null
+      if (chip !== isleLastChip) {
+        isleLastChip = chip
+        ui?.seedChip(chip)
+      }
+      isleBeach?.update(dt, elapsed)
+      islePocket?.update(dt, elapsed)
+      isleButterflies?.update(dt, elapsed)
+      // Trade-wind sway on the front rank, and the doorway's light shafts
+      // breathing. Both are uniforms; skipping a frame freezes the jungle.
+      isleWall?.update(dt, elapsed)
+
+      // The sketch pause between the goat leaving and the journal page.
+      if (isleJournalTimer > 0) {
+        isleJournalTimer -= dt
+        if (isleJournalTimer <= 0 && ui && !ui.journalOpen && !isleJournalDismissed) {
+          ui.showJournal(() => {
+            isleJournalDismissed = true
+            openingCinematic = false
+            player.clearOpeningPose()
+            if (isleJournalProp && isleGroup) {
+              isleGroup.remove(isleJournalProp)
+              isleJournalProp = null
+            }
+            audio.play('dismiss')
+          })
+        }
+      }
+    }
+  } else if (returnStaged) {
+    // Session 2: the revisit fires on its own clock, deferring to open panels.
+    if (revisitTimer > 0) {
+      revisitTimer -= dt
+      if (revisitTimer <= 0) {
+        if (modalOpen()) revisitTimer = 5
+        else isleStartGoatShot(true)
+      }
+    }
+    if (!returnMarked) {
+      const tideDone = (isleTideline?.remaining ?? 0) === 0
+      const mysteryDone = returnMysteryTile === null || returnMysterySeen
+      const goatLegDone = !revisitEligible || (isleGoat?.done === true && revisitTuftCollected)
+      if (tideDone && mysteryDone && goatLegDone) {
+        isleSeq.markFirstReturnDone()
+        returnMarked = true
+      }
+    }
+  }
+
+  // Shared: the tide keeps bobbing, the goat keeps walking, the prompt
+  // override counts down, and the UI projects — in both modes.
+  isleTideline?.update(dt, elapsed, player.position)
+  if (isleGoat) {
+    const gp = isleGoat.phase
+    if (gp !== goatPrevPhase) {
+      if (gp === 'bleat') audio.play('goat-bleat')
+      goatPrevPhase = gp
+    }
+    isleGoat.update(dt, elapsed)
+  }
+  if (isleBreath) {
+    if (breathStopTimer > 0) {
+      breathStopTimer -= dt
+      if (breathStopTimer <= 0) isleBreath.stop()
+    }
+    isleBreath.update(dt, elapsed)
+  }
+  if (islePromptOverride) {
+    islePromptOverride.t -= dt
+    if (islePromptOverride.t <= 0) {
+      islePromptOverride = null
+      isleUi?.setPrompt(null)
+    } else {
+      isleUi?.setPrompt(islePromptOverride.key, islePromptOverride.pos)
+    }
+  }
+  ui?.update(dt)
+}
+
+/** Scratch for the camera drive — one vector, reused, never handed out. */
+const isleCamVec = new THREE.Vector3()
+
+/** The opening's cinematic camera, when it owns the boom this frame. */
+function isleCameraDrive(dt: number): boolean {
+  if (isleGoatShot && isleGoat) {
+    const fp = isleGoat.focusPoint()
+    if (fp) {
+      const shot = GOAT_SHOT[isleGoat.phase]
+      /*
+       * Look at the goat's head, not at a point a metre above its back: the
+       * rig's look-at sits FOCUS_HEIGHT (1.15) over the focus point, which is
+       * calibrated for a standing person.
+       */
+      isleCamVec.set(fp.x, fp.y - GOAT_EYE_DROP, fp.z)
+      engine.focus.lerp(isleCamVec, Math.min(1, dt * 2.6))
+      isleCamDist += (shot.d - isleCamDist) * Math.min(1, dt * 1.8)
+      engine.setCinematicDistance(isleCamDist)
+      engine.pitch += (shot.pitch - engine.pitch) * Math.min(1, dt * 2.5)
+      /*
+       * Stand the camera on the *player's* side of the goat rather than aiming
+       * outward from the valley centre. Being looked at only works if the
+       * animal is looking down the lens, and the lens is only down its eyeline
+       * if it sits where the player is standing. Falls back to the previous
+       * frame's yaw when the two are on top of each other, where the direction
+       * is meaningless and would spin.
+       */
+      const dx = player.position.x - fp.x
+      const dz = player.position.z - fp.z
+      if (Math.hypot(dx, dz) > 0.6) {
+        const wantYaw = Math.atan2(dx, dz)
+        const diff = ((wantYaw - engine.targetYaw + Math.PI) % (Math.PI * 2)) - Math.PI
+        engine.targetYaw += (diff < -Math.PI ? diff + Math.PI * 2 : diff) * Math.min(1, dt * 2.6)
+      }
+    }
+    return true
+  }
+  if (openingActive() && isleSeq && isleSeq.beat === 'wake') {
+    // The lying shot looks at the face, so the focus rides below the feet.
+    isleCamVec.set(
+      player.position.x,
+      player.position.y - (wakePhase === 'lying' ? WAKE_CAM_FOCUS_DROP : 0),
+      player.position.z,
+    )
+    engine.focus.lerp(isleCamVec, Math.min(1, dt * 5))
+    return true
+  }
+  if (openingCinematic) {
+    // The sketch/journal: hold on the seated farmer.
+    engine.focus.lerp(player.position, Math.min(1, dt * 4))
+    return true
+  }
+  return false
+}
+
+// --- construction (both modes) -----------------------------------------------
+{
+  const rec = loadOpening()
+  const wantReturn = !openingRuns && rec !== null && rec.beat === 'done' && !rec.firstReturnDone
+  if (openingRuns || wantReturn) {
+    // The player's own framing, borrowed for the duration and handed back at
+    // the handover (or at the end of the session-2 goat revisit).
+    isleCamPrevPitch = engine.pitch
+    isleCamPrevYaw = engine.targetYaw
+    isleGroup = new THREE.Group()
+    engine.scene.add(isleGroup)
+    isleUi = new OpeningUi(engine)
+    isleTideline = new Tideline(isleGroup, rng(0x11de5e))
+    isleTideline.onCollect = isleTideCollect
+    isleGoat = new GoatArrival(isleGroup)
+    isleGoat.onRustle = (at) => {
+      audio.play('treeline-rustle')
+      bursts.emit(new THREE.Vector3(at.x, at.y + 1.6, at.z), 12, [0x2e6b3a, 0x4f8a3d], {
+        kind: 'petal',
+        speed: 1.4,
+        life: 1.2,
+        jitter: 0.6,
+      })
+    }
+    isleGoat.onEat = (bedPos) => {
+      // The plant remains — this is a gift to the goat, not a loss.
+      bursts.emit(new THREE.Vector3(bedPos.x, bedPos.y + 0.5, bedPos.z), 6, [0xd9553a, 0x4fa83d], {
+        kind: 'petal',
+        speed: 1.2,
+        life: 0.8,
+      })
+      audio.play('harvest', { gain: 0.35 })
+    }
+    isleGoat.onDone = isleGoatDone
+
+    if (openingRuns) {
+      /*
+       * §4.2 world prep: the coin-gated fellables never existed for this
+       * player, the turnip crates were never on this beach, and dawn holds
+       * still at 7.2 until handover.
+       *
+       * The two `visible = false` lines are belt to `restoreEmptied()`'s
+       * braces. Beat 9 came back with one of the old turnip barrels sitting on
+       * the wet sand behind the journal page — an artifact of the system the
+       * opening replaces, standing in the one shot that is supposed to be the
+       * player and the island and nothing else. Hiding the groups outright
+       * cannot be defeated by a restore path, a dev-panel respawn or a wash-up
+       * that slips through the flotsam gate, and neither group has anything in
+       * it the opening is allowed to show.
+       */
+      clearing.restoreOpened()
+      beachSeeds.restoreEmptied()
+      beachSeeds.group.visible = false
+      flotsam.group.visible = false
+      day.time = (7.2 / 24) * DAY_LENGTH
+      day.apply(engine)
+      weather.set('clear')
+      postfx.setNightAmount(0)
+
+      isleUi.begin()
+      isleHold = new HoldInput(engine)
+      isleHold.enabled = true
+      isleHold.onTapFallthrough = isleScreenTap
+
+      isleBeach = new BeachProps(isleGroup, world.obstacles)
+      isleBeach.onCrateOpened = (pouchWorldPos) => {
+        isleEnsureSeeds()
+        audio.play('pouch-rustle')
+        isleUi?.bornSatchel(pouchWorldPos)
+      }
+      isleBeach.onShovelPulled = (at) => {
+        player.setStrain(0)
+        player.setTool('shovel')
+        audio.play('shovel-pull')
+        audio.play('gull') // the tern startle
+        bursts.emit(new THREE.Vector3(at.x, at.y + 0.3, at.z), 14, [0xe8dcc0, 0xd9c9a8], {
+          kind: 'puff',
+          speed: 1.1,
+          life: 0.7,
+          scale: 0.14,
+          jitter: 0.5,
+        })
+        shake.add(0.18)
+        isleRetargetHolds()
+      }
+
+      islePocket = new ChaosPocket(isleGroup, world.obstacles, rng(0x0c40a5))
+      islePocket.onClear = (at, kind, drop, voluntary) => {
+        isleGrantDrop(at, drop, kind)
+        bursts.emit(at, 10, [0x4f8a3d, 0x8fcf6b], {
+          kind: 'petal',
+          speed: 2.6,
+          life: 0.9,
+          jitter: 0.4,
+        })
+        if (voluntary) isleSeq?.notify('voluntary-clear')
+        isleButterflies?.hide()
+        isleRetargetHolds()
+      }
+      islePocket.onPocketCleared = () => {
+        // The ground exhales, and the mandolin enters — together (§5.3).
+        isleBreath?.start()
+        breathStopTimer = 9
+        isleMusic?.enterLayer(2)
+      }
+
+      /*
+       * The jungle wall, built around the pocket it encloses.
+       *
+       * Constructed after ChaosPocket and BeachProps so that everything it
+       * appends to the shared obstacle array is contiguous at the tail — the
+       * only entries in `world.obstacles` we are entitled to take back out at
+       * the handover are the ones this constructor put there, and the cheapest
+       * honest way to know which those are is to diff the array around the
+       * call. (References, not indices: `neighbours.ts` holds index *ranges*
+       * into this same array, so nothing may ever be spliced out of the middle
+       * of it — see the handover for how the entries are retired instead.)
+       */
+      {
+        const before = new Set(world.obstacles)
+        isleWall = new JungleWall(isleGroup, world.obstacles)
+        isleWallObstacles = world.obstacles.filter((o) => !before.has(o))
+      }
+
+      isleButterflies = new Butterflies(isleGroup)
+      isleMusic = new OpeningMusic(audio)
+      // Polls for the (gesture-gated) context; the wake tap unlocks it.
+      isleMusic.start()
+      isleBreath = createIslandBreath({ centre: islePocket.centre, w: 6, d: 4 })
+      isleGroup.add(isleBreath.object)
+
+      // Constructed LAST: the constructor replays onBeatStart synchronously,
+      // so every staging closure above must already be live.
+      isleSeq = new OpeningSequencer({
+        onBeatStart: isleStage,
+        onDone: isleHandover,
+        onFirstReturnStart: isleReturnStart,
+      })
+      /*
+       * Staging that ran inside the constructor could not reach the sequencer
+       * (the binding above had not completed), so the two calls that read the
+       * live beat run once more now. Both are idempotent.
+       */
+      isleSyncMusicLayers()
+      isleRetargetHolds()
+    } else {
+      // Return mode: an inert sequencer exists purely to gate and stage the
+      // three §3.3 beats; beginFirstReturn self-checks every condition.
+      isleSeq = new OpeningSequencer({
+        onBeatStart: () => {},
+        onDone: () => {},
+        onFirstReturnStart: isleReturnStart,
+      })
+      isleSeq.beginFirstReturn(saved ? Save.offlineSeconds(saved.savedAt) : 0)
+    }
+  }
 }
 
 /**
@@ -1589,6 +3339,17 @@ const rayProbe = SPAWN.clone()
 
 function interactAt(clientX: number, clientY: number, reach = TILE_SIZE * 0.8) {
   /*
+   * Session-2 hooks first: leftover tide-line washups, the emerged mystery
+   * sprout's one line, and the goat's coat tuft are tap targets the legacy
+   * chain knows nothing about. One extra ground pick, only on boots that
+   * constructed the opening at all (isleSeq null for veterans).
+   */
+  if (isleSeq && !isleSeq.active) {
+    const returnHit = pickGround(engine, clientX, clientY)
+    if (returnHit && returnWorldTap(returnHit.x, returnHit.z)) return
+  }
+
+  /*
    * The plant's own body wins over the ground behind it. A grown crop stands
    * over a metre tall, so the ground ray exits past the plot and tileNear
    * misses — making plants *harder* to click the better they grow. A direct
@@ -1744,6 +3505,16 @@ function interactAt(clientX: number, clientY: number, reach = TILE_SIZE * 0.8) {
 
 /** Plant into a tile, or open its menu. Shared by the ground and crop-body paths. */
 function openPlot(tile: Tile) {
+  /*
+   * The mystery sprout never opens a menu: its reveal is holdable-later, never
+   * automatic, and the plot card (growth %, instant-grow) would be three
+   * spoilers at once. During the first return a tap says its one line;
+   * afterwards it simply keeps its secret.
+   */
+  if (tile.crop?.def.id === 'mystery-sprout') {
+    if (returnStaged) isleNotYours(tile)
+    return
+  }
   // Farm work happens *on* the farm. Clicking plots from the lane — reaching
   // over the fence — bounces, which is what gives the gate a reason to exist.
   if (!inPlayerPlot(player.position.x, player.position.z, 0.4)) {
@@ -1774,7 +3545,19 @@ function openPlot(tile: Tile) {
 
 // Touch: joysticks + tap-to-interact (Grow a Garden style, left move / right look).
 const touchControls = new TouchControls(engine)
+// The opening's hold gesture claims stationary fingers through TouchControls'
+// three optional callbacks; a no-op for every boot that owes no opening.
+isleHold?.attachTouch(touchControls)
 touchControls.onTap = (x, y) => {
+  /*
+   * Opening taps route BEFORE the modal gate: the wake tap happens while
+   * `openingCinematic` holds `modalOpen()` true, and it is the one tap the
+   * whole session depends on. The opening router does its own panel checks.
+   */
+  if (openingActive()) {
+    isleScreenTap(x, y)
+    return
+  }
   /*
    * A thumb is not a cursor, so a tap gets a wider tile than a click does.
    *
@@ -2255,6 +4038,25 @@ function handleInput() {
   }
   if (modalOpen()) return
 
+  /*
+   * While the opening runs, the keyboard keeps only the verbs that cannot
+   * speak: camera, settings (the 40 % glyph's twin), mute, graphics, and the
+   * dev panel. Every panel and tool shortcut sleeps until the handover —
+   * a bag opened over the wake would be a text channel (§4.2).
+   */
+  if (openingActive()) {
+    if (Input.justPressed('KeyQ')) engine.rotate(1)
+    if (Input.justPressed('KeyR')) engine.rotate(-1)
+    if (Input.justPressed('KeyO')) settingsUi.toggle()
+    if (Input.justPressed('KeyM')) audio.toggleMute()
+    if (Input.justPressed('KeyG')) {
+      const next = postfx.quality === 'high' ? 'low' : postfx.quality === 'low' ? 'medium' : 'high'
+      postfx.setQuality(next)
+    }
+    if (Input.justPressed('Backquote')) devUi.toggle()
+    return
+  }
+
   if (Input.justPressed('KeyQ')) engine.rotate(1)
   if (Input.justPressed('KeyR')) engine.rotate(-1)
   if (Input.justPressed('KeyB')) setPlaceMode(placeMode === 'shovel' ? 'none' : 'shovel')
@@ -2499,7 +4301,15 @@ function updateFtuePointer() {
 
 // --- autosave ---------------------------------------------------------------
 let saveTimer = 0
-addEventListener('beforeunload', () => Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize(), worldPlots.serializeBuilds()))
+addEventListener('beforeunload', () => {
+  // §3.3: the first return is offered once. Leaving mid-return spends it —
+  // an unresolved leg must not replay as a fresh miracle next boot.
+  if (returnStaged && !returnMarked) {
+    isleSeq?.markFirstReturnDone()
+    returnMarked = true
+  }
+  Save.save(farm, inventory, day, weather, progression, quests, pasture, hood, pets, stock, discovery, prestige, trading, requests, placeables, worldPlots.serialize(), worldPlots.serializeBuilds())
+})
 
 // Rain tops up the soil on a slow tick rather than every frame.
 let rainTimer = 0
@@ -2784,7 +4594,19 @@ let footstepFlip = 0
 function frame() {
   requestAnimationFrame(frame)
 
-  const dt = engine.tick()
+  /*
+   * The lotto tell's 0.3 s slow-mo (§5.4): one global dt multiplier, applied
+   * immediately after tick and wound down on the REAL clock, so it can never
+   * outlive its window however small dt gets. Audio is untouched — the chime
+   * plays full speed over slowed visuals, which is the spec's exact ask.
+   */
+  const realDt = engine.tick()
+  let dt = realDt
+  if (slowMoLeft > 0) {
+    dt *= slowMoScale
+    slowMoLeft -= realDt
+    if (slowMoLeft <= 0) slowMoScale = 1
+  }
   elapsed += dt
   const petBonuses = pets.bonuses()
 
@@ -2877,6 +4699,8 @@ function frame() {
       engine.yaw = arrivalPrevYaw
       engine.setCinematicDistance(null)
     }
+  } else if (isleCameraDrive(dt)) {
+    // The opening's cinematics — wake, the goat, the sketch — own the boom.
   } else {
     engine.focus.lerp(player.position, Math.min(1, dt * 6))
   }
@@ -2914,11 +4738,17 @@ function frame() {
   pasture.update(dt, elapsed)
   // The card shows a countdown, so it repaints with the clock it is counting.
   animalInfoUi.tick()
-  wildlife.update(dt, elapsed, player.position)
+  // Wildlife sleeps through the opening (§4.2) — the goat must be the only
+  // animal that ever steps out of that treeline. Crabs (critters) stay.
+  if (!openingActive()) wildlife.update(dt, elapsed, player.position)
   critters.update(dt, elapsed, player.position)
+  // Two black rock crabs, per the manifest — and Critters owns `visible`, so
+  // this has to land after it, every frame.
+  if (openingActive()) isleHoldCrabs()
   beachSeeds.update(dt, elapsed, player.position)
-  // Only once the farm exists — the opening owns this beach until then.
-  flotsam.update(dt, elapsed, player.position, farm.exists)
+  // Only once the farm exists — and never mid-opening, or a barrel would wash
+  // up into beat 7's scripted tide line at the 150 s mark (§4.2).
+  flotsam.update(dt, elapsed, player.position, farm.exists && !openingActive())
   placeables.update(dt, elapsed, farm)
   pets.update(dt, elapsed, player.position, () => {
     // A pet watering something should feel like a small gift, not a silent stat.
@@ -2929,20 +4759,24 @@ function frame() {
   // Cheap enough to run per frame: a filter over at most a handful of eggs, and
   // the setter itself is a no-op when the flag has not changed.
   hud.setPetAlert(pets.readyEggs.length > 0)
-  hood.update(dt, elapsed, player.position, engine.camera)
-  playArrivalShot()
+  // Neighbours, arrival shots and requests all sleep through the opening
+  // (§4.2): the island is empty of society until the handover.
+  if (!openingActive()) {
+    hood.update(dt, elapsed, player.position, engine.camera)
+    playArrivalShot()
 
-  // Requests run on a real clock, so a deadline passes whether or not the
-  // player ever opened the valley panel.
-  for (const lapsed of requests.update(dt)) {
-    const who = hood.all.find((n) => n.profile.id === lapsed.neighbourId)
-    hud.toast(`${who?.profile.name ?? 'A neighbour'} sorted it out themselves`, 'bad')
-    who?.setNeedsAttention(false)
+    // Requests run on a real clock, so a deadline passes whether or not the
+    // player ever opened the valley panel.
+    for (const lapsed of requests.update(dt)) {
+      const who = hood.all.find((n) => n.profile.id === lapsed.neighbourId)
+      hud.toast(`${who?.profile.name ?? 'A neighbour'} sorted it out themselves`, 'bad')
+      who?.setNeedsAttention(false)
+    }
   }
 
   // Walking onto a neighbour's farm greets them, once a day each. Proximity
   // rather than a button: the reward is for making the trip.
-  const host = hood.nearest(player.position, 6)
+  const host = openingActive() ? null : hood.nearest(player.position, 6)
   if (host) {
     const greeting = host.greet(day.day)
     if (greeting) {
@@ -2962,6 +4796,9 @@ function frame() {
   ambience.update(dt, elapsed, engine, weather, day.hour)
   updateChopping(dt)
   worldPlots.update(dt, engine.camera, elapsed)
+  // The opening's heartbeat: stats → sequencer → staging → prompts → UI.
+  // After the world has moved this frame, before anything renders.
+  isleFrame(dt)
   // Manual because autoReset is off (see the dev panel block). Reset *before*
   // the frame's renders so the counters cover exactly one frame.
   engine.renderer.info.reset()
@@ -2974,7 +4811,9 @@ function frame() {
   neighbourPlotUi.refresh()
   neighbourUi.tick()
 
-  if (day.update(dt, engine)) {
+  // Time itself is pinned at hour 7.2 while the opening runs (§4.2): the day
+  // does not turn, weather holds clear, and the grade stays dawn-warm.
+  if (!openingActive() && day.update(dt, engine)) {
     hud.toast(`☀️ Day ${day.day} begins`, 'good')
     // A new day rolls a fresh set of challenges.
     quests.rollDailies(day.day, progression.level)
@@ -2987,7 +4826,7 @@ function frame() {
     hud.toast(seasonForDay(day.day).emoji + ' ' + seasonForDay(day.day).name + ' day ' + dayWithinSeason(day.day), 'info')
   }
   // Weather multiplies the day cycle's lighting, so it must run after it.
-  weather.update(dt, engine)
+  if (!openingActive()) weather.update(dt, engine)
 
   if (weather.isRaining) {
     if (!wasRaining) hud.toast(`${weather.label} — your crops are being watered`, 'good')
@@ -3025,7 +4864,13 @@ function frame() {
    * has its beacon and its toast; it just does not get the arrows until the
    * tutorial is done with them.
    */
-  const guiding = ftueGuideTargets()
+  // No gold rings, no trails, no coach during the opening (§4.2): butterflies
+  // and ivory pulses are its only guidance.
+  const guiding = openingActive() ? false : ftueGuideTargets()
+  if (openingActive()) {
+    ftueRingBuf.length = 0
+    ftueTrailBuf.length = 0
+  }
   if (!guiding && wasBarnFull) {
     // Fallback: no tutorial, but a full barn the player has to walk off.
     ftueTrailBuf.length = 0
@@ -3046,9 +4891,9 @@ function frame() {
   // Grade toward the night look across dusk rather than snapping at a threshold.
   const h = day.hour
   const nightAmount = h < 5 || h > 21 ? 1 : h < 7 ? (7 - h) / 2 : h > 19 ? (h - 19) / 2 : 0
-  postfx.setNightAmount(Math.min(1, Math.max(0, nightAmount)))
+  postfx.setNightAmount(openingActive() ? 0 : Math.min(1, Math.max(0, nightAmount)))
 
-  if (stock.update(dt, progression.level)) {
+  if (!openingActive() && stock.update(dt, progression.level)) {
     hud.toast('🚚 The seed shop just restocked', 'good')
     audio.play('pop')
   }
@@ -3064,7 +4909,7 @@ function frame() {
     shake.add(0.8)
   }
 
-  audio.setHour(day.hour)
+  if (!openingActive()) audio.setHour(day.hour)
   audio.update()
 
   hud.updateClock(day)
@@ -3073,8 +4918,12 @@ function frame() {
   quests.setLive(farm.placedCount, inventory.coins, progression.level)
   hud.setPanelOpen(panelOpen())
 
-  // Prompts, highlight and the shovel's ghost preview.
-  const { tile, action } = updateHeldTool()
+  // Prompts, highlight and the shovel's ghost preview. The opening manages
+  // the farmer's tool itself (the pulled shovel stays in hand), so the
+  // per-frame tool derivation stands down while it runs.
+  const { tile, action } = openingActive()
+    ? { tile: null, action: 'none' as const }
+    : updateHeldTool()
 
   /*
    * One place decides whether the decor preview exists at all.
@@ -3118,6 +4967,10 @@ function frame() {
     farm.setGhost(ghostTile && (placeMode === 'shovel' ? farm.canPlace(ghostTile) : true) ? ghostTile : null, valid)
     farm.setHighlight(null, 'none')
     hud.clearPrompt()
+  } else if (openingActive()) {
+    // The opening owns prompts and highlights; the HUD's grammar sleeps.
+    hud.clearPrompt()
+    farm.setHighlight(null, 'none')
   } else if (modalOpen()) {
     hud.clearPrompt()
     farm.setHighlight(null, 'none')
@@ -3167,12 +5020,18 @@ function frame() {
     hasFarm: farm.exists,
     gardenLevel: farm.gardenLevel,
   }
-  ftue.update(ftueStats)
-  startUpgradeTour()
-  syncStoreCrate()
-  upgradeTour.update(ftueStats)
-  updateFtuePointer()
-  tips.enabled = settingsUi.settings.showTips && !ftue.active && !upgradeTour.active
+  if (openingActive()) {
+    // The whole coaching apparatus is dormant during the opening (§4.2); the
+    // FTUE key is written 'done' at handover so none of it wakes later.
+    tips.enabled = false
+  } else {
+    ftue.update(ftueStats)
+    startUpgradeTour()
+    syncStoreCrate()
+    upgradeTour.update(ftueStats)
+    updateFtuePointer()
+    tips.enabled = settingsUi.settings.showTips && !ftue.active && !upgradeTour.active
+  }
   tips.update(dt, {
     level: progression.level,
     coins: inventory.coins,
@@ -3199,11 +5058,17 @@ function frame() {
   // scene in its final state for this frame, and neither may include the water.
   world.skyline.update(dt)
   skybox.follow(engine.camera)
+  // No gold and no arrows before the first lotto tell (contract rule 4): the
+  // castaway also has no street of look-alike farms to lose yet.
+  world.homeMarker.setVisible(!openingActive())
   world.homeMarker.update(elapsed, engine.camera)
   world.lanterns.update(player.position)
   world.shopMarkers.update(elapsed, engine.camera, player.position)
-  world.shopkeeper.update(dt, player.position)
-  world.farmgirl.update(dt, player.position)
+  // The greeters idle through the opening — nobody waves at a castaway (§4.2).
+  if (!openingActive()) {
+    world.shopkeeper.update(dt, player.position)
+    world.farmgirl.update(dt, player.position)
+  }
   world.water.update(engine.renderer, engine.scene, engine.camera, elapsed, engine.sun)
 
   // Step quality down if the frame budget is consistently blown.
@@ -3243,6 +5108,41 @@ if (import.meta.env.DEV) {
   const dev = window as unknown as Record<string, unknown>
   dev.game = {
     engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, critters, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi, animalInfoUi,
+    // The opening's modules (null on boots that owe no opening) — the verify
+    // driver discovers hold-target APIs by scanning these values.
+    openingSequencer: isleSeq, chaosPocket: islePocket, beachProps: isleBeach, tidelineOpening: isleTideline, goatArrival: isleGoat, holdInput: isleHold, openingUi: isleUi,
+  }
+
+  /**
+   * The opening's debug hook (contract §6) — exactly the surface the
+   * verify-opening driver expects, plus the optional `targets` enumerator it
+   * probes for. Unknown hold ids are a safe no-op by construction.
+   */
+  dev.__isle = {
+    beat: () => isleSeq?.beat ?? 'done',
+    stats: () => isleStatsSnapshot ?? (isleSeq ? isleBuildStats() : null),
+    goto: (b: BeatId) => isleSeq?.jumpTo(b),
+    ff: (s = 90) => {
+      // Adds s seconds of unwatered crop progress; the next farm tick
+      // rebuilds any stage that crossed a boundary.
+      for (const t of farm.tiles) {
+        const c = t.crop
+        if (!c) continue
+        c.progress = Math.min(1, c.progress + s / growSecondsFor(c.def))
+      }
+      isleRetargetHolds()
+      return 'ok'
+    },
+    hold: (id: string) => {
+      const t = isleCurrentTargets.find((target) => target.id === id)
+      if (t) t.onComplete()
+      return t ? id : null
+    },
+    tap: (x: number, z: number) => (isleSeq?.active ? isleWorldTap(x, z) : returnWorldTap(x, z)),
+    goat: () => isleStartGoatShot(isleSeq ? !isleSeq.active : false),
+    ret: () => isleSeq?.beginFirstReturn(9e9) ?? null,
+    record: () => isleSeq?.record ?? null,
+    targets: () => isleCurrentTargets,
   }
 
   /**

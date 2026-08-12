@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>jungle wall probe</title>
+    <style>
+      html,body{margin:0;background:#8fb6cf;overflow:hidden}
+      canvas{display:block}
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from 'three'
+      import { JungleWall } from '/src/game/opening/jungle-wall.ts'
+      import { groundHeight } from '/src/game/terrain.ts'
+
+      const W = 984
+      const H = 525
+      const renderer = new THREE.WebGLRenderer({ antialias: true })
+      renderer.setSize(W, H)
+      renderer.shadowMap.enabled = true
+      document.body.appendChild(renderer.domElement)
+
+      const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0xa8cfe0)
+      scene.fog = new THREE.Fog(0xcfe0e8, 90, 260)
+
+      // Dawn rig, roughly hour 7.2: low warm sun from the east (+x).
+      const sun = new THREE.DirectionalLight(0xffe6c0, 2.1)
+      sun.position.set(60, 22, 10)
+      sun.castShadow = true
+      scene.add(sun)
+      scene.add(new THREE.HemisphereLight(0xbfe0ff, 0x6a8a4a, 1.0))
+
+      // Stand-in ground so the wall has something to sit on.
+      const groundGeo = new THREE.PlaneGeometry(160, 160, 64, 64)
+      groundGeo.rotateX(-Math.PI / 2)
+      const pos = groundGeo.attributes.position
+      for (let i = 0; i < pos.count; i++) {
+        pos.setY(i, groundHeight(pos.getX(i) - 34, pos.getZ(i)))
+      }
+      groundGeo.computeVertexNormals()
+      const ground = new THREE.Mesh(groundGeo, new THREE.MeshLambertMaterial({ color: 0x6faa46 }))
+      ground.position.x = -34
+      ground.receiveShadow = true
+      scene.add(ground)
+
+      const root = new THREE.Group()
+      scene.add(root)
+      const wall = new JungleWall(root, [])
+
+      // A 1.8u marker at the pocket centre for scale.
+      const man = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.32, 1.1, 4, 8),
+        new THREE.MeshLambertMaterial({ color: 0xe8decc }),
+      )
+      man.position.set(-34, groundHeight(-34, 0) + 0.9, 0)
+      man.castShadow = true
+      scene.add(man)
+      const man2 = man.clone()
+      man2.position.set(-50, groundHeight(-50, 4) + 0.9, 4)
+      scene.add(man2)
+
+      const SHOTS = {
+        // Beat 1: lying on the beach looking inland at the wall.
+        beach: { pos: [-56, 4.2, 6], look: [-41, 4.0, 1] },
+        // Approaching the gap.
+        gap: { pos: [-49, 3.2, 1.5], look: [-40, 3.0, 0.5] },
+        // Inside the pocket looking back out through the gap.
+        pocketOut: { pos: [-30, 4.0, 0], look: [-43, 3.0, 0] },
+        // Inside the pocket looking east at the back of the horseshoe.
+        pocketIn: { pos: [-38, 4.4, 0], look: [-22, 4.0, 0] },
+        // Along the north arm.
+        arm: { pos: [-44, 5.0, -14], look: [-28, 4.0, 4] },
+        // High wide, to read the shape.
+        top: { pos: [-58, 34, 34], look: [-32, 0, 0] },
+        // In the corridor, low, looking up through the arch at the shafts.
+        shaft: { pos: [-44, 1.8, 0], look: [-38, 5.2, 0.4] },
+      }
+      const camera = new THREE.PerspectiveCamera(48, W / H, 0.1, 500)
+      // The game's main camera renders MINOR_LAYER (style.ts); only the water
+      // reflection/refraction cameras skip it. Without this the fronds, ferns,
+      // vines and light shafts are all invisible in the probe.
+      camera.layers.enable(1)
+
+      window.__shot = (name) => {
+        const s = SHOTS[name] ?? SHOTS.beach
+        camera.position.set(...s.pos)
+        camera.lookAt(...s.look)
+        wall.update(0.016, 3)
+        renderer.render(scene, camera)
+        return renderer.domElement.toDataURL('image/jpeg', 0.85)
+      }
+      window.__stats = () => {
+        let meshes = 0, instances = 0, tris = 0
+        root.traverse((o) => {
+          if (!o.isMesh) return
+          meshes++
+          const n = o.isInstancedMesh ? o.count : 1
+          instances += n
+          const g = o.geometry
+          const c = g.index ? g.index.count : g.attributes.position.count
+          tris += (c / 3) * n
+        })
+        return { meshes, instances, tris: Math.round(tris) }
+      }
+      window.__ready = true
+      window.__shot('beach')
+    </script>
+  </body>
+</html>

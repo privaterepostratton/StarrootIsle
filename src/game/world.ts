@@ -164,8 +164,10 @@ export interface World {
   skyline: Skyline
   /** Lane lanterns, lit by the day cycle. 0 = off, 1 = full. */
   lanterns: { setGlow(v: number): void; update(focus: THREE.Vector3): void }
-  /** Bobbing marker over the player's own farm. Needs the camera to billboard. */
-  homeMarker: { update(elapsed: number, camera: THREE.Camera): void }
+  /** Bobbing marker over the player's own farm. Needs the camera to billboard.
+   *  `setVisible(false)` hides it wholesale — the Isle opening must show no
+   *  gold and no arrows before the first lotto tell (contract rule 4). */
+  homeMarker: { update(elapsed: number, camera: THREE.Camera): void; setVisible(on: boolean): void }
   /**
    * Shop/barn "!" markers, shown when the player is close enough to interact —
    * or from anywhere while `setUrgent` says that spot is where they need to go.
@@ -1614,6 +1616,9 @@ function createHomeMarker(parent: THREE.Group) {
     update(elapsed: number, camera: THREE.Camera) {
       mesh.position.y = Math.sin(elapsed * 2.1) * 0.28
       mesh.quaternion.copy(camera.quaternion)
+    },
+    setVisible(on: boolean) {
+      anchor.visible = on
     },
   }
 }

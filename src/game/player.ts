@@ -148,6 +148,60 @@ const HAND_CARRY_ONE = new THREE.Vector3(-0.19, 0.46, 0.04)
 const HAND_POUR = new THREE.Vector3(-0.08, 0.6, 0.22)
 
 /**
+ * The strain brace — the opening's hold-gesture pose, driven by setStrain(t).
+ *
+ * Same school as the swing: character-space anchors lerped into the existing
+ * grip solve, so the pose composes with whatever clip is underneath and eases
+ * in and out instead of snapping. With a two-hander held, the fist drops to a
+ * low forward brace and the shaft steepens as if the blade were bedded in
+ * something that will not give; the spine leans *back* (the swing's lean
+ * forward, mirrored) with a small tremble that sells the effort.
+ */
+const HAND_BRACE = new THREE.Vector3(-0.06, 0.5, 0.26)
+const SHAFT_BRACE = new THREE.Vector3(0.12, -0.85, 0.5).normalize()
+/**
+ * Empty-hand brace targets, in the same character space as HAND_CARRY (+X is
+ * the farmer's left). During the shovel pull the tool is still a *world prop*
+ * — nothing is held, so the grip solve never runs — and the hands have to be
+ * reached onto the imaginary shaft directly: both arms two-bone-IK'd forward,
+ * right fist above the left the way a shovel is actually heaved. Both anchors
+ * stay inside the 0.29 reach ball documented at HAND_CARRY.
+ */
+const BRACE_HAND_R = new THREE.Vector3(-0.09, 0.55, 0.33)
+const BRACE_HAND_L = new THREE.Vector3(0.1, 0.47, 0.35)
+/**
+ * Sit-and-sketch hand targets: journal held out in the left hand, charcoal
+ * poised over it in the right. Applied in *upright* character space (yaw only
+ * — see poseAnchor), because during the sketch pose the root itself is tipped
+ * and rotating the anchors with it would point the hands into the sand.
+ */
+const SKETCH_HAND_R = new THREE.Vector3(-0.1, 0.52, 0.3)
+const SKETCH_HAND_L = new THREE.Vector3(0.13, 0.5, 0.33)
+
+/**
+ * The opening's transform-level poses (playOpeningPose).
+ *
+ * `rootX` tips the whole rig about its own X after yaw (order YXZ, so the tip
+ * always follows facing), `lift` raises or sinks the root against the ground,
+ * `spine` is an additive chest-bone delta on top of the clip, the swing/pour
+ * precedent. 'lie' is the wake pose — face down, head along facing, the small
+ * lift keeping the body out of the sand's bumps. 'situp' and 'sketch' settle
+ * the rig into a low kneel: mostly upright, sunk so the folded legs read as
+ * tucked in the sand, hunched forward — 'sketch' additionally solves both
+ * hands onto the journal (see SKETCH_HAND_*). All values ease at POSE_EASE,
+ * so lie → situp plays as a rise rather than a cut. Any movement intent
+ * (joystick, keys, moveTo) clears the pose — poses are idle-only by design,
+ * which is also how the opening stands the farmer back up without an API.
+ */
+const OPENING_POSES = {
+  lie: { rootX: 1.55, lift: 0.14, spine: 0 },
+  situp: { rootX: 0.35, lift: -0.3, spine: 0.3 },
+  sketch: { rootX: 0.32, lift: -0.3, spine: 0.42 },
+} as const
+/** How fast pose parameters chase their targets, per second. */
+const POSE_EASE = 6
+
+/**
  * How far *down* the shaft from the main fist the off hand closes, in tool units.
  *
  * The main fist takes the top of the handle and the off hand grips well down the
@@ -308,6 +362,24 @@ export class Player {
   private swingDown = 0
   /** This frame's pour shape, the one-handed equivalent. */
   private pour = 0
+
+  /**
+   * The opening's overlays — strain brace and transform-level poses.
+   *
+   * `strainGoal` is written by setStrain every frame a hold progresses;
+   * `strainCur` chases it so a hold that starts or cancels eases rather than
+   * snaps, exactly like grip1/grip2. The pose fields likewise chase the
+   * OPENING_POSES row for the active kind (all zero when none), and
+   * `poseClock` feeds the strain tremble.
+   */
+  private strainGoal = 0
+  private strainCur = 0
+  private openingPose: 'lie' | 'situp' | 'sketch' | null = null
+  private poseRootX = 0
+  private poseLift = 0
+  private poseSpine = 0
+  private poseArms = 0
+  private poseClock = 0
 
   /** Starts on the lane at the market square, facing up the street. */
   readonly position = SPAWN.clone()
@@ -480,6 +552,9 @@ export class Player {
     shaftWorld.copy(SHAFT_TWO_HANDED)
     if (this.swingUp > 0) shaftWorld.lerp(SHAFT_WOUND_UP, this.swingUp)
     if (this.swingDown > 0) shaftWorld.lerp(SHAFT_STRUCK, this.swingDown)
+    // Opening strain: the shaft steepens into the brace, as if bedded in
+    // something that will not give. Zero outside a hold — see setStrain.
+    if (this.strainCur > 0.002) shaftWorld.lerp(SHAFT_BRACE, this.strainCur)
     shaftWorld.normalize()
     shaftWorld.applyQuaternion(this.object.getWorldQuaternion(qScratch))
     grip.parent.getWorldQuaternion(gripBoneWorld)
@@ -587,6 +662,9 @@ export class Player {
       handAnchor.copy(HAND_CARRY)
       if (this.swingUp > 0) handAnchor.lerp(HAND_WOUND_UP, this.swingUp)
       if (this.swingDown > 0) handAnchor.lerp(HAND_STRUCK, this.swingDown)
+      // Opening strain: fist drops to the low brace; the off hand, solved
+      // onto the shaft below, follows for free.
+      if (this.strainCur > 0.002) handAnchor.lerp(HAND_BRACE, this.strainCur)
     } else {
       handAnchor.copy(HAND_CARRY_ONE)
       if (this.pour > 0) handAnchor.lerp(HAND_POUR, this.pour)
@@ -631,6 +709,43 @@ export class Player {
     this.actionTimer = kind === 'can' ? 0.55 : 0.45
   }
 
+  /**
+   * The opening's hold-gesture brace, 0..1.
+   *
+   * Driven per frame from HoldTarget.onProgress (typically the ramp itself,
+   * or a shaped curve of it) and set back to 0 on cancel/complete. It is a
+   * *held* value, not a one-shot like playAction: the caller owns its
+   * lifetime, and forgetting to zero it leaves the farmer straining forever.
+   * With a two-handed tool held it re-anchors the existing grip solve
+   * (HAND_BRACE/SHAFT_BRACE); empty-handed it IK's both arms onto an
+   * imaginary shaft (BRACE_HAND_*) — the shovel-pull case, where the tool is
+   * still a world prop. Either way the spine leans back with a tremble.
+   */
+  setStrain(t: number): void {
+    this.strainGoal = THREE.MathUtils.clamp(t, 0, 1)
+  }
+
+  /**
+   * Transform-level opening poses: wake ('lie' → 'situp') and the beat-9
+   * journal moment ('sketch'). See OPENING_POSES for what each does. There is
+   * deliberately no 'none' kind — any movement intent clears the pose, so the
+   * farmer stands up by being sent somewhere (or via clearOpeningPose for
+   * staging code that wants to be explicit).
+   */
+  playOpeningPose(kind: 'lie' | 'situp' | 'sketch'): void {
+    this.openingPose = kind
+  }
+
+  /** Explicit stand-up for staging/resume code; movement does this implicitly. */
+  clearOpeningPose(): void {
+    this.openingPose = null
+  }
+
+  /** The active opening pose, for idempotent staging checks. */
+  get openingPoseKind(): 'lie' | 'situp' | 'sketch' | null {
+    return this.openingPose
+  }
+
   get isActing() {
     return this.actionTimer > 0
   }
@@ -643,6 +758,10 @@ export class Player {
     // fighting the mouse for control feels broken. A modal cancels it too, so
     // the farmer doesn't keep walking behind the shop panel.
     if (axis.len > 0 || locked) this.moveTarget = null
+
+    // Opening poses are idle-only: the first movement intent stands the
+    // farmer up (the eased pose fields walk themselves back to zero below).
+    if (this.openingPose && (axis.len > 0 || this.moveTarget)) this.openingPose = null
 
     const desired = new THREE.Vector3()
 
@@ -707,6 +826,31 @@ export class Player {
 
     this.object.position.copy(this.position)
     this.object.rotation.y = this.facing
+
+    /*
+     * Opening pose, applied at the root after the normal transform write.
+     *
+     * The rig is tipped about its *local* X after yaw — Euler order YXZ, so
+     * "lie down" always folds along the direction the farmer faces; the
+     * default XYZ order would tip about world X and lie them down sideways
+     * whenever they faced east or west. Order and rotation.x are restored the
+     * moment the eased angle reaches zero, so outside the opening this whole
+     * block is two float compares.
+     */
+    const pose = this.openingPose ? OPENING_POSES[this.openingPose] : null
+    const poseEase = Math.min(1, dt * POSE_EASE)
+    this.poseRootX += ((pose?.rootX ?? 0) - this.poseRootX) * poseEase
+    this.poseLift += ((pose?.lift ?? 0) - this.poseLift) * poseEase
+    this.poseSpine += ((pose?.spine ?? 0) - this.poseSpine) * poseEase
+    this.poseArms += ((this.openingPose === 'sketch' ? 1 : 0) - this.poseArms) * poseEase
+    if (Math.abs(this.poseRootX) > 0.002) {
+      this.object.rotation.order = 'YXZ'
+      this.object.rotation.x = this.poseRootX
+      this.object.position.y += this.poseLift
+    } else if (this.object.rotation.x !== 0) {
+      this.object.rotation.x = 0
+      this.object.rotation.order = 'XYZ'
+    }
 
     this.animate(dt, speed)
   }
@@ -869,12 +1013,65 @@ export class Player {
       held.rotation.x = 0
     }
 
+    /*
+     * Opening overlays, spine half: the swing/pour precedent — additive bone
+     * deltas after mixer.update, before the world matrices are rebuilt for
+     * the grip solve. The strain leans the chest *back* (the swing's forward
+     * lean, mirrored — a pull, not a push) with a tremble that reads as
+     * effort; the pose fold hunches it forward for the kneel and the sketch.
+     */
+    this.poseClock += dt
+    this.strainCur += (this.strainGoal - this.strainCur) * Math.min(1, dt * 12)
+    if (this.spine) {
+      if (this.strainCur > 0.002) {
+        this.spine.rotation.x -= this.strainCur * (0.3 + Math.sin(this.poseClock * 26) * 0.05)
+      }
+      if (this.poseSpine > 0.002) this.spine.rotation.x += this.poseSpine
+    }
+
     // Grip last, on the finished pose. It reads the skeleton's world transforms,
     // so anything that poses a bone after it shows up as a frame of lag between
     // the hands and whatever is supposedly held in them.
     this.object.updateMatrixWorld(true)
     if (this.grip1 > 0.002) this.solveGrip()
     else this.aimHeldTool()
+
+    /*
+     * Opening overlays, arm half: solved after the grip for the cases the
+     * grip cannot cover. The empty-hand brace is the shovel pull — the tool
+     * is still a world prop, so grip1 is zero and both arms have to be
+     * reached onto the imaginary shaft directly. The sketch pose likewise
+     * has no held tool; its hands go to the journal. Both ride the same
+     * two-bone solver the grip uses, weight-faded so they compose with the
+     * clip underneath.
+     */
+    if (this.strainCur > 0.002 && this.grip1 <= 0.002) {
+      this.solveArm(this.armR, this.foreArmR, this.hand, this.poseAnchor(BRACE_HAND_R), ELBOW_POLE_R, this.strainCur)
+      this.solveArm(this.armL, this.foreArmL, this.handL, this.poseAnchor(BRACE_HAND_L), ELBOW_POLE_L, this.strainCur)
+    }
+    if (this.poseArms > 0.002) {
+      this.solveArm(this.armR, this.foreArmR, this.hand, this.poseAnchor(SKETCH_HAND_R), ELBOW_POLE_R, this.poseArms)
+      this.solveArm(this.armL, this.foreArmL, this.handL, this.poseAnchor(SKETCH_HAND_L), ELBOW_POLE_L, this.poseArms)
+    }
+  }
+
+  /**
+   * Character-space anchor → world, using yaw only.
+   *
+   * The grip solve's anchors go through the object's full quaternion, which is
+   * right while the root is upright — but the opening poses tip the root, and
+   * hands that rotate with the tipped rig end up pointing into the sand. The
+   * sketch and brace anchors always belong out in front of the *upright* idea
+   * of the farmer, so only facing is applied. Returns a shared scratch.
+   */
+  private poseAnchor(v: THREE.Vector3): THREE.Vector3 {
+    const sin = Math.sin(this.facing)
+    const cos = Math.cos(this.facing)
+    return ikTarget.set(
+      this.position.x + v.x * cos + v.z * sin,
+      this.position.y + this.poseLift + v.y,
+      this.position.z - v.x * sin + v.z * cos,
+    )
   }
 }
 

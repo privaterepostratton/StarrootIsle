@@ -28,6 +28,8 @@ const VOLATILE = new Set([
   'shown',
   'panel-open',
   'cinematic',
+  'isle-opening',
+  'born',
   'sv-ui-edit-hover',
   'sv-ui-edit-sel',
 ])

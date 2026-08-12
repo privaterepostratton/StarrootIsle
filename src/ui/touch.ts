@@ -45,11 +45,39 @@ const TAP_SLOP = 22
  */
 const TAP_MS = 480
 const LOOK_SENSITIVITY = 0.0058
+/**
+ * A finger stationary within TAP_SLOP past this long is offered to the hold
+ * system (see onHoldStart below). 350ms is safely under nothing — TAP_MS = 480
+ * already refuses to call such a touch a tap, and the joystick/look roles only
+ * engage on travel, so a still finger this old was in limbo anyway.
+ */
+const HOLD_MS = 350
 
 
 export class TouchControls {
   /** Fired for qualifying taps anywhere; replaces the mouse click path. */
   onTap: ((clientX: number, clientY: number) => void) | null = null
+
+  /**
+   * The opening's hold gesture, subscribed by HoldInput.attachTouch.
+   *
+   * A finger that stays within TAP_SLOP for HOLD_MS is *offered* via
+   * onHoldStart. Returning true claims it: its joystick/look role is released
+   * for that pointer — mirroring beginPinch's role-dropping — and it can no
+   * longer become a tap; onHoldMove then streams its position and onHoldEnd
+   * reports the release (`commit` false only for a pointercancel, where the
+   * system stole the touch and the release was not a deliberate act).
+   * Returning false leaves the finger exactly as it was — unclaimed fingers
+   * behave as if these callbacks did not exist.
+   */
+  onHoldStart?: (x: number, y: number) => boolean
+  onHoldMove?: (x: number, y: number) => void
+  onHoldEnd?: (commit: boolean) => void
+
+  /** Pointer id claimed by a hold. -1 = none. Same shape as movePointer. */
+  private holdPointer = -1
+  /** Pending HOLD_MS timers, one per candidate finger, cleared on end. */
+  private readonly holdTimers = new Map<number, number>()
 
   private readonly base: HTMLDivElement
   private readonly knob: HTMLDivElement
@@ -133,6 +161,13 @@ export class TouchControls {
         this.lastLookX = e.clientX
         this.lastLookY = e.clientY
       }
+
+      // Arm the hold offer. The timer fires only if the finger is still down,
+      // still still, and nothing else (pinch, another hold) has taken it.
+      if (this.onHoldStart && this.holdPointer === -1) {
+        const id = e.pointerId
+        this.holdTimers.set(id, window.setTimeout(() => this.tryBeginHold(id), HOLD_MS))
+      }
     })
 
     canvas.addEventListener('pointermove', (e) => {
@@ -143,13 +178,22 @@ export class TouchControls {
       pt.y = e.clientY
       if (Math.hypot(e.clientX - pt.startX, e.clientY - pt.startY) > TAP_SLOP) pt.moved = true
 
+      // A claimed hold finger belongs entirely to the hold system: it has no
+      // joystick/look role left to drive, and it must not feed a pinch score.
+      if (e.pointerId === this.holdPointer) {
+        this.onHoldMove?.(e.clientX, e.clientY)
+        return
+      }
+
       if (this.pinching) {
         this.updatePinch()
         return
       }
 
       // Armed but not committed: are both fingers pulling along the same line?
-      if (this.pointers.size === 2 && this.scorePinch()) {
+      // Never while a hold owns a finger — a strain-hold plus a stray second
+      // finger must not zoom the camera out from under the gesture.
+      if (this.holdPointer === -1 && this.pointers.size === 2 && this.scorePinch()) {
         this.beginPinch()
         return
       }
@@ -184,6 +228,18 @@ export class TouchControls {
       if (e.pointerType !== 'touch') return
       const pt = this.pointers.get(e.pointerId)
       this.pointers.delete(e.pointerId)
+
+      // A finger that lifts before HOLD_MS was never offered; kill its timer.
+      const holdTimer = this.holdTimers.get(e.pointerId)
+      if (holdTimer !== undefined) {
+        clearTimeout(holdTimer)
+        this.holdTimers.delete(e.pointerId)
+      }
+      if (e.pointerId === this.holdPointer) {
+        this.holdPointer = -1
+        // pointercancel means the system stole the touch — not a release.
+        this.onHoldEnd?.(e.type !== 'pointercancel')
+      }
 
       if (this.pinching && this.pointers.size < 2) {
         this.pinching = false
@@ -237,6 +293,35 @@ export class TouchControls {
       pt.lastY = pt.y
     }
     return Math.abs(this.pinchScore) >= PINCH_COMMIT
+  }
+
+  /**
+   * The HOLD_MS timer landed: offer this finger to the hold system.
+   *
+   * Everything is re-checked at fire time because 350ms is forever in touch
+   * terms — the finger may have lifted, wandered into a drag, joined a pinch,
+   * or lost the race to another finger's hold. Only a finger that is still
+   * down and still still gets offered, and only a *claimed* one (onHoldStart
+   * returning true) loses its roles — the same drops beginPinch performs, so
+   * the stick never fights the strain pose for the thumb.
+   */
+  private tryBeginHold(id: number) {
+    this.holdTimers.delete(id)
+    const pt = this.pointers.get(id)
+    if (!pt || pt.moved || this.pinching || this.holdPointer !== -1) return
+    if (!this.onHoldStart?.(pt.x, pt.y)) return
+
+    this.holdPointer = id
+    // A claimed finger can never end in a tap — the hold system owns its
+    // release grammar, including the degrade-to-tap on early cancel.
+    pt.moved = true
+    if (this.movePointer === id) {
+      this.movePointer = -1
+      this.stickLive = false
+      Input.setTouchAxis(0, 0)
+      this.base.style.display = 'none'
+    }
+    if (this.lookPointer === id) this.lookPointer = -1
   }
 
   private beginPinch() {
