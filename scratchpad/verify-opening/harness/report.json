@@ -1,0 +1,199 @@
+{
+  "when": "2026-08-13T03:30:24.009Z",
+  "port": "5263",
+  "beat": "all",
+  "shotsOnly": false,
+  "results": [
+    {
+      "id": "beat-1:naked",
+      "status": "pass",
+      "reason": "hud chrome hidden (10 elements)"
+    },
+    {
+      "id": "gold:beat-1",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-1",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-1:situp",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-2:crate",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-2:satchel",
+      "status": "pass",
+      "reason": "7 .isle-el elements (satchel born)"
+    },
+    {
+      "id": "beat-2:seeds",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "gold:beat-2",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-2",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-3:shovel",
+      "status": "pass",
+      "reason": "held []"
+    },
+    {
+      "id": "gold:beat-3",
+      "status": "pass",
+      "reason": "canvas 0.002% gold"
+    },
+    {
+      "id": "strings:beat-3",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-4:refusal",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "gold:beat-4",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-4",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-5:pocket",
+      "status": "pass",
+      "reason": "cleared via holds; held [\"chaos-morning-glory-2\",\"chaos-stone-3\",\"chaos-vine-4\",\"chaos-frond-5\",\"chaos-driftwood-8\"]"
+    },
+    {
+      "id": "beat-5:voluntary",
+      "status": "pass",
+      "reason": "voluntaryCleared = 4"
+    },
+    {
+      "id": "gold:beat-5",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-5",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "resume",
+      "status": "pass",
+      "reason": "beat before reload = plant, after = plant"
+    },
+    {
+      "id": "beat-6:plant",
+      "status": "pass",
+      "reason": "bedsDug=7 seedsPlanted=7 via holds+taps"
+    },
+    {
+      "id": "gold:beat-6",
+      "status": "pass",
+      "reason": "canvas 0.095% gold"
+    },
+    {
+      "id": "strings:beat-6",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-7:tideline",
+      "status": "pass",
+      "reason": "tidePicked = 3 after 104 taps"
+    },
+    {
+      "id": "gold:beat-7",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-7",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-8:ripen",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-8:ordinaries",
+      "status": "pass",
+      "reason": "ordinariesPicked = 5"
+    },
+    {
+      "id": "beat-8:odd",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "gold:beat-8",
+      "status": "pass",
+      "reason": "52 gold px — lotto tell present"
+    },
+    {
+      "id": "strings:beat-8",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-9:goat",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-9:journal",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "strings:beat-9",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-9:done",
+      "status": "pass",
+      "reason": "record.beat = done"
+    },
+    {
+      "id": "first-return",
+      "status": "pass",
+      "reason": "plan = {\"mysteryBed\":{\"x\":4,\"z\":3},\"goatRevisit\":true}"
+    },
+    {
+      "id": "legacy-save",
+      "status": "pass",
+      "reason": "isle-opening class = false, visible hud-chrome = 7 (real completed-run blob)"
+    },
+    {
+      "id": "legacy-save:marked",
+      "status": "pass",
+      "reason": "opening record after legacy boot: beat=done (markLegacyDone expected)"
+    }
+  ],
+  "pageErrors": []
+}

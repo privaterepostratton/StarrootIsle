@@ -11,7 +11,7 @@ import { inPlayerPlot, SPAWN } from './game/village'
 import { GuidePath } from './game/guide-path'
 import { TargetRings, type RingTarget } from './game/target-rings'
 import { preloadImages } from './ui/preload-images'
-import { groundHeight, isSand, isWalkable } from './game/terrain'
+import { groundHeight, isSand } from './game/terrain'
 import { updateGrass } from './game/vegetation'
 import { Farm, GARDEN_LEVELS, TILE_SIZE, type Tile } from './game/farm'
 import { CROPS, CROP_BY_ID, OPENING_CROP_IDS, growSecondsFor } from './game/crops'
@@ -89,6 +89,7 @@ import { OpeningSequencer } from './game/opening/sequencer'
 import { forgetOpening, loadOpening } from './game/opening/opening-save'
 import {
   BEAT_ORDER,
+  PULSE_IVORY,
   type BeatId,
   type FirstReturnPlan,
   type HoldTarget,
@@ -105,7 +106,7 @@ import { createJournalProp } from './assets/opening/beach-models'
 import { Tideline } from './game/opening/tideline'
 import { GoatArrival, type GoatPhase } from './game/opening/goat'
 import { Butterflies } from './game/opening/butterflies'
-import { OpeningUi } from './ui/opening/opening-ui'
+import { OpeningUi, type GestureKind } from './ui/opening/opening-ui'
 import { OpeningMusic } from './game/opening/music'
 import { createIslandBreath, playLeafBurst, playLottoTell } from './assets/opening/vfx'
 
@@ -1518,6 +1519,26 @@ let isleBeach: BeachProps | null = null
 let isleTideline: Tideline | null = null
 let isleGoat: GoatArrival | null = null
 let isleButterflies: Butterflies | null = null
+/**
+ * The opening's own guide trail — the same chevrons the village uses, in warm
+ * ivory instead of gold, laid direct rather than through the village graph.
+ *
+ * The spec forbade arrows on the theory that architecture (a horseshoe of
+ * jungle with one doorway) and living actors (the butterflies) would carry the
+ * wayfinding on their own. The owner played it and could not tell where to go,
+ * so the owner overrode the rule: the trail is on for the whole opening and it
+ * points at whatever the current beat wants next.
+ *
+ * Its own instance rather than the module-level `guidePath`, for two reasons
+ * that both matter. Colour: the village trail must stay *exactly* the gold it
+ * has always been, and gold before beat 8 is the one thing this session is not
+ * allowed to show (luck is the only thing gold ever means here). Routing: the
+ * opening's destinations sit inside the player's fenced slot, which the village
+ * solver would answer by sending them out of a gate that does not exist yet —
+ * hence `direct: true`. Struck at the handover, where the gold one takes over
+ * untouched.
+ */
+let isleGuide: GuidePath | null = null
 let isleMusic: OpeningMusic | null = null
 let isleBreath: ReturnType<typeof createIslandBreath> | null = null
 /**
@@ -1816,15 +1837,25 @@ function isleEnsureSeeds() {
   if (mystery < 1) inventory.giveSeed('mystery-sprout', 1)
 }
 
-/** Walk the farmer to `gap` units short of a point (tap-to-approach). */
-function isleMoveNear(x: number, z: number, gap: number) {
-  // Any other walk order supersedes a gap-routed one — see isleWalkTo.
-  isleWaypoint = null
-  const dx = player.position.x - x
-  const dz = player.position.z - z
-  const d = Math.hypot(dx, dz) || 1
-  player.moveTo(isleTapVec.set(x + (dx / d) * gap, 0, z + (dz / d) * gap))
-}
+/*
+ * REACH, AND WHY THE TAP ROUTER NO LONGER CHECKS IT
+ *
+ * The opening shipped with two ways a tap could move the farmer: tap-to-move on
+ * open ground, and an auto-approach that walked you to anything you tapped out
+ * of reach. The owner ruled both out — a point-and-click must not move the
+ * player. Movement is the joystick on touch and the keys on desktop.
+ *
+ * That leaves the question of what an out-of-reach tap *should* do, and the
+ * answer they gave is: work anyway. If you tap a thing, the thing happens. So
+ * the router's distance gates are gone rather than turned into refusals — no
+ * silent no-ops, nothing that reads as the game ignoring you. The guide trail
+ * still points at the objective, but following it is now an invitation rather
+ * than a toll.
+ *
+ * The gates that remain are about *what you tapped*, not how far away it is:
+ * the crate's 1.8-unit pick radius, `farm.tileNear`'s tile box, the washup's
+ * 1.6. Those are hit-testing, and they stay.
+ */
 
 /**
  * Wrap a module-owned hold target so the farmer's body strains with it.
@@ -1833,9 +1864,57 @@ function isleMoveNear(x: number, z: number, gap: number) {
  * they are only rebuilt on retarget events, never per frame, because
  * HoldInput cancels any in-flight hold whose exact object vanishes.
  */
+/**
+ * How long a shaping act takes, now that holding is gone.
+ *
+ * The owner cut the hold gesture: everything in the opening is a tap. But the
+ * shaping verbs are not instant *events* — a vine strains before it snaps, a
+ * shovel bites twice — and those animations are driven off hold progress. So a
+ * tap now runs that same progress on a timer instead of off the player's
+ * finger: press once, watch it happen. Short enough to feel like a click caused
+ * it, long enough that the prop's strain and the farmer's brace still read.
+ */
+const TAP_ACT_SECONDS = 0.45
+
+/** The shaping act currently playing out, if any. One at a time. */
+let isleAct: { target: HoldTarget; t: number } | null = null
+
+/**
+ * Start a tapped shaping act. Re-tapping the thing already running is ignored
+ * rather than restarted — a double-click should not stutter the animation.
+ */
+function isleBeginAct(target: HoldTarget) {
+  if (isleAct?.target === target) return
+  if (isleAct) isleAct.target.onCancel?.()
+  isleAct = { target, t: 0 }
+  target.onProgress?.(0)
+}
+
+/** Advance the running act; fire onComplete on the frame it fills. */
+function isleUpdateAct(dt: number) {
+  if (!isleAct) return
+  const { target } = isleAct
+  // Targets are rebuilt on every clear/dig/plant. If ours was retired mid-act
+  // (the sequencer moved the beat on under us) drop it rather than complete a
+  // thing that no longer exists.
+  if (!isleCurrentTargets.includes(target)) {
+    target.onCancel?.()
+    isleAct = null
+    return
+  }
+  isleAct.t += dt
+  const p = Math.min(1, isleAct.t / Math.max(0.01, target.duration))
+  target.onProgress?.(p)
+  if (p >= 1) {
+    isleAct = null
+    target.onComplete()
+  }
+}
+
 function isleWrapStrain(t: HoldTarget): HoldTarget {
   return {
     ...t,
+    duration: TAP_ACT_SECONDS,
     onProgress: (p) => {
       if (p === 0) {
         // The strain voice at commit: elastic creak for the soft pulls, grit
@@ -2379,42 +2458,17 @@ function isleLeadButterflies() {
 }
 
 /**
- * Tap-to-move, routed through the treeline gap.
+ * The doorway waypoint, kept for walks the *game* orders.
  *
- * `Player.moveTo` is straight-line steering with a give-up timer, not a
- * pathfinder — it slides along whatever it hits and abandons the walk after
- * 0.7 s of being stopped. That was fine when the only things between the beach
- * and the farm pad were a few trees; the jungle wall is a closed horseshoe with
- * one doorway, and a player who taps the chaos pocket from the sand would walk
- * into eight units of foliage, wedge in a concave seam between two colliders,
- * and have the walk silently cancelled — in the beat the whole session is
- * built around.
- *
- * So: when the tap is on the far side of the wall, walk to the doorway first
- * and hold the real destination as a waypoint. `Player.arrivedThisFrame` fires
- * the second leg. The wall is the only thing in the opening that needs this,
- * and once it is struck at the handover the whole mechanism is inert.
+ * There is no tap-to-move any more — the owner ruled that a point-and-click must
+ * not move the player — so nothing sets this today. It stays because the reason
+ * it exists has not gone away: `Player.moveTo` is straight-line steering with a
+ * give-up timer, not a pathfinder, and the jungle wall is a closed horseshoe
+ * with one doorway. Any future code that steers the body across that line (a
+ * cinematic, a scripted approach) must go through the gap first or wedge in a
+ * concave seam between colliders. `Player.arrivedThisFrame` fires the second leg.
  */
 let isleWaypoint: THREE.Vector3 | null = null
-
-/** Which side of the wall a point is on: true = inside the horseshoe. */
-function isleInsideWall(x: number): boolean {
-  return isleWall !== null && x > isleWall.gapCentre.x + 0.6
-}
-
-function isleWalkTo(x: number, z: number) {
-  isleWaypoint = null
-  if (isleWall && isleInsideWall(x) !== isleInsideWall(player.position.x)) {
-    const gap = isleWall.gapCentre
-    isleWaypoint = new THREE.Vector3(x, 0, z)
-    // Aim a little to the player's side of the doorway's middle, so the
-    // approach is *through* it rather than at its far jamb.
-    const bias = isleInsideWall(player.position.x) ? 1.1 : -1.1
-    player.moveTo(isleTapVec.set(gap.x + bias, 0, gap.z))
-    return
-  }
-  player.moveTo(isleTapVec.set(x, 0, z))
-}
 
 // --- the opening tap router --------------------------------------------------
 
@@ -2448,15 +2502,13 @@ function isleWorldTap(x: number, z: number): boolean {
   }
   if (openingCinematic) return true
 
-  const px = player.position.x
-  const pz = player.position.z
-
   // 1. The crate — the first discrete act.
   if (!isleBeach.crateOpened) {
     const c = isleBeach.cratePos
     if (Math.hypot(x - c.x, z - c.z) < 1.8) {
-      if (isleBeach.tapCrate(player.position)) audio.play('crate-creak')
-      else isleMoveNear(c.x, c.z, 1.4)
+      // Reach is deliberately not consulted: the module gates on the player's
+      // position, so hand it the crate's own. See the reach note above.
+      if (isleBeach.tapCrate(c)) audio.play('crate-creak')
       return true
     }
   }
@@ -2466,40 +2518,50 @@ function isleWorldTap(x: number, z: number): boolean {
     const tile = farm.tileNear(isleTapVec.set(x, 0, z), TILE_SIZE * 0.9)
     if (tile?.placed && !tile.sprinkler) {
       if (!tile.crop && isleSeedsLeft() > 0) {
-        if (Math.hypot(px - tile.pos.x, pz - tile.pos.z) < 2.6) islePlantAt(tile)
-        else isleMoveNear(tile.pos.x, tile.pos.z, 0.2)
+        islePlantAt(tile)
         return true
       }
       if (tile.crop?.def.id === 'sun-tomato' && tile.crop.progress >= 1) {
         if (tile.crop.rarity !== 'common') return true // the odd one is a hold
-        if (Math.hypot(px - tile.pos.x, pz - tile.pos.z) < 2.6) islePickOrdinary(tile)
-        else isleMoveNear(tile.pos.x, tile.pos.z, 0.2)
+        islePickOrdinary(tile)
         return true
       }
     }
   }
 
-  // 3. Tide-line washups: tap-collect in reach, walk over otherwise.
+  // 3. Tide-line washups: tap-collect whichever one the tap landed on.
   {
-    const near = isleTideline.targetNear(player.position)
+    const near = isleTideline.targetNear(isleTapVec.set(x, 0, z))
     if (near && Math.hypot(near.at.x - x, near.at.z - z) < 1.6) {
       near.collect() // onCollect (isleTideCollect) does the granting
       return true
-    }
-    for (const at of isleTideline.positions()) {
-      if (Math.hypot(at.x - x, at.z - z) < 1.4) {
-        isleMoveNear(at.x, at.z, 0.9)
-        return true
-      }
     }
   }
 
   // 4. The amphora shard — the pocket's single tap-collect.
   {
-    const shard = islePocket.tapTargetNear(player.position)
-    if (shard && Math.hypot(x - px, z - pz) < 2.8) {
-      isleGrantDrop(player.position.clone(), shard.collect(), 'amphora')
+    const shard = islePocket.tapTargetNear(isleTapVec.set(x, 0, z))
+    if (shard) {
+      isleGrantDrop(isleTapVec.set(x, groundHeight(x, z), z).clone(), shard.collect(), 'amphora')
       isleRetargetHolds()
+      return true
+    }
+  }
+
+  // 4b. The shaping verbs — pull, clear, dig, the odd fruit. Once a hold, now a
+  // tap that runs the same animation on a timer. Nearest hit target wins.
+  {
+    let best: HoldTarget | null = null
+    let bestD = Infinity
+    for (const t of isleCurrentTargets) {
+      const d = Math.hypot(t.pos.x - x, t.pos.z - z)
+      if (d < Math.max(t.radius, 1.1) && d < bestD) {
+        best = t
+        bestD = d
+      }
+    }
+    if (best) {
+      isleBeginAct(best)
       return true
     }
   }
@@ -2509,15 +2571,21 @@ function isleWorldTap(x: number, z: number): boolean {
     isleBeach.crateOpened &&
     (beat === 'shovel' || beat === 'clearing' || beat === 'plant') &&
     refusalCooldown <= 0 &&
-    isSand(x, z) &&
-    Math.hypot(x - px, z - pz) < 2.6
+    isSand(x, z)
   ) {
     isleRefuse(x, z)
     return true
   }
 
-  // 5. Tap-to-move, through the doorway when the wall is in the way.
-  if (isWalkable(x, z)) isleWalkTo(x, z)
+  /*
+   * 5. Nothing. A tap on open ground is not a walk order.
+   *
+   * The opening shipped with tap-to-move for desktop parity; the owner has ruled
+   * it out — point-and-click must not move the player. Movement is the joystick
+   * on touch and the keys on desktop, and the guide trail says where to take it.
+   * Everything above this line already acted on whatever was tapped, at any
+   * range, so reaching here means the tap landed on nothing.
+   */
   return true
 }
 
@@ -2634,6 +2702,21 @@ function isleHandover() {
     isleWallObstacles = []
   }
   isleWaypoint = null
+  /*
+   * Strike the ivory trail with it.
+   *
+   * The gold one has been alive in the scene the whole time with an empty
+   * target list (the loop below zeroes `ftueTrailBuf` while the opening runs),
+   * so this is the only handover the guidance needs: from the next frame the
+   * FTUE's own targeting drives the gold chevrons exactly as it did before the
+   * opening existed. Emptying the ivory lane list first parks every arrow, so
+   * nothing is left mid-fade on the group being detached.
+   */
+  if (isleGuide) {
+    isleGuide.setTargets([])
+    isleGroup?.remove(isleGuide.group)
+    isleGuide = null
+  }
   // The valley's own ambient life comes back with the rest of the world.
   isleRestoreCrabs()
   beachSeeds.group.visible = true
@@ -2784,60 +2867,378 @@ function isleBuildStats(): OpeningStats {
   }
 }
 
-/** THE one contextual prompt, resolved by priority: an override string, the
- *  live hold, a plantable bed, the nearest candidate, a washup in reach. */
-function islePromptSync() {
-  const ui = isleUi
-  if (!ui || !isleSeq || !isleHold) return
-  if (islePromptOverride) return // the shared block below owns it
-  if (openingCinematic || !isleSeq.active) {
-    ui.setPrompt(null)
-    return
-  }
-  const holding = isleHold.holding
-  if (holding?.verb) {
-    ui.setPrompt(holding.verb, holding.pos)
-    return
-  }
-  const beat = isleSeq.beat
-  if (beat === 'plant' && isleSeedsLeft() > 0) {
-    let best: Tile | null = null
-    let bestD = 2.6
-    for (const t of farm.tiles) {
-      if (!t.placed || t.crop || t.sprinkler) continue
-      const d = Math.hypot(t.pos.x - player.position.x, t.pos.z - player.position.z)
-      if (d < bestD) {
-        bestD = d
-        best = t
-      }
-    }
-    if (best) {
-      ui.setPrompt('plant', best.pos)
-      return
-    }
-  }
-  const cand = isleHold.candidate
-  if (cand?.verb) {
-    ui.setPrompt(cand.verb, cand.pos)
-    return
-  }
-  if ((beat === 'grow' || beat === 'harvest') && isleTideline) {
-    const near = isleTideline.targetNear(player.position)
-    if (near) {
-      ui.setPrompt('pick', near.at)
-      return
-    }
-  }
-  ui.setPrompt(null)
+// --- guidance: one objective, three views of it ------------------------------
+/*
+ * The spec forbade arrows and instructional popups. The owner played the
+ * finished opening and could not tell where to go or which input to use, and
+ * overrode both rules: a trail that is always on and points at the current
+ * objective, and a card at that objective naming the verb and drawing the
+ * gesture. Everything below is that override.
+ *
+ * It is ONE resolver rather than one per widget, because the ivory ring, the
+ * gesture card and the yellow hold bar are three views of a single answer and
+ * they may not disagree. The card measures its own lift from the ring's
+ * projected radius (opening-ui's `update`), so a card pointing at one object
+ * while the ring sits on another is a speech bubble floating over nothing —
+ * and the marker suppresses itself only when the *prompt* overlaps it, so a
+ * third anchor would put two ivory circles on one patch of loam.
+ */
+
+/** What the player is meant to do right here, and how. */
+interface IsleFocus {
+  key: OpeningStringKey
+  /** World anchor for the ring and the card's tail, or null for the handful of
+   *  objectives whose position nothing exposes — both widgets then fall back to
+   *  their own low-and-centred, tailless register. */
+  pos: THREE.Vector3 | null
+  gesture: GestureKind
+  /** Live 0..1 for the yellow fill bar. 0 for taps and for un-pressed holds. */
+  progress: number
 }
 
-/** The standalone soft-pulse marker — crate, shovel, washups, the next spot
- *  to dig. Ivory, never gold, max one, and never during a cinematic. */
-function isleMarkSync() {
+/** Where the trail is pointing, and the one waypoint it may have to bend
+ *  through on the way (the treeline doorway — see `isleVia`). */
+interface IsleTrail {
+  point: THREE.Vector3
+  via: THREE.Vector3 | null
+}
+
+/**
+ * How near the farmer stands before a *tap* objective speaks.
+ *
+ * Holds do not need a number here: HoldInput's candidate is by definition the
+ * nearest target the farmer could press right now, so "close enough to act" is
+ * already computed for them. Taps have no such notion — the tap router gates on
+ * where the *tap* landed, not on where the body is — so guidance picks its own,
+ * and 2.6 is the reach the plant prompt has always used.
+ */
+const ISLE_TAP_REACH = 2.6
+/** The crate is bulky and it is the very first thing the game asks for. */
+const ISLE_CRATE_REACH = 3.2
+/** Scratch for focus anchors that sit above their object. Only ever handed to
+ *  callers that copy (setPrompt, setGestureBubble, GuidePath.setTarget). */
+const isleFocusVec = new THREE.Vector3()
+
+/** Ripe sun tomato standing in this bed? */
+function isleRipeSun(t: Tile): boolean {
+  const c = t.crop
+  return !!c && c.def.id === 'sun-tomato' && c.progress >= 1
+}
+
+/** Nearest farm tile the predicate likes, within `reach` of the farmer. */
+function isleNearestTile(reach: number, want: (t: Tile) => boolean): Tile | null {
+  let best: Tile | null = null
+  let bestD = reach
+  for (const t of farm.tiles) {
+    if (!want(t)) continue
+    const d = Math.hypot(t.pos.x - player.position.x, t.pos.z - player.position.z)
+    if (d < bestD) {
+      bestD = d
+      best = t
+    }
+  }
+  return best
+}
+
+/** Nearest live hold target of a kind, read off the list HoldInput is already
+ *  holding — event-driven, so this costs no allocation per frame. */
+function isleNearestHold(want: (t: HoldTarget) => boolean): HoldTarget | null {
+  let best: HoldTarget | null = null
+  let bestD = Infinity
+  for (const t of isleCurrentTargets) {
+    if (!want(t)) continue
+    const d = Math.hypot(t.pos.x - player.position.x, t.pos.z - player.position.z)
+    if (d < bestD) {
+      bestD = d
+      best = t
+    }
+  }
+  return best
+}
+
+/** Nearest standing washup on the tide line. */
+function isleNearestWashup(): THREE.Vector3 | null {
+  if (!isleTideline) return null
+  let best: THREE.Vector3 | null = null
+  let bestD = Infinity
+  for (const at of isleTideline.positions()) {
+    const d = Math.hypot(at.x - player.position.x, at.z - player.position.z)
+    if (d < bestD) {
+      bestD = d
+      best = at
+    }
+  }
+  return best
+}
+
+/**
+ * The treeline doorway, supplied only when the trail actually has to use it.
+ *
+ * The jungle wall is a horseshoe opening west onto the beach with one gap, at
+ * x = GAP; the beach lives west of that line and the pocket, the clearing and
+ * the farm live east of it. So the doorway is on the way exactly when the
+ * farmer and the destination are on opposite sides — which covers both
+ * directions, the walk in to the chaos and the walk back out to the tide line.
+ *
+ * Handing it over unconditionally is the trap: `GuidePath.viaPending` keeps a
+ * via whenever the player is off the via→target axis, so a beach-to-beach trail
+ * given the gap anyway would run east to the doorway and back west again.
+ */
+function isleVia(targetX: number): THREE.Vector3 | null {
+  const gap = isleWall?.gapCentre
+  if (!gap) return null
+  const here = player.position.x - gap.x
+  const there = targetX - gap.x
+  return here * there < 0 ? gap : null
+}
+
+/**
+ * The one objective, resolved by priority.
+ *
+ * A live press wins outright: the bar on the card *is* that press, and taking
+ * the card away mid-hold would remove the read-out at the one moment it is
+ * doing work.
+ */
+function isleFocus(): IsleFocus | null {
+  if (!isleSeq || !isleHold) return null
+  // A tapped act in flight owns the card, for the same reason a live press used
+  // to: the bar is the read-out of the thing happening right now.
+  if (isleAct) {
+    const p = Math.min(1, isleAct.t / Math.max(0.01, isleAct.target.duration))
+    return isleHoldFocus(isleAct.target, p)
+  }
+  const holding = isleHold.holding
+  if (holding) return isleHoldFocus(holding, isleHold.progress)
+
+  const beat = isleSeq.beat
+
+  // The crate: the first discrete act of the session, and the first time the
+  // game has to admit that a tap is a thing. It borrows 'Pick.' — no new word.
+  if (beat === 'crate' && isleBeach && !isleBeach.crateOpened) {
+    const c = isleBeach.cratePos
+    if (Math.hypot(c.x - player.position.x, c.z - player.position.z) < ISLE_CRATE_REACH) {
+      return {
+        key: 'pick',
+        pos: isleFocusVec.copy(c).setY(c.y + 0.55),
+        gesture: 'tap',
+        progress: 0,
+      }
+    }
+  }
+
+  // A bed with a seed for it outranks everything else in reach — this is the
+  // prompt's long-standing priority and the reason has not changed: standing on
+  // ground you have just dug, "Plant." is the only useful thing to be told.
+  if ((beat === 'plant' || beat === 'grow') && isleSeedsLeft() > 0) {
+    const bed = isleNearestTile(
+      ISLE_TAP_REACH,
+      (t) => t.placed && !t.sprinkler && t.crop === null,
+    )
+    if (bed) return { key: 'plant', pos: bed.pos, gesture: 'tap', progress: 0 }
+  }
+
+  /*
+   * A ripe bed, resolved by distance rather than by letting holds outrank taps.
+   *
+   * Five of them are taps and the sixth — the odd one — is a hold, and that
+   * difference IS the beat: the player taps the gold fruit, nothing happens,
+   * and the card is the only thing on screen that can explain why. Whichever
+   * bed is nearest gets the card, with its own gesture on it.
+   */
+  if (beat === 'grow' || beat === 'harvest') {
+    const ripe = isleNearestTile(ISLE_TAP_REACH, isleRipeSun)
+    if (ripe?.crop?.rarity === 'common') {
+      return { key: 'pick', pos: ripe.pos, gesture: 'tap', progress: 0 }
+    }
+    if (ripe && isleOddTarget) return isleHoldFocus(isleOddTarget, 0)
+  }
+
+  // Whatever HoldInput says is under the farmer's hands: the shovel, the
+  // chaos, the beds still to dig.
+  const cand = isleHold.candidate
+  if (cand) {
+    const focus = isleHoldFocus(cand, 0)
+    if (focus) return focus
+  }
+
+  // Tap-collects that no other system knows about.
+  if (isleTideline && (beat === 'grow' || beat === 'harvest' || beat === 'plant')) {
+    const near = isleTideline.targetNear(player.position)
+    if (near) return { key: 'pick', pos: near.at, gesture: 'tap', progress: 0 }
+  }
+  /*
+   * The amphora shard, the pocket's one tap-collect.
+   *
+   * Screen-anchored on purpose: `tapTargetNear` answers *whether* a shard is in
+   * reach, never where it is, and ChaosPocket exposes no position for it. A
+   * tailless card low on screen still tells the player the two things they are
+   * missing — that this one is a tap, and that it is here.
+   */
+  if (beat === 'clearing' && islePocket?.tapTargetNear(player.position)) {
+    return { key: 'clear', pos: null, gesture: 'tap', progress: 0 }
+  }
+  return null
+}
+
+/**
+ * A shaping target's focus, or null for targets that carry no word at all.
+ *
+ * Named for the hold gesture it was built around; the gesture is gone but the
+ * targets remain, because they are also the list of things in the world that
+ * can be acted on. The card now always says 'tap' — there is nothing left to
+ * hold — and the bar reads out the act's own animation rather than a finger.
+ */
+function isleHoldFocus(t: HoldTarget, progress: number): IsleFocus | null {
+  /*
+   * The odd fruit shipped deliberately verb-less ("the grammar carries it") and
+   * it is precisely where the owner got stuck: it looks like the five tomatoes
+   * beside it. It borrows 'Pick.' — the word is already in the budget.
+   */
+  const key = t.verb ?? (t.kind === 'odd-fruit' ? 'pick' : null)
+  if (!key) return null
+  return { key, pos: t.pos, gesture: 'tap', progress }
+}
+
+/**
+ * Where the trail points this frame.
+ *
+ * Always on while the player has the body (the owner's second ruling), and
+ * silent at exactly two moments: the wake, whose naked frame is a contract
+ * term, and the goat's arrival — the arrival is the payoff, and an arrow at
+ * the treeline announces the one thing that has to arrive unannounced.
+ */
+function isleTrailTarget(): IsleTrail | null {
+  if (!isleSeq || !isleSeq.active || openingCinematic || isleGoatShot) return null
+  const at = (p: THREE.Vector3): IsleTrail => ({ point: p, via: isleVia(p.x) })
+  switch (isleSeq.beat) {
+    case 'wake':
+      return null
+    case 'crate':
+      return isleBeach && !isleBeach.crateOpened ? at(isleBeach.cratePos) : null
+    case 'shovel':
+      return isleBeach && !isleBeach.shovelPulled ? at(isleBeach.shovelPos) : null
+    case 'clearing': {
+      if (!islePocket) return null
+      /*
+       * Required objects only. The rim extras are marked in their own ids and
+       * are exactly what the trail must not send anybody to: clearing them
+       * unprompted is the thesis metric, and a metric you were told to hit
+       * measures nothing.
+       */
+      const next = isleNearestHold((t) => t.kind === 'chaos' && !t.id.startsWith('chaos-x-'))
+      if (next) return at(next.pos)
+      /*
+       * Nothing left but the shard: it is the one required object with no
+       * HoldTarget to read a position off, so the trail aims at the pocket it
+       * stands in — a seven-by-five clearing with a single object left
+       * standing in it — and the last pace is the player's.
+       */
+      return islePocket.requiredLeft > 0 ? at(islePocket.centre) : null
+    }
+    case 'plant': {
+      const dig = isleNearestHold((t) => t.kind === 'dig')
+      if (dig) return at(dig.pos)
+      const bed =
+        isleSeedsLeft() > 0
+          ? isleNearestTile(Infinity, (t) => t.placed && !t.sprinkler && t.crop === null)
+          : null
+      return bed ? at(bed.pos) : null
+    }
+    case 'grow': {
+      // The tide line fills the wait for the ring, so it is where the trail
+      // sends them while the crop timer runs.
+      const wash = isleNearestWashup()
+      if (wash) return at(wash)
+      const bed =
+        isleSeedsLeft() > 0
+          ? isleNearestTile(Infinity, (t) => t.placed && !t.sprinkler && t.crop === null)
+          : null
+      if (bed) return at(bed.pos)
+      const ripe = isleNearestTile(Infinity, isleRipeSun)
+      return ripe ? at(ripe.pos) : null
+    }
+    case 'harvest': {
+      // Ordinaries first, and the odd one last: the session's first roll is the
+      // note the beat ends on, not one it stumbles into halfway through.
+      const ord = isleNearestTile(
+        Infinity,
+        (t) => isleRipeSun(t) && t.crop?.rarity === 'common',
+      )
+      if (ord) return at(ord.pos)
+      if (isleOddTarget) return at(isleOddTarget.pos)
+      const wash = isleNearestWashup()
+      return wash ? at(wash) : null
+    }
+    case 'arrival':
+    case 'done':
+      return null
+  }
+}
+
+/** Lay the ivory trail at whatever the beat wants next, and flow it. */
+function isleGuideSync(dt: number) {
+  const guide = isleGuide
+  if (!guide) return
+  const trail = isleTrailTarget()
+  guide.setTarget(trail?.point ?? null, trail?.via ?? null)
+  guide.update(dt, player.position)
+}
+
+/**
+ * THE one contextual prompt, plus the gesture card over it: same key, same
+ * anchor, same frame. Priority lives in `isleFocus`.
+ *
+ * Returns the focus it drew, so `isleMarkSync` can stand the wordless marker
+ * down rather than recomputing the same answer a second time.
+ */
+function islePromptSync(): IsleFocus | null {
+  const ui = isleUi
+  if (!ui || !isleSeq || !isleHold) return null
+  if (islePromptOverride) {
+    // The poem owns the screen while it is up: one sentence, no card around it.
+    ui.setGestureBubble(null)
+    return null // the shared block below owns the prompt itself
+  }
+  if (openingCinematic || !isleSeq.active) {
+    ui.setPrompt(null)
+    ui.setGestureBubble(null)
+    return null
+  }
+  const focus = isleFocus()
+  if (!focus) {
+    ui.setPrompt(null)
+    ui.setGestureBubble(null)
+    return null
+  }
+  ui.setPrompt(focus.key, focus.pos ?? undefined)
+  ui.setGestureBubble(focus.key, focus.pos, focus.gesture, focus.progress)
+  return focus
+}
+
+/**
+ * The standalone soft-pulse marker — crate, shovel, washups, the next spot to
+ * dig. Ivory, never gold, max one, and never during a cinematic.
+ *
+ * It stands down entirely while a *positioned* prompt is up. OpeningUi already
+ * hides it when the two rings land on the same object, but that test is a
+ * distance one (PULSE_WORLD_R + markRadius = 1.08 world units) and adjacent
+ * farm tiles are 1.2 apart — so the plant beat drew the prompt's ring on the
+ * bed you are standing at and a second, identical ivory ring on the undug tile
+ * beside it, and a player who has been taught that an ivory circle means
+ * "here" now has two heres. One ring, always: the prompt's, because it is the
+ * one carrying a verb. Nothing is lost, because the farther objective is
+ * exactly what the chevron trail is for — at 'plant' and 'grow' the trail is
+ * already pointing at the very spot this marker was competing for.
+ */
+function isleMarkSync(prompt: IsleFocus | null) {
   const ui = isleUi
   if (!ui || !isleSeq) return
   if (!isleSeq.active || openingCinematic) {
     if (isleSeq.active) ui.pulseAt(null)
+    return
+  }
+  if (prompt?.pos) {
+    ui.pulseAt(null)
     return
   }
   const beat = isleSeq.beat
@@ -2846,7 +3247,10 @@ function isleMarkSync() {
   } else if (beat === 'shovel' && isleBeach && !isleBeach.shovelPulled) {
     ui.pulseAt(isleTapVec.copy(isleBeach.shovelPos).setY(isleBeach.shovelPos.y + 0.5), 0.55)
   } else if (beat === 'plant') {
-    const next = isleCurrentTargets.find((t) => t.kind === 'dig')
+    // The nearest, not the first in the list: the trail points at the nearest
+    // undug spot, and a ring sitting on a different one asks the player to
+    // believe two things at once.
+    const next = isleNearestHold((t) => t.kind === 'dig')
     if (next) ui.pulseAt(isleTapVec.copy(next.pos).setY(next.pos.y + 0.25), 0.6)
     else ui.pulseAt(null)
   } else if (beat === 'grow' && isleTideline && isleTideline.remaining > 0) {
@@ -2935,10 +3339,11 @@ function isleFrame(dt: number) {
     }
 
     /*
-     * Second leg of a walk routed through the treeline gap (see isleWalkTo).
-     * Dropped if the walk ended any other way — a new tap, a cancel, or the
-     * stuck timer giving up — so a stale waypoint can never yank the farmer
-     * somewhere they no longer asked to go.
+     * Second leg of a walk routed through the treeline gap (see isleWaypoint).
+     * Nothing sets it since tap-to-move was removed, but it is kept armed for
+     * any scripted walk that crosses the wall. Dropped if the walk ended any
+     * other way — a cancel, or the stuck timer giving up — so a stale waypoint
+     * can never yank the farmer somewhere they no longer asked to go.
      */
     if (isleWaypoint) {
       if (player.arrivedThisFrame) {
@@ -2975,14 +3380,17 @@ function isleFrame(dt: number) {
     isleSeq.update(dt, stats)
 
     if (isleSeq.active) {
-      if (!openingCinematic) isleHold?.update(dt, player.position)
+      if (!openingCinematic) {
+        isleHold?.update(dt, player.position)
+        isleUpdateAct(dt)
+      }
       // The odd target is born the frame its fruit ripens (no event fires for
       // ripeness; this is the one polled retarget).
       if (isleSeq.beat === 'harvest' && !isleOddTarget && !isleOddDone && isleGoldRipeStanding) {
         isleRetargetHolds()
       }
-      islePromptSync()
-      isleMarkSync()
+      isleMarkSync(islePromptSync())
+      isleGuideSync(dt)
       isleSundialSync()
       const chip = isleSeq.beat === 'plant' ? isleSeedsLeft() : null
       if (chip !== isleLastChip) {
@@ -3247,6 +3655,14 @@ function isleCameraDrive(dt: number): boolean {
       }
 
       isleButterflies = new Butterflies(isleGroup)
+      /*
+       * The trail, built alongside the butterflies rather than instead of them:
+       * the pair still fly the refusal's invitation to the doorway (§4.1) and
+       * the chevrons still run under them. One says "there is somewhere to be",
+       * the other says which way — they do not compete for the same job.
+       */
+      isleGuide = new GuidePath({ color: PULSE_IVORY, direct: true })
+      isleGroup.add(isleGuide.group)
       isleMusic = new OpeningMusic(audio)
       // Polls for the (gesture-gated) context; the wake tap unlocks it.
       isleMusic.start()
@@ -5276,7 +5692,7 @@ if (import.meta.env.DEV) {
     engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, critters, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi, animalInfoUi,
     // The opening's modules (null on boots that owe no opening) — the verify
     // driver discovers hold-target APIs by scanning these values.
-    openingSequencer: isleSeq, chaosPocket: islePocket, beachProps: isleBeach, tidelineOpening: isleTideline, goatArrival: isleGoat, holdInput: isleHold, openingUi: isleUi, jungleWall: isleWall, butterflies: isleButterflies,
+    openingSequencer: isleSeq, chaosPocket: islePocket, beachProps: isleBeach, tidelineOpening: isleTideline, goatArrival: isleGoat, holdInput: isleHold, openingUi: isleUi, jungleWall: isleWall, butterflies: isleButterflies, openingGuide: isleGuide,
   }
 
   /**
@@ -5309,6 +5725,31 @@ if (import.meta.env.DEV) {
     ret: () => isleSeq?.beginFirstReturn(9e9) ?? null,
     record: () => isleSeq?.record ?? null,
     targets: () => isleCurrentTargets,
+    /* The guidance, read out rather than inferred from pixels: where the ivory
+     * trail is pointing and which objective owns the card this frame. Both are
+     * pure reads of the same resolvers the frame uses. */
+    trail: () => {
+      const t = isleTrailTarget()
+      if (!t) return null
+      const r = (n: number) => Math.round(n * 100) / 100
+      return {
+        x: r(t.point.x),
+        z: r(t.point.z),
+        via: t.via ? [r(t.via.x), r(t.via.z)] : null,
+        arrows: isleGuide ? isleGuide.group.children.filter((c) => c.visible).length : 0,
+      }
+    },
+    focus: () => {
+      const f = isleFocus()
+      if (!f) return null
+      const r = (n: number) => Math.round(n * 100) / 100
+      return {
+        key: f.key,
+        gesture: f.gesture,
+        progress: Math.round(f.progress * 1000) / 1000,
+        pos: f.pos ? [r(f.pos.x), r(f.pos.z)] : null,
+      }
+    },
   }
 
   /**

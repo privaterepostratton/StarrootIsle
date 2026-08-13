@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { Engine } from '../../core/engine'
 import { OPENING_STRINGS, PULSE_IVORY, type OpeningStringKey } from '../../game/opening/types'
+import { isHandheld } from '../fullscreen'
 
 /**
  * Opening UI — the interface of the Isle opening, born one element at a time.
@@ -86,6 +87,61 @@ const DIAL_FADE_FROM = 0.62
 /** What is left of it at full growth — present, but almost gone. */
 const DIAL_FADE_TO = 0.1
 
+/* --- gesture bubble ------------------------------------------------------
+ * The prompt's richer form: the same verb, plus a picture of the gesture that
+ * performs it. Sized in the same currency as everything else here — the lift
+ * is measured from the pulse ring's own projected radius, so the card always
+ * clears the thing it points at no matter how near the camera stands. */
+
+/** Gap in px between the top of the ground ring and the tail's tip. */
+const BUBBLE_GAP = 16
+/** Height of the tail triangle, px — the card floats this far above the tip. */
+const BUBBLE_TAIL = 9
+/** Screen margin the card is kept inside, px. */
+const BUBBLE_EDGE = 12
+/** Ripple radius in the 40-unit gesture viewBox. Taps only — a hold reads its
+ *  progress off the bar below the verb, never off a ring around the glyph. */
+const BUB_RING_R = 16.4
+/** How often the card re-measures itself (font reflow, rotation), seconds. */
+const BUBBLE_MEASURE_EVERY = 0.5
+
+/* --- hold progress bar ---------------------------------------------------
+ * The first build drew hold progress as a ring closing around the input glyph.
+ * It was pretty and it was wrong: a ring reads as decoration until it is most
+ * of the way round, and a player who has never held a button before needs to
+ * see, in the first quarter second, that *something is filling and there is
+ * more of it to go*. A left-to-right bar with an empty track behind it is the
+ * one progress idiom every player on earth already knows, so that is what this
+ * is — straight, horizontal, chunky, with the remaining distance visible.
+ *
+ * The yellow is chosen against a hard constraint. Lotto gold (#f2c14e) is
+ * reserved for luck, and an automated scan fails any pre-beat-8 frame carrying
+ * a pixel within RGB distance 40 of it — so the bar cannot simply be "yellow",
+ * it has to be a yellow that survives being blended. #f8ea88 sits 71.5 away on
+ * its own, and — the number that actually matters — the closest any *blend* of
+ * it with the track's ink can come to gold is 51, so no antialiased edge, no
+ * inner shadow and no glow along this bar can trip the check either. Which is
+ * also why nothing below ever darkens the yellow: pale butter shaded down is
+ * gold, and the highlight side is the only safe direction to travel.
+ */
+const BAR_YELLOW = '#f8ea88'
+const BAR_YELLOW_HI = '#fdf7c8'
+/** Rising fill tracks the press almost immediately, ms — it *is* the press. */
+const BAR_FILL_MS = 80
+/** A released hold drains rather than snapping, ms: progress visibly lost. */
+const BAR_DRAIN_MS = 260
+
+/** How the verb is performed. Hold = shaping, tap = a discrete act. */
+export type GestureKind = 'hold' | 'tap'
+
+/**
+ * The five keys the bubble will speak. The other three strings are sentences,
+ * not verbs — "The sand won't take them." in a little card with a mouse on it
+ * is a tooltip, and the poem register exists precisely so it never becomes
+ * one. Asking for those hides the bubble instead of boxing them.
+ */
+const GESTURE_KEYS = new Set<OpeningStringKey>(['pull', 'clear', 'dig', 'plant', 'pick'])
+
 /** One live sundial ring: DOM plus the world anchor it is glued to. */
 interface Dial {
   el: HTMLDivElement
@@ -108,6 +164,29 @@ export class OpeningUi {
   private promptPos: THREE.Vector3 | null = null
   /** Countdown to `display:none` after a fade-out begins. */
   private promptHide = 0
+
+  private readonly bubbleEl: HTMLDivElement
+  private readonly bubbleCard: HTMLDivElement
+  private readonly bubbleVerb: HTMLDivElement
+  private readonly bubbleGest: HTMLDivElement
+  private readonly bubbleTail: HTMLDivElement
+  private bubbleKey: OpeningStringKey | null = null
+  private bubblePos: THREE.Vector3 | null = null
+  private readonly bubbleBar: HTMLDivElement
+  private readonly bubbleFill: HTMLDivElement
+  private bubbleProgress = 0
+  /** Last progress written, so the bar can tell filling from draining. */
+  private bubbleLast = 0
+  /** Whether the completion snap is currently latched. */
+  private bubbleFull = false
+  /** The rendered gesture cell, so an unchanged frame rebuilds nothing. */
+  private bubbleGlyphKey = ''
+  private bubbleHide = 0
+  /** Cached card box — re-read on content change and on a slow tick, never
+   *  per frame: reading a rect after writing transforms forces a layout. */
+  private bubbleW = 0
+  private bubbleH = 0
+  private bubbleMeasure = BUBBLE_MEASURE_EVERY
 
   private readonly markEl: HTMLDivElement
   private markPos: THREE.Vector3 | null = null
@@ -154,6 +233,28 @@ export class OpeningUi {
     this.promptEl.append(this.promptPulse, this.promptVerb)
     this.promptEl.style.display = 'none'
     this.root.appendChild(this.promptEl)
+
+    this.bubbleEl = document.createElement('div')
+    this.bubbleEl.className = 'isle-el isle-bubble'
+    // Verb and bar share a column so the fill starts under the word's first
+    // letter — the bar is the verb's read-out, not a separate widget beside it.
+    this.bubbleEl.innerHTML =
+      `<div class="isle-bub-card">` +
+      `<div class="isle-bub-text">` +
+      `<div class="isle-bub-verb"></div>` +
+      `<div class="isle-bub-bar"><i class="isle-bub-fill"></i></div>` +
+      `</div>` +
+      `<div class="isle-bub-gest"></div>` +
+      `<div class="isle-bub-tail">${tailSvg()}</div>` +
+      `</div>`
+    this.bubbleCard = this.bubbleEl.querySelector<HTMLDivElement>('.isle-bub-card')!
+    this.bubbleVerb = this.bubbleEl.querySelector<HTMLDivElement>('.isle-bub-verb')!
+    this.bubbleGest = this.bubbleEl.querySelector<HTMLDivElement>('.isle-bub-gest')!
+    this.bubbleTail = this.bubbleEl.querySelector<HTMLDivElement>('.isle-bub-tail')!
+    this.bubbleBar = this.bubbleEl.querySelector<HTMLDivElement>('.isle-bub-bar')!
+    this.bubbleFill = this.bubbleEl.querySelector<HTMLDivElement>('.isle-bub-fill')!
+    this.bubbleEl.style.display = 'none'
+    this.root.appendChild(this.bubbleEl)
 
     this.markEl = document.createElement('div')
     this.markEl.className = 'isle-el isle-mark'
@@ -324,6 +425,135 @@ export class OpeningUi {
     this.promptEl.style.display = ''
     void this.promptEl.offsetWidth // restart the fade if it was mid-out
     this.promptEl.classList.add('born')
+  }
+
+  /**
+   * The gesture bubble — the prompt's richer form, and the only place the
+   * opening ever explains *how*.
+   *
+   * The spec forbade instructional popups on the theory that discovery beats
+   * instruction; the owner played it and could not tell whether to tap or to
+   * hold, which is the one thing this island genuinely cannot teach by being
+   * beautiful at you. So: a small linen card above the object, carrying the
+   * verb it already had, plus a picture of the gesture. No new words — the
+   * text budget is eight strings and this adds none. Everything the card says
+   * beyond the verb it says in ink:
+   *
+   *  - **hold** → a bar under the verb that fills left to right in pale
+   *    butter yellow, with its empty track showing how much is left to go.
+   *    `progress` is the live 0..1 from `HoldInput`, so the bar is not a hint
+   *    about the gesture, it *is* the gesture's read-out: it rises with the
+   *    press in 80ms, drains over 260ms when the press is abandoned so lost
+   *    progress is visibly lost, and snaps once at full.
+   *  - **tap** → no bar at all; concentric ripples leave the glyph on the beat
+   *    of a tap, because a discrete act has no duration to draw.
+   *  - and inside both, the device's own input: a mouse with its left button
+   *    inked on desktop, a fingertip on a handheld. No key cap, because
+   *    `core/input.ts` binds no key to interaction at all — WASD/arrows move
+   *    and nothing else is bound. A `Space` cap would be a lie in a picture.
+   *
+   * "Max one prompt" survives because the card *is* the prompt when it is up:
+   * `update()` hushes `.isle-verb` while the bubble is visible, so the word
+   * exists once on screen, in the card, over the ring that marks the spot.
+   *
+   * Cheap to call every frame — only a changed key/gesture rebuilds any DOM,
+   * and an unchanged progress writes nothing at all. Non-verb keys (the poem,
+   * the journal lines) hide the bubble rather than boxing a sentence.
+   *
+   * @param key      verb to show, or `null` to fade the card out.
+   * @param worldPos object the card points at; omitted, it floats screen-low
+   *                 and tailless, matching the prompt's own `nopos` register.
+   * @param gesture  `'hold'` (pull/clear/dig/odd fruit) or `'tap'`.
+   * @param progress 0..1 hold progress; ignored for taps.
+   */
+  setGestureBubble(
+    key: OpeningStringKey | null,
+    worldPos?: THREE.Vector3 | null,
+    gesture: GestureKind = 'tap',
+    progress = 0,
+  ): void {
+    if (this.retired) return
+    if (key !== null && !GESTURE_KEYS.has(key)) key = null
+
+    if (key === null) {
+      if (this.bubbleKey !== null) {
+        this.bubbleKey = null
+        this.bubbleHide = PROMPT_FADE
+        this.bubbleEl.classList.remove('born')
+        this.promptEl.classList.remove('hushed')
+        // Hidden part-way up, the bar drains as the card leaves, so an
+        // abandoned hold is still seen to be lost. Hidden *full* it is left
+        // full: the last frame of a completed hold should read completed.
+        if (!this.bubbleFull) this.writeBar(0)
+      }
+      return
+    }
+
+    this.bubblePos = worldPos ? (this.bubblePos ?? new THREE.Vector3()).copy(worldPos) : null
+    this.bubbleEl.classList.toggle('nopos', !worldPos)
+    // The bar exists only for holds — `.hold` on the wrapper is what reveals it.
+    this.bubbleEl.classList.toggle('hold', gesture === 'hold')
+
+    // The glyph cell is rebuilt only when what it depicts actually changes.
+    const glyphKey = `${gesture}|${isHandheld() ? 'finger' : 'mouse'}`
+    if (glyphKey !== this.bubbleGlyphKey) {
+      this.bubbleGlyphKey = glyphKey
+      this.bubbleGest.innerHTML = gestureSvg(gesture, isHandheld())
+      this.bubbleGest.className = `isle-bub-gest ${gesture}`
+      this.bubbleMeasure = 0
+    }
+
+    // A new verb is a new target: the bar starts empty, and it *cuts* to empty
+    // rather than draining, because draining a bar the player never filled is
+    // a read-out of the previous object's abandoned hold.
+    if (key !== this.bubbleKey) {
+      this.bubbleKey = key
+      this.bubbleHide = 0
+      this.bubbleVerb.textContent = OPENING_STRINGS[key]
+      this.resetBar()
+      this.bubbleEl.style.display = ''
+      this.bubbleMeasure = 0
+      void this.bubbleEl.offsetWidth // restart the fade if it was mid-out
+      this.bubbleEl.classList.add('born')
+    }
+
+    this.bubbleProgress = gesture === 'hold' ? THREE.MathUtils.clamp(progress, 0, 1) : 0
+    // Pressed state kills the idle breath so the bar is the only motion.
+    this.bubbleGest.classList.toggle('pressing', this.bubbleProgress > 0.001)
+    this.writeBar(this.bubbleProgress)
+  }
+
+  /**
+   * Drive the fill.
+   *
+   * Two durations, picked per call by direction, are the whole trick: filling
+   * is 80ms so the bar sits under the player's thumb rather than lagging it,
+   * and *un*filling is 260ms so a released hold is seen to lose its ground
+   * instead of blinking back to zero — a cancel the player does not see is a
+   * cancel they will make again. The width is a percentage, never a scaleX,
+   * so the fill keeps its round cap at every length instead of squashing it.
+   */
+  private writeBar(p: number): void {
+    if (Math.abs(p - this.bubbleLast) > 0.0005) {
+      this.bubbleFill.style.transitionDuration = `${p >= this.bubbleLast ? BAR_FILL_MS : BAR_DRAIN_MS}ms`
+      this.bubbleFill.style.width = `${(p * 100).toFixed(2)}%`
+      this.bubbleLast = p
+    }
+    // Latched, so the snap fires once at the top and re-arms on the way down.
+    const full = p >= 0.999
+    if (full !== this.bubbleFull) {
+      this.bubbleFull = full
+      this.bubbleBar.classList.toggle('full', full)
+    }
+  }
+
+  /** Cut the bar back to empty with no transition and no completion latch. */
+  private resetBar(): void {
+    this.bubbleFull = false
+    this.bubbleLast = 0
+    this.bubbleBar.classList.remove('full')
+    this.bubbleFill.style.transitionDuration = '0ms'
+    this.bubbleFill.style.width = '0%'
   }
 
   /**
@@ -532,6 +762,66 @@ export class OpeningUi {
       }
     }
 
+    // Gesture bubble: finish a fade-out, measure, place, and hush the verb
+    // underneath it so the word is never on screen twice.
+    if (this.bubbleHide > 0) {
+      this.bubbleHide -= dt
+      if (this.bubbleHide <= 0 && this.bubbleKey === null) {
+        this.bubbleEl.style.display = 'none'
+      }
+    }
+    let bubbleUp = false
+    if (this.bubbleEl.style.display !== 'none') {
+      this.bubbleMeasure -= dt
+      if (this.bubbleMeasure <= 0) {
+        this.bubbleMeasure = BUBBLE_MEASURE_EVERY
+        const box = this.bubbleCard.getBoundingClientRect()
+        if (box.width > 0) {
+          this.bubbleW = box.width
+          this.bubbleH = box.height
+        }
+      }
+      const half = this.bubbleW / 2
+      if (this.bubblePos) {
+        const p = this.project(this.bubblePos, 0.12)
+        if (p) {
+          bubbleUp = this.bubbleKey !== null
+          this.bubbleEl.style.visibility = ''
+          // Lift is the ground ring's own projected top plus a gap: the card
+          // rides higher when you stand close and the ring is big, so it can
+          // never sit on the thing it is pointing at.
+          const r = THREE.MathUtils.clamp(
+            this.pxRadius(this.bubblePos, PULSE_WORLD_R),
+            PULSE_PX_MIN,
+            PULSE_PX_MAX,
+          )
+          const k = this.squash(this.bubblePos, PULSE_WORLD_R)
+          const tipY = Math.max(
+            this.bubbleH + BUBBLE_TAIL + BUBBLE_EDGE,
+            p.y - (r * k + BUBBLE_GAP),
+          )
+          const x = THREE.MathUtils.clamp(
+            p.x,
+            half + BUBBLE_EDGE,
+            Math.max(half + BUBBLE_EDGE, innerWidth - half - BUBBLE_EDGE),
+          )
+          this.bubbleEl.style.transform = `translate(${x}px, ${tipY}px)`
+          // Pushed off a screen edge, the card stays put and the tail slides
+          // along its underside — it points at the object, not at itself.
+          const dx = THREE.MathUtils.clamp(p.x - x, -(half - 18), half - 18)
+          this.bubbleTail.style.transform = `translate(calc(-50% + ${dx.toFixed(1)}px), 0)`
+        } else {
+          this.bubbleEl.style.visibility = 'hidden'
+        }
+      } else {
+        // Tailless, screen-anchored: just above where the prompt would sit.
+        bubbleUp = this.bubbleKey !== null
+        this.bubbleEl.style.visibility = ''
+        this.bubbleEl.style.transform = `translate(${innerWidth / 2}px, ${innerHeight * 0.72}px)`
+      }
+    }
+    this.promptEl.classList.toggle('hushed', bubbleUp)
+
     /*
      * Standalone marker — suppressed while the prompt is ringing the same
      * thing.
@@ -684,6 +974,82 @@ function seedSvg(): string {
     `<ellipse cx="10" cy="11" rx="5.5" ry="7" transform="rotate(24 10 11)"` +
     ` fill="#8a6b46" stroke="#6d5233" stroke-width="1.4"/>` +
     `</svg>`
+  )
+}
+
+/* ---------- gesture bubble art ---------- */
+
+/** The bubble's tail. Drawn from above the top edge so the stroke's cut ends
+ *  are clipped by the viewBox and the triangle grows out of the card. */
+function tailSvg(): string {
+  return (
+    `<svg viewBox="0 0 18 11" width="18" height="11" aria-hidden="true">` +
+    `<path d="M0.9 -3 L9 9.7 L17.1 -3" fill="#d8caa9"` +
+    ` stroke="rgba(184, 160, 118, 0.85)" stroke-width="1.5" stroke-linejoin="round"/>` +
+    `</svg>`
+  )
+}
+
+/**
+ * The gesture cell: the device's own input glyph, and — for taps only — the
+ * ripples that leave it.
+ *
+ * 40-unit viewBox, drawn in charcoal because it lives on linen — the same ink
+ * as the journal sketch, which is the only other place this game draws rather
+ * than writes. A hold gets *no* decoration here on purpose: its read-out is the
+ * bar below the verb, and a ring around the glyph as well would be the same
+ * number said twice in two idioms, one of which the owner could not read.
+ * Holding, the glyph just squeezes, which is what a held button looks like.
+ */
+function gestureSvg(gesture: GestureKind, handheld: boolean): string {
+  const glyph = handheld ? fingerGlyph() : mouseGlyph()
+  const decor =
+    gesture === 'hold'
+      ? ''
+      : `<circle class="isle-bub-rip" cx="20" cy="20" r="${BUB_RING_R}" fill="none"` +
+        ` stroke="${CHARCOAL}" stroke-width="1.9" opacity="0"/>` +
+        `<circle class="isle-bub-rip r2" cx="20" cy="20" r="${BUB_RING_R}" fill="none"` +
+        ` stroke="${CHARCOAL}" stroke-width="1.9" opacity="0"/>`
+  return (
+    `<svg viewBox="0 0 40 40" width="100%" height="100%" aria-hidden="true">` +
+    decor +
+    `<g class="isle-bub-glyph">${glyph}</g>` +
+    `</svg>`
+  )
+}
+
+/**
+ * A mouse, left button inked.
+ *
+ * Desktop gets a mouse and never a key cap: `core/input.ts` binds WASD and the
+ * arrows for movement and nothing at all for interaction — every press in the
+ * opening arrives through `HoldInput`'s pointer path. A `Space` cap would be a
+ * picture of a control that does not exist.
+ */
+function mouseGlyph(): string {
+  return (
+    `<rect x="13.2" y="10.8" width="13.6" height="18.4" rx="6.8"` +
+    ` fill="rgba(63, 56, 48, 0.06)" stroke="${CHARCOAL}" stroke-width="1.6" opacity="0.86"/>` +
+    // The left button, filled: which button, said without saying it.
+    `<path d="M20 10.8 A6.8 6.8 0 0 0 13.2 17.6 L13.2 19.1 L20 19.1 Z"` +
+    ` fill="${CHARCOAL}" opacity="0.7"/>` +
+    `<path d="M13.2 19.1 H26.8 M20 10.9 V19.1" fill="none" stroke="${CHARCOAL}"` +
+    ` stroke-width="1.3" opacity="0.5"/>`
+  )
+}
+
+/** A fingertip, for coarse pointers: index finger over a closed hand. */
+function fingerGlyph(): string {
+  return (
+    `<g transform="translate(-0.6 0)" fill="rgba(63, 56, 48, 0.13)" stroke="${CHARCOAL}"` +
+    ` stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.88">` +
+    `<path d="M20.4 10.4 a2.35 2.35 0 0 1 2.35 2.35 V20.6 h-4.7 v-7.85 a2.35 2.35 0 0 1 2.35 -2.35 Z"/>` +
+    `<path d="M15.4 19.7 h9.4 a3.5 3.5 0 0 1 3.5 3.5 v1.5 a5.3 5.3 0 0 1 -5.3 5.3` +
+    ` h-4.6 a5 5 0 0 1 -5 -5 v-2.8 a2.5 2.5 0 0 1 2 -2.5 Z"/>` +
+    `</g>` +
+    // One crease across the knuckles — the difference between a hand and a bag.
+    `<path d="M17.4 23.6 h5.2" fill="none" stroke="${CHARCOAL}" stroke-width="1.2"` +
+    ` stroke-linecap="round" opacity="0.34"/>`
   )
 }
 
@@ -960,6 +1326,241 @@ body.isle-opening #ui #menuBtn .nav-ico {
     0 0 16px rgba(28, 19, 8, 0.6),
     0 0 38px rgba(28, 19, 8, 0.45);
   animation: isleBreathe 6.4s ease-in-out infinite;
+}
+
+/* The verb steps aside while the gesture bubble is up: the card carries the
+   same word, and two of them is two prompts. The animation has to be cancelled
+   as well as the opacity set — a running keyframe outranks the property. */
+.isle-prompt.hushed .isle-verb {
+  animation: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+/* ---------- gesture bubble ----------
+ * A small linen card held above the object on a tail, carrying the verb it
+ * already had plus a picture of the gesture. The wrapper is placed by update()
+ * at the *tail's tip*; the card hangs above that point, which is what keeps
+ * the thing being pointed at uncovered at every camera distance. Nothing here
+ * may write the wrapper's transform — that is the frame's to own — so the
+ * born transition lives on the card instead. */
+.isle-bubble {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+.isle-bub-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px 8px 14px;
+  white-space: nowrap;
+  border: 1.5px solid rgba(184, 160, 118, 0.85);
+  /* Four unequal corners, as everywhere else on this island's paper: a cut
+     card, never a preset. */
+  border-radius: 13px 16px 12px 15px;
+  /* The journal's weave, at card scale: two nearly invisible crossed grains
+     over the linen. One at a time they are nothing; together they are the
+     difference between a piece of paper and a rounded rectangle. */
+  background:
+    repeating-linear-gradient(
+      8deg,
+      rgba(120, 96, 62, 0.05) 0 1px,
+      rgba(255, 250, 236, 0.05) 1px 3px
+    ),
+    repeating-linear-gradient(
+      96deg,
+      rgba(120, 96, 62, 0.04) 0 1px,
+      rgba(255, 250, 236, 0.04) 1px 3.5px
+    ),
+    radial-gradient(90% 120% at 16% 8%, rgba(255, 250, 238, 0.5), transparent 60%),
+    linear-gradient(168deg, #e6dbc2 0%, #e0d4b8 56%, #d5c7a5 100%);
+  box-shadow:
+    0 3px 11px rgba(50, 34, 15, 0.3),
+    inset 0 1px 0 rgba(255, 251, 240, 0.5);
+  opacity: 0;
+  transform: translate(-50%, calc(-100% - ${BUBBLE_TAIL}px)) scale(0.86);
+  /* Grown from the tail, so it unfolds out of the object it points at. */
+  transform-origin: 50% 118%;
+  transition: opacity ${PROMPT_FADE}s ease, transform ${PROMPT_FADE}s var(--spring);
+}
+.isle-bubble.born .isle-bub-card {
+  opacity: 1;
+  transform: translate(-50%, calc(-100% - ${BUBBLE_TAIL}px)) scale(1);
+}
+
+.isle-bub-tail {
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  line-height: 0;
+  /* update() rewrites this when the card is pushed off a screen edge. */
+  transform: translate(-50%, 0);
+}
+.isle-bubble.nopos .isle-bub-tail { display: none; }
+
+/* Verb over bar, left-aligned to each other: the fill starts under the word's
+   first letter, so the bar reads as that verb's progress rather than as a
+   gauge that happens to share a card with it. */
+.isle-bub-text {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+
+/* Same hush as the prompt's verb — small, widely spaced — but charcoal ink,
+   because it is now sitting on paper rather than on a dark beach. */
+.isle-bub-verb {
+  color: rgba(63, 56, 48, 0.9);
+  font-weight: 600;
+  font-size: clamp(13px, 1.45vw, 17px);
+  letter-spacing: 0.16em;
+  text-indent: 0.16em;
+}
+
+/* ---------- the hold bar ----------
+ * The track is the important half. An empty inset groove, dark enough to read
+ * as a hole in the card at a glance, is what turns a growing yellow line into
+ * *a bar with somewhere left to go* — without it the fill is just a mark
+ * appearing, and the player learns nothing about how long to keep holding.
+ * 10px tall and 96px long: chunky by the standards of everything else in this
+ * file, and deliberately so, because it is the one element here whose whole
+ * job is to be understood instantly by someone who is confused. */
+.isle-bub-bar {
+  display: none;
+  position: relative;
+  height: 10px;
+  min-width: 96px;
+  border-radius: 999px;
+  /* Deep enough to read as a hole cut in the card. The yellow cannot be pushed
+     any further toward saturation without entering lotto gold's exclusion
+     radius, so the contrast has to be bought on the *track* side instead —
+     a darker groove makes the same butter yellow read brighter beside it. */
+  background: linear-gradient(180deg, rgba(48, 38, 20, 0.46), rgba(48, 38, 20, 0.28));
+  box-shadow:
+    inset 0 1.5px 2.5px rgba(34, 25, 10, 0.5),
+    inset 0 -1px 0 rgba(255, 251, 238, 0.34);
+  overflow: hidden;
+}
+.isle-bubble.hold .isle-bub-bar { display: block; }
+
+/* The fill. Width, not scaleX — a scaled bar squashes its own round cap into
+   an ellipse and the leading edge stops looking like an edge. overflow:hidden
+   clips the highlight below to the cap's curve, and also means a zero-progress
+   bar draws literally nothing rather than a 3px nub sitting at the left. */
+.isle-bub-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  /* The lit band is kept to the top third on purpose. Carried to the middle it
+     reads as a cream bar with a yellow underside, and the one thing this
+     element cannot afford to be is ambiguous about its own colour. */
+  background: linear-gradient(180deg, ${BAR_YELLOW_HI} 0%, ${BAR_YELLOW} 30%, ${BAR_YELLOW} 100%);
+  box-shadow: 0 0 6px rgba(248, 234, 136, 0.5);
+  /* Duration is rewritten per call: fast up, slow down. */
+  transition: width ${BAR_FILL_MS}ms linear;
+}
+/* The leading edge — a brighter lip at the front of the fill, so the bar has a
+   head that is visibly travelling rather than a block that is getting longer. */
+.isle-bub-fill::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: ${BAR_YELLOW_HI};
+  box-shadow: 0 0 5px rgba(253, 247, 200, 0.9);
+}
+
+/* Full. One short snap — the bar swells, the fill blooms, and both settle — so
+   completion is felt at the bar rather than only in the world. Latched in
+   writeBar(), so it fires once and re-arms only after progress leaves the top.
+   The bloom is a *filter* on the same yellow rather than a swapped-in pale
+   background: a background override holds for as long as the class is latched,
+   which turned the finished bar permanently cream — the completed state has to
+   end up looking like a full version of the bar you were just filling. */
+.isle-bub-bar.full { animation: isleBarSnap 0.4s cubic-bezier(0.2, 0.8, 0.3, 1); }
+.isle-bub-bar.full .isle-bub-fill { animation: isleBarFlash 0.4s ease-out; }
+@keyframes isleBarFlash {
+  0%   { filter: none; }
+  18%  { filter: brightness(1.2); }
+  100% { filter: none; }
+}
+@keyframes isleBarSnap {
+  0%   { transform: scaleY(1); box-shadow: inset 0 1.5px 2px rgba(38, 28, 12, 0.45); }
+  26%  {
+    transform: scaleY(1.32);
+    box-shadow: 0 0 13px rgba(253, 247, 200, 0.85), inset 0 1.5px 2px rgba(38, 28, 12, 0.2);
+  }
+  100% { transform: scaleY(1); box-shadow: inset 0 1.5px 2px rgba(38, 28, 12, 0.45); }
+}
+
+.isle-bub-gest {
+  width: 33px;
+  height: 33px;
+  flex: none;
+}
+.isle-bub-gest svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.isle-bub-glyph {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Idle hold: the glyph breathes a slow squeeze — the shape of a press, before
+   there is a press. The moment progress is live it stops and simply stays
+   pressed, so the only thing moving is the ring filling. */
+.isle-bub-gest.hold .isle-bub-glyph {
+  animation: isleHoldSqueeze 1.9s ease-in-out infinite;
+}
+.isle-bub-gest.hold.pressing .isle-bub-glyph {
+  animation: none;
+  transform: scale(0.9);
+  transition: transform 0.18s ease;
+}
+@keyframes isleHoldSqueeze {
+  0%, 100% { transform: scale(1); }
+  46%      { transform: scale(0.9); }
+}
+
+/* Tap: the glyph knocks once and two rings leave it, half a cycle apart. */
+.isle-bub-gest.tap .isle-bub-glyph {
+  animation: isleTapKnock 1.7s ease-out infinite;
+}
+.isle-bub-rip {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: isleTapRipple 1.7s ease-out infinite;
+}
+/* Negative, not positive: a positive delay leaves the second ring sitting at
+   its base opacity of zero for the first second of its life, so a bubble that
+   appears and is looked at immediately shows one ripple instead of a rhythm.
+   Started half a cycle in the past, there is always a ring in flight. */
+.isle-bub-rip.r2 { animation-delay: -0.85s; }
+@keyframes isleTapKnock {
+  0%   { transform: scale(1); }
+  7%   { transform: scale(0.88); }
+  18%  { transform: scale(1); }
+  100% { transform: scale(1); }
+}
+@keyframes isleTapRipple {
+  0%   { transform: scale(0.48); opacity: 0; }
+  14%  { opacity: 0.5; }
+  100% { transform: scale(1.2); opacity: 0; }
 }
 
 /* ---------- standalone marker ---------- */

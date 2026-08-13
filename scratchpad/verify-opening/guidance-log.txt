@@ -1,0 +1,15 @@
+crate=[-54.5,-0.6237635685502034,8.5] shovel=[-49,-0.5696925796397485,3.5]
+gap=[-40.6,0] pocket=[-34,0]
+  dig targets: [[-33.8,0,-0.6],[-33.8,0,0.6],[-32.6,0,-0.6],[-32.6,0,0.6],[-33.8,0,-1.8],[-33.8,0,1.8],[-32.6,0,-1.8]]
+  dig projects to [542, 379]
+
+### c1-midhold-dig-beat6 — MID-HOLD on loam at beat 6, progress 0.3
+  beat=plant player=[-32.5,0.7] cam={"yaw":0.79,"pitch":0.17,"dist":4.8,"cine":4.8}
+  trail={"x":-32.6,"z":0.6,"via":null,"arrows":0}
+  focus={"key":"dig","gesture":"hold","progress":0.3,"pos":[-33.8,-0.6]}
+  guideColour={"hex":"#ffffff","map":true} arrows: parented=true visible=0
+  arrowPts=[]
+  bar={"cls":"isle-bubble hold born","wrapOpacity":1,"verb":"Dig.","barShown":true,"barRect":[473.5,319.39,96,10],"barOpacity":"1","fillRect":[473.5,319.39,19.19,10],"fillW":"30%","fillBg":"linear-gradient(rgb(253, 247, 200) 0%, rgb(248, 234, 136) 30%, rgb(248, 234, 136) 100%)","fillRadius":"999px","barBg":"linear-gradient(rgba(48, 38, 20, 0.46), rgba(48, 38, 20, 0.28))"}
+  shot F:\Games\GrowAGardenTwo\scratchpad\verify-opening\guidance-c1-midhold-dig-beat6.jpg
+  gold[beat6-bar-up]: {"gold":689,"total":57280,"frac":0.012029,"dom":[]}
+  text: ["Dig.","7"]
