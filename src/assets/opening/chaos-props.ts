@@ -1177,9 +1177,15 @@ function buildBasket(variant: number): ChaosPropRig {
       body.position.y = -0.02 * s
     },
     clear(p) {
+      /*
+       * Flattened to a tenth of its height by p = 0.45, and bulging half again
+       * as wide on the way down. The first pass of this took it to a third and
+       * read as a basket settling rather than as one giving way — a crush has
+       * to end below the height of the weave lying beside it.
+       */
       const crush = Math.min(1, p / 0.45)
-      const flat = 0.66 - crush * 0.5
-      body.scale.set(1.16 + crush * 0.3, Math.max(0.04, flat), 1.16 + crush * 0.3)
+      const flat = 0.66 - crush * 0.58
+      body.scale.set(1.16 + crush * 0.42, Math.max(0.04, flat), 1.16 + crush * 0.42)
       body.position.y = -0.02 * (1 - crush)
       // Only after the collapse has read: the mat sinks away while the shell
       // is already on its way up.

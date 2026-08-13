@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { groundHeight } from '../terrain'
 import { ball } from '../../assets/style'
+import { getGroundTextures, tiled } from '../../assets/textures'
 import type { Obstacle } from '../world'
 import type { HoldTarget } from './types'
 import {
@@ -184,12 +185,40 @@ export class BeachProps {
       const x = SHOVEL_X + clump.dx
       const z = SHOVEL_Z + clump.dz
       const heap = ball(clump.r, clump.c, 1)
+      heap.material = this.moundMaterial(clump.c)
       heap.scale.set(1.25, clump.s, 1.15)
       heap.castShadow = false
       heap.position.set(x, groundHeight(x, z) - clump.r * clump.s * 0.35, z)
       scene.add(heap)
     }
   }
+
+  /**
+   * The mound's surface: the beach's own sand map, not a flat tone.
+   *
+   * A displaced heap of sand next to sand that has a texture on it is the one
+   * place a flat Lambert colour cannot hide — the mound photographed as a
+   * smooth pale blob sitting on a grained beach, which the owner described as
+   * dough. Borrowing the terrain's own `sand` map fixes that at the root: the
+   * grain matches because it *is* the same grain.
+   *
+   * Tiled tighter than the ground (which repeats across the whole beach) so the
+   * texel density on a sub-metre heap is comparable rather than one smeared
+   * pixel, and still tinted per clump so the shaded side of the pile reads.
+   * Cached per tint: four heaps, two tints, two materials.
+   */
+  private moundMaterial(tint: number): THREE.MeshLambertMaterial {
+    const hit = BeachProps.moundMats.get(tint)
+    if (hit) return hit
+    const mat = new THREE.MeshLambertMaterial({
+      color: tint,
+      map: tiled(getGroundTextures().sand, 3),
+    })
+    BeachProps.moundMats.set(tint, mat)
+    return mat
+  }
+
+  private static readonly moundMats = new Map<number, THREE.MeshLambertMaterial>()
 
   get crateOpened() {
     return this._crateOpened
