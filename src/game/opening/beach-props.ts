@@ -54,9 +54,10 @@ const SHOVEL_TILT = Math.PI / 6
  * grip up in the dawn light, which is the shot beat 3 is written around.
  */
 const SHOVEL_SINK = 0.68
-/** Dry sand, but shaded — the mound is displaced, still-damp sand. */
-const SAND_MOUND = 0xdccbaa
-const SAND_MOUND_SHADE = 0xc4b394
+/* The mounds used to carry two authored tints — a dry value and a damper,
+ * shaded one. Both are gone: they are textured with the beach's own sand map
+ * now and left white, so the beach's colour is the mound's colour. See
+ * `moundMaterial`. */
 /** Seconds of pop-free animation before the world shovel disappears. */
 const POP_TIME = 0.3
 
@@ -125,11 +126,12 @@ export class BeachProps {
      * the drift is what says the beach has been working on it.
      */
     for (const drift of [
-      { dx: -0.55, dz: -0.5, r: 0.62, s: 0.24, c: SAND_MOUND },
-      { dx: 0.7, dz: 0.35, r: 0.5, s: 0.2, c: SAND_MOUND_SHADE },
-      { dx: 0.1, dz: -0.7, r: 0.44, s: 0.17, c: SAND_MOUND },
+      { dx: -0.55, dz: -0.5, r: 0.62, s: 0.24 },
+      { dx: 0.7, dz: 0.35, r: 0.5, s: 0.2 },
+      { dx: 0.1, dz: -0.7, r: 0.44, s: 0.17 },
     ]) {
-      const heap = ball(drift.r, drift.c, 1)
+      const heap = ball(drift.r, 0xffffff, 1)
+      heap.material = this.moundMaterial()
       heap.scale.set(1.3, drift.s, 1.1)
       heap.castShadow = false
       heap.position.set(
@@ -177,15 +179,15 @@ export class BeachProps {
       -0.8,
     )
     for (const clump of [
-      { dx: 0, dz: 0, r: 0.78, s: 0.3, c: SAND_MOUND },
-      { dx: lean.x * 1.6, dz: lean.y * 1.6, r: 0.5, s: 0.22, c: SAND_MOUND_SHADE },
-      { dx: -0.45, dz: 0.5, r: 0.42, s: 0.2, c: SAND_MOUND },
-      { dx: 0.5, dz: -0.42, r: 0.34, s: 0.18, c: SAND_MOUND_SHADE },
+      { dx: 0, dz: 0, r: 0.78, s: 0.3 },
+      { dx: lean.x * 1.6, dz: lean.y * 1.6, r: 0.5, s: 0.22 },
+      { dx: -0.45, dz: 0.5, r: 0.42, s: 0.2 },
+      { dx: 0.5, dz: -0.42, r: 0.34, s: 0.18 },
     ]) {
       const x = SHOVEL_X + clump.dx
       const z = SHOVEL_Z + clump.dz
-      const heap = ball(clump.r, clump.c, 1)
-      heap.material = this.moundMaterial(clump.c)
+      const heap = ball(clump.r, 0xffffff, 1)
+      heap.material = this.moundMaterial()
       heap.scale.set(1.25, clump.s, 1.15)
       heap.castShadow = false
       heap.position.set(x, groundHeight(x, z) - clump.r * clump.s * 0.35, z)
@@ -194,31 +196,35 @@ export class BeachProps {
   }
 
   /**
-   * The mound's surface: the beach's own sand map, not a flat tone.
+   * Every sand mound and drift in the opening: the beach's own sand map, white.
    *
-   * A displaced heap of sand next to sand that has a texture on it is the one
-   * place a flat Lambert colour cannot hide — the mound photographed as a
-   * smooth pale blob sitting on a grained beach, which the owner described as
-   * dough. Borrowing the terrain's own `sand` map fixes that at the root: the
-   * grain matches because it *is* the same grain.
+   * A displaced heap of sand next to sand that *has grain on it* is the one
+   * place a flat Lambert colour cannot hide — the mounds photographed as smooth
+   * pale blobs sitting on a grained beach, which the owner called dough.
+   * Borrowing the terrain's own `sand` map fixes it at the root: the grain
+   * matches because it is the same grain.
    *
-   * Tiled tighter than the ground (which repeats across the whole beach) so the
-   * texel density on a sub-metre heap is comparable rather than one smeared
-   * pixel, and still tinted per clump so the shaded side of the pile reads.
-   * Cached per tint: four heaps, two tints, two materials.
+   * **Untinted, deliberately.** The first pass kept the old per-clump tints and
+   * multiplied the map through them, which pulls the heap off the beach's own
+   * colour by exactly the amount of the tint — a texture that matches the sand
+   * everywhere except in hue, which is a stranger result than the flat blob was.
+   * White lets the map speak, and the light does the shading: a heap is a curved
+   * surface under a low sun, so its far side darkens on its own without help.
+   *
+   * Tiled tighter than the ground (which repeats across the whole beach) so a
+   * sub-metre heap gets comparable texel density rather than one smeared pixel.
+   * One material for every mound and drift in the opening.
    */
-  private moundMaterial(tint: number): THREE.MeshLambertMaterial {
-    const hit = BeachProps.moundMats.get(tint)
-    if (hit) return hit
-    const mat = new THREE.MeshLambertMaterial({
-      color: tint,
-      map: tiled(getGroundTextures().sand, 3),
-    })
-    BeachProps.moundMats.set(tint, mat)
-    return mat
+  private moundMaterial(): THREE.MeshLambertMaterial {
+    if (!BeachProps.moundMat) {
+      BeachProps.moundMat = new THREE.MeshLambertMaterial({
+        map: tiled(getGroundTextures().sand, 3),
+      })
+    }
+    return BeachProps.moundMat
   }
 
-  private static readonly moundMats = new Map<number, THREE.MeshLambertMaterial>()
+  private static moundMat: THREE.MeshLambertMaterial | null = null
 
   get crateOpened() {
     return this._crateOpened

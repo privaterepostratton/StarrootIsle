@@ -8,18 +8,25 @@ import { loadModels, peekModels, type LoadedModel, type ModelCache } from '../mo
  * Seven prop types the player pulls, sweeps, breaks, peels, crushes, pries and
  * picks out of the choked pocket at the treeline gap.
  *
- * The three the player meets most — the vine tangle, the fallen frond and the
- * breakable branch — are authored GLBs now (`chaos-vine`, `chaos-frond`,
- * `chaos-driftwood`); the other four are still built from the shared style
- * helpers plus flat leaf cards. Every prop's *litter*, debris and burst stays
- * procedural either way, because that is the half that has to match the world's
- * palette exactly and the half that has to animate.
+ * Six of the seven are authored GLBs (`chaos-vine`, `chaos-frond`,
+ * `chaos-driftwood`, `chaos-basket`, `chaos-stone`, `chaos-amphora`); the
+ * morning-glory mat is still built from the shared style helpers plus flat leaf
+ * cards. Every prop's *litter*, debris, burst and salt crust stays procedural
+ * either way, because that is the half that has to match the world's palette
+ * exactly and the half that has to animate independently of the mesh.
  *
  * Why the swap: the procedural vine was a stack of torus loops, which reads as
  * a tidy garden ornament rather than a snarl, and the procedural fronds — four
  * of them, from two seeds, arranged on open ground — photographed as a row of
  * tan croissants laid out beside the beds. Authored geometry fixes the first;
  * hard per-instance variance (see `serialOf`) fixes the second.
+ *
+ * An authored mesh cannot deform itself, so every act in the set is carried by
+ * the GROUPS the mesh hangs in — a pivot on the ground the vine leans and necks
+ * about, a hinge at the frond's butt that sweeps it away, two pivots either
+ * side of a real geometric cut that break the branch in half, a compression
+ * cage that crushes the basket, and a socket edge the stone is levered over.
+ * See each builder for which channels stack into which act.
  *
  * ART DIRECTION (second pass — the first read as tidy garden ornaments on a
  * mown lawn, which is the opposite of the beat):
@@ -253,6 +260,9 @@ function leaf(len: number, wid: number, color: number) {
 }
 
 /* ------------------------------------------------------- rig scaffolding */
+
+/** Shared straight-down vector for the surface rays these rigs cast. */
+const DOWN = new THREE.Vector3(0, -1, 0)
 
 /** Default seconds the destruction animation runs before the root hides. */
 const CLEAR_TIME = 0.42
@@ -1246,7 +1256,26 @@ function buildStone(variant: number): ChaosPropRig {
   lever.position.set(-socket * length * 0.5, 0, 0)
   rock.position.set(socket * length * 0.5, 0, 0)
 
-  let crustY = length * 0.22
+  /*
+   * Salt crust on the crown and the weather side — flat patches, not blobs.
+   *
+   * Built BEFORE the model attaches, and deliberately so: with the cache warm
+   * (which is every case in the game) `withModels` runs its callback
+   * synchronously, so anything that callback touches has to already exist. The
+   * heights below are placeholders — the ray in the callback drops each patch
+   * onto the rock's real surface the moment there is a rock.
+   */
+  const crust: THREE.Mesh[] = []
+  for (let i = 0; i < 5; i++) {
+    const a = r() * Math.PI * 2
+    const patch = ball(length * (0.09 + r() * 0.06), SALT, 0)
+    patch.scale.set(1.25, 0.16, 1)
+    patch.position.set(Math.cos(a) * length * 0.2, length * 0.3, Math.sin(a) * length * 0.16)
+    patch.rotation.set((r() - 0.5) * 0.3, a, (r() - 0.5) * 0.3)
+    rock.add(patch)
+    crust.push(patch)
+  }
+
   withModels('stone', (models) => {
     const mesh = authoredMesh(models.chaosStone, {
       longest: length,
@@ -1268,22 +1297,30 @@ function buildStone(variant: number): ChaosPropRig {
     mesh.material = lifted
     rock.add(mesh)
 
-    const box = new THREE.Box3().setFromObject(mesh)
-    crustY = box.max.y
+    /*
+     * Salt crust, dropped onto the rock's own surface with one downward ray
+     * each — the same trick the tide-line glint uses in beach-models.ts, and
+     * for the same reason: an authored boulder's bounding-box top is empty air
+     * over most of its footprint, so crust placed at that height hovers, and
+     * crust placed at a guessed fraction of it disappears inside the mesh. Both
+     * failures are invisible in code and obvious in a screenshot.
+     *
+     * This is the prop's LIGHT HALF and it is load-bearing. Basalt is the
+     * darkest thing in the opening; at hour 7.2 a dark mass with nothing bright
+     * on it reads as a hole in the grass rather than as a rock (see the palette
+     * note at the top of this file). Five white patches is the difference.
+     */
+    mesh.updateMatrixWorld(true)
+    const top = new THREE.Box3().setFromObject(mesh).max.y
+    const ray = new THREE.Raycaster()
+    for (const patch of crust) {
+      ray.set(new THREE.Vector3(patch.position.x, top + 1, patch.position.z), DOWN)
+      const hit = ray.intersectObject(mesh, false)[0]
+      // Just proud of the surface, or the patch z-fights the face it sits on.
+      patch.position.y = (hit ? hit.point.y : top * 0.85) - length * 0.01
+    }
   })
 
-  // Salt crust on the crown and the weather side — flat patches, not blobs, and
-  // dropped on after the mesh is measured so they sit on the rock's own top.
-  const crust: THREE.Mesh[] = []
-  for (let i = 0; i < 5; i++) {
-    const a = r() * Math.PI * 2
-    const patch = ball(length * (0.08 + r() * 0.05), SALT, 0)
-    patch.scale.set(1.25, 0.16, 1)
-    patch.position.set(Math.cos(a) * length * 0.2, 0, Math.sin(a) * length * 0.16)
-    patch.rotation.set((r() - 0.5) * 0.3, a, (r() - 0.5) * 0.3)
-    rock.add(patch)
-    crust.push(patch)
-  }
   // Spalled chips at the foot, left behind on the soil.
   for (let i = 0; i < 3; i++) {
     const a = r() * Math.PI * 2
@@ -1302,9 +1339,6 @@ function buildStone(variant: number): ChaosPropRig {
   return assembleRig(root, {
     time: STONE_CLEAR,
     strain(s, elapsed) {
-      // The crust rides the rock, so it is placed once here rather than at
-      // build time — the mesh it sits on may not have arrived yet.
-      for (const c of crust) c.position.y = crustY * 0.92
       // Grinding in its socket: it tips further with the strain and shudders
       // against the grit, and it barely rises until it lets go.
       const grind = Math.sin(elapsed * 19) * 0.05 * s
