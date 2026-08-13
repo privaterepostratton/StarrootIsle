@@ -488,7 +488,7 @@ const RANKS: RankSpec[] = [
     sink: 0.3,
     lean: 0.11,
     phase: 0.9,
-    tint: [0.62, 0.74, 0.54],
+    tint: [1.4, 0.15, 0.15],
     vary: 0.16,
   },
   /*
