@@ -120,9 +120,26 @@ try {
     const mx = spots.reduce((a, b) => a + b[1], 0) / spots.length
     const mz = spots.reduce((a, b) => a + b[2], 0) / spots.length
     await orbit(s, 'tideline', mx, mz, 3.0, 0.5, yaws)
-    // And one right on top of the shell, which is the gold-risk prop.
-    const shell = spots.find((p) => p[0] === 'spiral-shell')
-    if (shell) await orbit(s, 'shell-close', shell[1], shell[2], 1.5, 0.42, yaws)
+    /*
+     * The reserved-gold question, answered differentially.
+     *
+     * A raw scan of a beat-7 frame is dominated by the dawn sky, which is a
+     * broad orange band and sits well inside the reserved radius on its own —
+     * so an absolute number says nothing about the prop. Point the camera down
+     * at the washup so no horizon is in shot, scan, hide the prop, scan again:
+     * the difference is what the model itself contributes.
+     */
+    for (const [id, x, z] of spots) {
+      await frame(s, x, z - 0.9, 2.0, 1.15, 0)
+      await sleep(1200)
+      await withTimeout(s.screenshot(resolve(outDir, `gold-${id}.jpg`)), 30000, 'shot')
+      const on = await withTimeout(s.evalJson(GOLD_SCAN), 30000, 'scan')
+      await s.eval(`(() => { const it = window.game.tidelineOpening.items.find((i) => i.id === ${JSON.stringify(id)}); if (it) it.object.visible = false; return 1 })()`)
+      await sleep(500)
+      const off = await withTimeout(s.evalJson(GOLD_SCAN), 30000, 'scan')
+      await s.eval(`(() => { const it = window.game.tidelineOpening.items.find((i) => i.id === ${JSON.stringify(id)}); if (it) it.object.visible = true; return 1 })()`)
+      console.log(`  GOLD ${id}: with=${on.gold}px (${on.pct}%) without=${off.gold}px (${off.pct}%) -> prop contributes ${on.gold - off.gold}px (${(on.pct - off.pct).toFixed(4)}%)`)
+    }
   }
 } finally {
   await s.close()
