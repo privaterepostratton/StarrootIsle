@@ -2505,7 +2505,7 @@ function isleWorldTap(x: number, z: number): boolean {
   // 1. The crate — the first discrete act.
   if (!isleBeach.crateOpened) {
     const c = isleBeach.cratePos
-    if (Math.hypot(x - c.x, z - c.z) < 1.8) {
+    if (Math.hypot(x - c.x, z - c.z) < ISLE_CRATE_TAP_RADIUS) {
       // Reach is deliberately not consulted: the module gates on the player's
       // position, so hand it the crate's own. See the reach note above.
       if (isleBeach.tapCrate(c)) audio.play('crate-creak')
@@ -2915,6 +2915,19 @@ interface IsleTrail {
 const ISLE_TAP_REACH = 2.6
 /** The crate is bulky and it is the very first thing the game asks for. */
 const ISLE_CRATE_REACH = 3.2
+
+/**
+ * How near a *tap* must land to count as tapping the crate.
+ *
+ * Was 1.8, measured from the crate's origin, which is a circle noticeably
+ * smaller than the crate looks — and once the lid swings open the thing owns
+ * even more screen than it owns ground. A player aiming at the open lid, or at
+ * the shadowed mouth of the box, was landing on bare sand a foot away and
+ * getting the sand refusal instead of the crate. This is the first interaction
+ * in the game and the one place a miss is most expensive, so the target is now
+ * generously bigger than the prop. Nothing else competes for taps out here.
+ */
+const ISLE_CRATE_TAP_RADIUS = 3.6
 /** Scratch for focus anchors that sit above their object. Only ever handed to
  *  callers that copy (setPrompt, setGestureBubble, GuidePath.setTarget). */
 const isleFocusVec = new THREE.Vector3()

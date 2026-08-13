@@ -194,12 +194,120 @@ const SKETCH_HAND_L = new THREE.Vector3(0.13, 0.5, 0.33)
  * which is also how the opening stands the farmer back up without an API.
  */
 const OPENING_POSES = {
-  lie: { rootX: 1.55, lift: 0.14, spine: 0 },
+  lie: { rootX: 1.55, lift: 0.21, spine: 0 },
   situp: { rootX: 0.35, lift: -0.3, spine: 0.3 },
   sketch: { rootX: 0.32, lift: -0.3, spine: 0.42 },
 } as const
 /** How fast pose parameters chase their targets, per second. */
 const POSE_EASE = 6
+
+/**
+ * One joint of an authored pose: a rotation in **character space**, applied
+ * relative to that joint's rest orientation and to whatever its parent is
+ * already doing.
+ *
+ * Character space is the farmer's own upright frame — **+X is their left, +Y is
+ * up, +Z is the way they face** — and it stays that frame no matter how far the
+ * chain above has already been bent, because each joint's rotation is
+ * conjugated into its *parent's rest* orientation (see `liePose` in the
+ * constructor). That is the whole reason the pose below can be read: "roll the
+ * hips 12° onto the left flank" is `Hips.y`, and it means the same thing
+ * whether or not the spine above it has moved.
+ *
+ * `breath` and `twitch` are how much of the two idle signals this joint carries
+ * — see BREATH_* and TWITCH_*.
+ */
+type JointPose = { x?: number; y?: number; z?: number; breath?: number; twitch?: number }
+
+/**
+ * **The wake pose** — a body face-down in dry sand, asleep, held for up to
+ * twenty seconds under the very first shot of the game.
+ *
+ * Authored joint by joint rather than by tipping the root, because a tipped
+ * root is a *dropped* body: the clip underneath is still standing, so the legs
+ * keep their walk-cycle stagger, the arms keep their swing, and the face is
+ * left pointing wherever the idle left it — which is straight down into the
+ * sand or, worse, rolled up at the sky. Everything here replaces the clip
+ * outright (see `applyLiePose`), weight-faded so lie → sit-up is a rise rather
+ * than a cut.
+ *
+ * The shape, in order of how much each part matters to the read:
+ *
+ * - **Rolled ~24° onto the left flank**, spread across the hips and all three
+ *   spine joints so the roll is a curve and not a hinge. Dead flat, a prone
+ *   figure is a plank with a head on it; the roll is what gives the silhouette
+ *   a near shoulder, a far shoulder and a waist.
+ * - **Cheek down.** The head is turned ~87° about the body's long axis — a
+ *   third of it in the neck, the rest in the skull — so the *left* cheek (the
+ *   one on the down side of the roll) is the part touching sand and the face
+ *   looks out along the beach rather than into it. A small forward tip settles
+ *   the head's weight onto that cheek instead of floating it on the neck.
+ * - **The right arm — the raised one — comes up beside the head**, elbow out on
+ *   the sand, hand loose near the face. It is the arm on the side the body is
+ *   *not* lying on, which is the only one that can be up there; it is also the
+ *   one that twitches.
+ * - **The left arm is trapped under the roll**, so it runs down along the body
+ *   angled slightly behind the flank rather than under it, elbow softly bent.
+ * - **Legs together and near straight**, with the right knee drawn up ~25° so
+ *   the two do not read as one shape. Both hips carry a little flexion and both
+ *   ankles are relaxed nearly straight: that is what puts the shins and the
+ *   insteps *on* the sand instead of leaving the whole lower body floating off
+ *   a chest that is much thicker than an ankle.
+ */
+const LIE_JOINTS: Record<string, JointPose> = {
+  // Torso. The roll is shared out so no single joint kinks.
+  Hips: { y: -0.2 },
+  Spine02: { x: -0.05, y: -0.09, breath: 0.5 },
+  Spine01: { x: -0.04, y: -0.07, breath: 1 },
+  Spine: { x: -0.03, y: -0.06, breath: 0.6 },
+  // Head: the turn onto the cheek, split neck/skull so the neck is not kinked.
+  neck: { x: 0.1, y: -0.5 },
+  Head: { x: 0.05, y: -0.6, z: 0.1 },
+  // Raised arm: elbow out, forearm folded back toward the face. Flexion here is
+  // a rotation about character +Z, which is the elbow's own hinge axis on this
+  // rig — the forearms' local X runs along the world's forward axis at rest.
+  RightArm: { y: -0.15, z: -0.55 },
+  RightForeArm: { z: -1.25, twitch: 0.4 },
+  RightHand: { x: 0.15, z: -0.25, twitch: 1 },
+  // Down-side arm: along the body, swung slightly behind the flank it is lying
+  // on so it rests on top of the sand rather than inside it.
+  LeftArm: { x: 0.3, z: -1.2 },
+  LeftForeArm: { z: 0.45 },
+  LeftHand: { x: -0.1 },
+  // Legs. `x` on a hip is flexion — the leg swinging toward the belly, which
+  // when the belly is downward means *toward the sand*.
+  LeftUpLeg: { x: -0.16, z: -0.04 },
+  LeftLeg: { x: 0.12 },
+  LeftFoot: { x: 0.78 },
+  RightUpLeg: { x: -0.14, z: 0.05 },
+  RightLeg: { x: 0.4 },
+  RightFoot: { x: 0.7 },
+}
+
+/**
+ * The two idle signals the wake pose carries, so a held shot is a sleeping body
+ * and not a photograph.
+ *
+ * Breathing is a slow arch through the ribcage — roughly one full cycle every
+ * ten seconds, and small enough (a couple of degrees, shared over three spine
+ * joints) that it reads as the back rising rather than as an animation.
+ *
+ * The twitch is the spec's — "the avatar's hand twitches near the player's
+ * thumb": a decaying flick on the raised hand, once every few seconds, with a
+ * little of it bleeding into the forearm so it is a hand moving and not a
+ * detached prop rotating.
+ */
+const BREATH_RATE = 0.62
+const BREATH_AMOUNT = 0.03
+const TWITCH_PERIOD = 5.5
+const TWITCH_DECAY = 7
+const TWITCH_RATE = 30
+const TWITCH_AMOUNT = 0.26
+
+/** Scratch for the authored pose, so a posed frame allocates nothing. */
+const poseEuler = new THREE.Euler()
+const qPose = new THREE.Quaternion()
+const qJoint = new THREE.Quaternion()
 
 /**
  * How far *down* the shaft from the main fist the off hand closes, in tool units.
@@ -380,6 +488,29 @@ export class Player {
   private poseSpine = 0
   private poseArms = 0
   private poseClock = 0
+  /** How much of the authored wake pose is showing. Eases like the rest. */
+  private poseLie = 0
+
+  /**
+   * The wake pose, resolved against this rig once at load.
+   *
+   * `rest` is the joint's own orientation in character space at the bind pose
+   * and `parentInv` its parent's, inverted. Together they turn an authored
+   * character-space rotation R into the local quaternion the bone actually
+   * wants: `local = parentInv · R · rest`. Precomputing them is what lets the
+   * table above be written in one readable frame instead of in each bone's own
+   * arbitrary Mixamo axes — and it is why the pose survives whatever the
+   * locomotion clip is doing underneath, since nothing here is a delta.
+   */
+  private readonly liePose: {
+    bone: THREE.Object3D
+    pose: JointPose
+    parentInv: THREE.Quaternion
+    rest: THREE.Quaternion
+  }[] = []
+  /** The hips' rest offset, held against the clip's own hip travel while posed. */
+  private readonly hips: THREE.Object3D | null
+  private readonly hipsRest = new THREE.Vector3()
 
   /** Starts on the lane at the market square, facing up the street. */
   readonly position = SPAWN.clone()
@@ -479,6 +610,34 @@ export class Player {
      * accumulated scale; dividing it out is what keeps a hoe hoe-sized.
      */
     this.object.updateMatrixWorld(true)
+
+    /*
+     * Resolve the wake pose against this rig, once, off the bind pose.
+     *
+     * This has to happen before the mixer has ever run: the moment a clip
+     * plays, every bone it has a track for is overwritten, and there is no way
+     * back to the rest orientations the table above is written against. They
+     * are read in the *object's own* space rather than world space so that
+     * "character space" means the same thing here as it does in update(),
+     * where rotation.y is the farmer's facing.
+     */
+    let hipsBone: THREE.Object3D | null = null
+    const rootInv = this.object.getWorldQuaternion(new THREE.Quaternion()).invert()
+    const charQ = new Map<THREE.Object3D, THREE.Quaternion>()
+    this.object.traverse((o) => {
+      charQ.set(o, o.getWorldQuaternion(new THREE.Quaternion()).premultiply(rootInv))
+    })
+    this.object.traverse((o) => {
+      const pose = LIE_JOINTS[o.name]
+      const rest = charQ.get(o)
+      const parent = o.parent ? charQ.get(o.parent) : undefined
+      if (!pose || !rest || !parent) return
+      this.liePose.push({ bone: o, pose, parentInv: parent.clone().invert(), rest })
+      if (/^hips$/i.test(o.name)) hipsBone = o
+    })
+    this.hips = hipsBone
+    if (hipsBone) this.hipsRest.copy((hipsBone as THREE.Object3D).position)
+
     const handScale = new THREE.Vector3()
     this.hand.getWorldScale(handScale)
     const undo = 1 / (handScale.x || 1)
@@ -843,6 +1002,7 @@ export class Player {
     this.poseLift += ((pose?.lift ?? 0) - this.poseLift) * poseEase
     this.poseSpine += ((pose?.spine ?? 0) - this.poseSpine) * poseEase
     this.poseArms += ((this.openingPose === 'sketch' ? 1 : 0) - this.poseArms) * poseEase
+    this.poseLie += ((this.openingPose === 'lie' ? 1 : 0) - this.poseLie) * poseEase
     if (Math.abs(this.poseRootX) > 0.002) {
       this.object.rotation.order = 'YXZ'
       this.object.rotation.x = this.poseRootX
