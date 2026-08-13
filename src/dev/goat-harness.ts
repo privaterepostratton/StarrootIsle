@@ -46,6 +46,9 @@ interface Tile {
   apply: () => void
   /** Landmark sample taken after `apply`, in the rig root's own space. */
   measure?: boolean
+  /** Same, but for the scripted rig — this is what catches a scale that only
+   *  appears once the baked clip is blended in. */
+  measureStage?: boolean
 }
 
 // --- rigs --------------------------------------------------------------------
@@ -123,11 +126,12 @@ function until(phase: GoatPhase, cap = 60): void {
   }
 }
 
-function scripted(name: string, yawOffset: number, step: () => void): Tile {
+function scripted(name: string, yawOffset: number, step: () => void, measureStage = false): Tile {
   return {
     name,
     object: stage,
     yaw: 0,
+    measureStage,
     apply: () => {
       step()
       // The camera follows the animal's own facing so a "profile" stays a
@@ -151,16 +155,16 @@ for (let i = 0; i < 6; i++) {
       } else {
         advance(STRIDE / 6)
       }
-    }),
+    }, true),
   )
 }
 
 // Row 3 — one tile per remaining phase, plus two through the bound.
-tiles.push(scripted('walk pause', SIDE, () => until('sniff')))
-tiles.push(scripted('sniff', SIDE, () => advance(0.6)))
+tiles.push(scripted('walk pause', SIDE, () => until('sniff'), true))
+tiles.push(scripted('sniff', SIDE, () => advance(0.6), true))
 tiles.push(scripted('eat', SIDE, () => until('eat')))
-tiles.push(scripted('eat late', SIDE, () => advance(1.6)))
-tiles.push(scripted('look (front)', FRONT, () => until('look')))
+tiles.push(scripted('eat late', SIDE, () => advance(1.6), true))
+tiles.push(scripted('look (front)', FRONT, () => until('look'), true))
 tiles.push(scripted('look (side)', SIDE, () => advance(0.5)))
 tiles.push(scripted('bleat', SIDE, () => until('bleat')))
 tiles.push(scripted('bound 1', SIDE, () => until('bound')))
@@ -256,6 +260,39 @@ function sample(name: string): void {
   readout.push(`${name.padEnd(18)} ${parts.join('  ')}`)
 }
 
+/**
+ * Size of the scripted goat, right now, in its own root space.
+ *
+ * Bone spans rather than a bounding box, because a SkinnedMesh caches its box
+ * from one pose and would report the same number however big the animal is
+ * actually being drawn. Hip-to-nose is the honest ruler.
+ */
+const hipV = new THREE.Vector3()
+const noseV = new THREE.Vector3()
+
+function sampleStage(name: string): void {
+  const root = stage.children[0]
+  if (!root) return
+  root.updateMatrixWorld(true)
+  const hips = root.getObjectByName('Hips')
+  const nose = root.getObjectByName('headend')
+  const ear = root.getObjectByName('earend')
+  if (!hips || !nose || !ear) {
+    readout.push(`${name.padEnd(18)} bones missing`)
+    return
+  }
+  hips.getWorldPosition(hipV)
+  nose.getWorldPosition(noseV)
+  const span = hipV.distanceTo(noseV)
+  root.worldToLocal(hipV)
+  root.worldToLocal(noseV)
+  ear.getWorldPosition(new THREE.Vector3())
+  const earLocal = root.worldToLocal(ear.getWorldPosition(new THREE.Vector3()))
+  readout.push(
+    `${name.padEnd(18)} hip->nose ${span.toFixed(4)}  hipY ${hipV.y.toFixed(4)}  noseY ${noseV.y.toFixed(4)}  earY ${earLocal.y.toFixed(4)}`,
+  )
+}
+
 // --- draw --------------------------------------------------------------------
 
 const labels = document.getElementById('labels')!
@@ -268,6 +305,7 @@ function draw() {
     tileYaw = tile.yaw
     tile.apply()
     if (tile.measure) sample(tile.name)
+    if (tile.measureStage) sampleStage(tile.name)
 
     const col = i % cols
     const row = Math.floor(i / cols)

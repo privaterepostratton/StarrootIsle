@@ -125,6 +125,28 @@ export interface ModelCache {
   openingCrate: LoadedModel
   /** The crate's lid, authored separately from the body it closes over. */
   openingCrateLid: LoadedModel
+  /**
+   * The beat-5 vine tangle — the pocket's headline prop and the thing the
+   * player rips out three times over. Static mesh: the strain and the snap are
+   * carried by the pivot group it hangs in, see buildVine in
+   * assets/opening/chaos-props.ts.
+   */
+  chaosVine: LoadedModel
+  /** The beat-5 fallen frond. Authored lying flat, long axis on +Z. */
+  chaosFrond: LoadedModel
+  /**
+   * The beat-5 breakable branch, long axis on +X. NOT the tide-line
+   * `driftwoodStick` above — that one is a beat-7 keepsake you pick up whole,
+   * this one is the pocket's hold-break that snaps into two halves.
+   */
+  chaosDriftwood: LoadedModel
+  /** The beat-5 broken basket — the crush that gives up a spiral shell. */
+  chaosBasket: LoadedModel
+  /** The beat-5 basalt stone, the shovel pry. Half-buried where it sits. */
+  chaosStone: LoadedModel
+  /** The beat-5 amphora shard — the tap-collect, and the session's first
+   *  keepable. The only terracotta in the opening. */
+  chaosAmphora: LoadedModel
 }
 
 let cache: ModelCache | null = null
@@ -257,7 +279,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, coconutPalm, sprinklerBasic, beehive, crab, workbench, spiralShell, seaGlass, driftwoodStick, seedPouch, openingCrate, openingCrateLid] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, coconutPalm, sprinklerBasic, beehive, crab, workbench, spiralShell, seaGlass, driftwoodStick, seedPouch, openingCrate, openingCrateLid, chaosVine, chaosFrond, chaosDriftwood, chaosBasket, chaosStone, chaosAmphora] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -313,6 +335,12 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/seed-pouch.glb')),
       gltf.loadAsync(asset('models/opening-crate.glb')),
       gltf.loadAsync(asset('models/opening-crate-lid.glb')),
+      gltf.loadAsync(asset('models/chaos-vine.glb')),
+      gltf.loadAsync(asset('models/chaos-frond.glb')),
+      gltf.loadAsync(asset('models/chaos-driftwood.glb')),
+      gltf.loadAsync(asset('models/chaos-basket.glb')),
+      gltf.loadAsync(asset('models/chaos-stone.glb')),
+      gltf.loadAsync(asset('models/chaos-amphora.glb')),
     ])
 
   cache = {
@@ -370,6 +398,12 @@ export async function loadModels(): Promise<ModelCache> {
     seedPouch: extractMesh(seedPouch.scene),
     openingCrate: extractMesh(openingCrate.scene),
     openingCrateLid: extractMesh(openingCrateLid.scene),
+    chaosVine: extractMesh(chaosVine.scene),
+    chaosFrond: extractMesh(chaosFrond.scene),
+    chaosDriftwood: extractMesh(chaosDriftwood.scene),
+    chaosBasket: extractMesh(chaosBasket.scene),
+    chaosStone: extractMesh(chaosStone.scene),
+    chaosAmphora: extractMesh(chaosAmphora.scene),
   }
   return cache
 }

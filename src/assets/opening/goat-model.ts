@@ -152,6 +152,36 @@ const CLIP_GONE = 3.0
  *  the hooves do not skate. */
 const CLIP_REF_SPEED = 1.1
 
+/**
+ * The take, with its position and scale channels thrown away.
+ *
+ * The export bakes translation, rotation AND scale on all 27 bones, and on 26
+ * of them those extra channels are constant and identical to the bind pose —
+ * dead weight. On `Hips` they are not: the take was authored against a rest
+ * pose this file does not have, and its Hips track carries a constant uniform
+ * scale of 0.565 and a hip offset of its own. Since the clip's weight follows
+ * how fast the goat is travelling, that scale arrived and left with the walk:
+ * the animal stood at full size to sniff and eat, then shrank to a bit over
+ * half as it set off, which reads as the goat "popping" size between idling and
+ * walking. Only the rotations were ever wanted here — the stride, the spine and
+ * the tail follow-through — so only the rotations are kept.
+ *
+ * Cached per source clip: the clip is shared across every cloned goat, so this
+ * must neither mutate it nor rebuild the filtered copy for each animal.
+ */
+const poseOnlyClips = new WeakMap<THREE.AnimationClip, THREE.AnimationClip>()
+
+function rotationOnly(src: THREE.AnimationClip): THREE.AnimationClip {
+  const cached = poseOnlyClips.get(src)
+  if (cached) return cached
+  const tracks = src.tracks.filter((t) => !t.name.endsWith('.position') && !t.name.endsWith('.scale'))
+  // If a future exporter names its tracks differently, keep the clip whole
+  // rather than silently handing back an animation with nothing in it.
+  const out = tracks.length > 0 ? new THREE.AnimationClip(src.name, src.duration, tracks, src.blendMode) : src
+  poseOnlyClips.set(src, out)
+  return out
+}
+
 function smoothstep(a: number, b: number, x: number): number {
   const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1)
   return t * t * (3 - 2 * t)
@@ -312,7 +342,7 @@ export function createGoatModel(): GoatRig {
     let action: THREE.AnimationAction | null = null
     if (inst.clip) {
       mixer = new THREE.AnimationMixer(model)
-      action = mixer.clipAction(inst.clip)
+      action = mixer.clipAction(rotationOnly(inst.clip))
       action.play()
       // Weight zero *before* the first update, so the mixer records the rest
       // pose as the value it blends back toward when the goat stands still.

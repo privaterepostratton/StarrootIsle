@@ -1,14 +1,25 @@
 import * as THREE from 'three'
 import { mat, ball, cyl, rng, MINOR_LAYER, setLayer } from '../style'
+import { loadModels, peekModels, type LoadedModel, type ModelCache } from '../models'
 
 /**
  * The clearable chaos set — the stars of the opening's core beat.
  *
- * Seven procedural prop types the player pulls, sweeps, breaks, peels, crushes,
- * pries and picks out of the choked pocket at the treeline gap. Everything is
- * built from the shared style helpers plus flat leaf cards, so the set speaks
- * the same rounded silhouette language as the rest of the world — no GLBs, no
- * textures, nothing that can ship an emissive surprise.
+ * Seven prop types the player pulls, sweeps, breaks, peels, crushes, pries and
+ * picks out of the choked pocket at the treeline gap.
+ *
+ * The three the player meets most — the vine tangle, the fallen frond and the
+ * breakable branch — are authored GLBs now (`chaos-vine`, `chaos-frond`,
+ * `chaos-driftwood`); the other four are still built from the shared style
+ * helpers plus flat leaf cards. Every prop's *litter*, debris and burst stays
+ * procedural either way, because that is the half that has to match the world's
+ * palette exactly and the half that has to animate.
+ *
+ * Why the swap: the procedural vine was a stack of torus loops, which reads as
+ * a tidy garden ornament rather than a snarl, and the procedural fronds — four
+ * of them, from two seeds, arranged on open ground — photographed as a row of
+ * tan croissants laid out beside the beds. Authored geometry fixes the first;
+ * hard per-instance variance (see `serialOf`) fixes the second.
  *
  * ART DIRECTION (second pass — the first read as tidy garden ornaments on a
  * mown lawn, which is the opposite of the beat):
@@ -99,8 +110,8 @@ const LEAF_PALE = 0xb0d18c
 const LEAF_DRY = 0xb08a4e
 const LEAF_DEAD = 0x8d7148
 
-/** Fallen palm frond — dead matter, ochre through bleached tan. */
-const FROND_RACHIS = 0x9a7a38
+/** Fallen palm frond — dead matter, ochre through bleached tan. The blade
+ *  itself is authored now; these dress its torn leaflets and its litter. */
 const FROND_DRY = 0xd2ae5f
 const FROND_TAN = 0xe6cd96
 const FROND_BROWN = 0xa8834a
@@ -133,9 +144,12 @@ const WICKER_DARK = 0x94734a
 const BASALT = 0x4a453e
 const BASALT_LIT = 0x60594e
 const SALT = 0xefece2
-/** Shading floors (see `shadedFloor`): the darkest value, never a void. */
+/**
+ * Shading floor (see `shadedFloor`): the darkest value in the set, never a
+ * void. Also the emissive floor put under the authored stone's own material —
+ * see buildStone for why that prop specifically needs one.
+ */
 const BASALT_FLOOR = 0x1a1714
-const VINE_FLOOR = 0x161c12
 
 /**
  * The amphora shard — the opening's only terracotta (spec #C4693B), pulled
@@ -150,7 +164,6 @@ const VINE_FLOOR = 0x161c12
  */
 const TERRACOTTA = 0xa96346
 const TERRACOTTA_IN = 0xbc8464
-const TERRACOTTA_BAND = 0x8f4a2c
 
 /** Bougainvillea — the only magenta on screen (spec #D14D8B), gap dressing. */
 const BOUGAIN = 0xd14d8b
@@ -313,6 +326,146 @@ function fling(f: Flung, p: number, reach: number, lift: number) {
   f.mesh.scale.copy(f.baseScale).multiplyScalar(Math.max(0.001, 1 - p))
 }
 
+/* ------------------------------------------------ authored chaos meshes */
+
+/**
+ * Per-kind instance counter, mixed into every prop's seed.
+ *
+ * The pocket asks for five vines and four fronds out of three and two authored
+ * `variant` numbers, so two vines and two fronds have always been built from an
+ * identical seed. That cost nothing while the props were procedural knots seen
+ * from across a clearing; with a single authored mesh apiece it means the same
+ * object at the same angle twice in one pocket, which is most of why the fronds
+ * read as a row of pastries. The serial gives each *instance* its own draw from
+ * the same deterministic stream without touching `createChaosProp`'s signature.
+ */
+const serials = new Map<ChaosKind, number>()
+function serialOf(kind: ChaosKind) {
+  const n = (serials.get(kind) ?? 0) + 1
+  serials.set(kind, n)
+  return n
+}
+
+/**
+ * How an authored mesh is fitted into a chaos rig.
+ *
+ * Meshy normalises its exports into a unit box, so size is never in the file:
+ * every one of these arrives exactly as big as every other. `height` (an
+ * upright snarl) or `longest` (something lying down) is the real world size,
+ * against a 1.6-unit castaway.
+ */
+interface AuthoredPose {
+  /** World height of the prop. Give this or `longest`, not both. */
+  height?: number
+  /** World size of the prop's own longest axis. */
+  longest?: number
+  /** Per-axis stretch on top of the fit. Identity between instances, not size. */
+  stretch?: THREE.Vector3
+  /** The resting lie, as (pitch, yaw, roll) of the prop — always YXZ. */
+  tilt?: THREE.Euler
+  /** Lateral sprawl off the rig's pivot, so the mass is not centred on it. */
+  offset?: THREE.Vector2
+  /** How far the prop beds into the soil, in world units. */
+  sink?: number
+}
+
+/**
+ * A posed authored mesh whose ground contact sits at local y = 0.
+ *
+ * That contract is the one every factory in these files keeps, because callers
+ * place props with `groundHeight` and nothing else. The lift is measured from
+ * the bounding box *after* the pose, or a tilted prop buries one end and floats
+ * the other — and it is measured from the FULL model's box even when a partial
+ * geometry is drawn, so two halves of one broken branch share a ground plane.
+ */
+function authoredMesh(model: LoadedModel, pose: AuthoredPose, geometry?: THREE.BufferGeometry) {
+  const box = model.geometry.boundingBox!
+  const size = box.getSize(new THREE.Vector3())
+  const fit =
+    pose.height !== undefined
+      ? pose.height / size.y
+      : (pose.longest ?? 1) / Math.max(size.x, size.y, size.z)
+
+  const mesh = new THREE.Mesh(geometry ?? model.geometry, model.material)
+  mesh.castShadow = true
+  mesh.receiveShadow = true
+  const st = pose.stretch
+  mesh.scale.set(fit * (st?.x ?? 1), fit * (st?.y ?? 1), fit * (st?.z ?? 1))
+  if (pose.tilt) mesh.rotation.copy(pose.tilt)
+  mesh.updateMatrix()
+
+  const rested = box.clone().applyMatrix4(mesh.matrix)
+  mesh.position.set(pose.offset?.x ?? 0, -rested.min.y - (pose.sink ?? 0), pose.offset?.y ?? 0)
+  return mesh
+}
+
+/**
+ * Run `attach` against the model cache, now or as soon as it lands.
+ *
+ * The cache is always warm by beat 5 — boot finishes long before the player
+ * reaches the pocket — so this is really for the dev gallery and the harness,
+ * which render chaos props on a page that loads its glTF afterwards. The rig is
+ * fully live either way: the strain and clear hooks drive the *groups*, which
+ * exist from the first frame, so a mesh that arrives late simply appears
+ * already correctly posed.
+ */
+function withModels(label: string, attach: (models: ModelCache) => void) {
+  const ready = peekModels()
+  if (ready) attach(ready)
+  else void loadModels().then(attach).catch((e) => console.warn(`chaos "${label}" never loaded`, e))
+}
+
+/**
+ * Cut a geometry in two along its local X axis, whole triangles either side.
+ *
+ * The driftwood's clear is a *break*, and a break on one authored mesh is only
+ * honest if there are genuinely two pieces afterwards. Splitting by triangle
+ * centroid gives two halves that reassemble into exactly the original branch at
+ * rest — no coincident copies, no z-fighting, no fade-out standing in for a
+ * snap. Each half is translated so its origin lands on the cut plane, which is
+ * what lets a pivot group hinge it about the break.
+ *
+ * The exposed cut is left open. It is only ever seen for the few frames the
+ * halves are flying apart, and the material is double-sided, so what shows is
+ * the shadowed inside of the branch — which is what the inside of a snapped
+ * branch looks like.
+ */
+function splitAlongX(geo: THREE.BufferGeometry, cut: number) {
+  const src = geo.index ? geo.toNonIndexed() : geo
+  const pos = src.getAttribute('position')
+  const nrm = src.getAttribute('normal')
+  const uv = src.getAttribute('uv')
+
+  const tris: number[][] = [[], []]
+  for (let t = 0; t < pos.count; t += 3) {
+    const cx = (pos.getX(t) + pos.getX(t + 1) + pos.getX(t + 2)) / 3
+    tris[cx <= cut ? 0 : 1].push(t)
+  }
+
+  const half = (starts: number[]) => {
+    const g = new THREE.BufferGeometry()
+    const p = new Float32Array(starts.length * 9)
+    const n = nrm ? new Float32Array(starts.length * 9) : null
+    const u = uv ? new Float32Array(starts.length * 6) : null
+    starts.forEach((t, i) => {
+      for (let k = 0; k < 3; k++) {
+        const s = t + k
+        p.set([pos.getX(s), pos.getY(s), pos.getZ(s)], i * 9 + k * 3)
+        if (n && nrm) n.set([nrm.getX(s), nrm.getY(s), nrm.getZ(s)], i * 9 + k * 3)
+        if (u && uv) u.set([uv.getX(s), uv.getY(s)], i * 6 + k * 2)
+      }
+    })
+    g.setAttribute('position', new THREE.BufferAttribute(p, 3))
+    if (n) g.setAttribute('normal', new THREE.BufferAttribute(n, 3))
+    if (u) g.setAttribute('uv', new THREE.BufferAttribute(u, 2))
+    // Origin on the cut plane, so a pivot at the break hinges the piece.
+    g.translate(-cut, 0, 0)
+    return g
+  }
+
+  return [half(tris[0]), half(tris[1])] as const
+}
+
 /**
  * A skirt of dead litter around a prop's feet.
  *
@@ -411,18 +564,42 @@ interface Chip {
   land: number
 }
 
+/** Knee to thigh on a 1.6-unit castaway: the snarl you walk up to and rip out. */
+const VINE_H_MIN = 0.58
+const VINE_H_MAX = 0.86
+/** Radians the whole tangle leans out of vertical at full strain. */
+const VINE_LEAN = 0.2
+
 /**
- * A tangle of near-black woody loops with leaves caught in it — three authored
- * variants. Strain stretches the whole knot upward like pulled elastic.
+ * The authored vine tangle: one snarl of woody loops and dead leaf, hung in a
+ * pivot group that does all the moving.
  *
- * The clear is the set piece: a last over-stretch, the knot collapses in on
- * itself taking its own foliage down with it, and a spray of thirty small torn
- * scraps bursts out of the tear on real ballistic arcs, spinning, settling on
- * the ground and fading inside a second. See `CHIP_COUNT` for why the foliage
- * no longer flies and why the scraps are a quarter of a leaf.
+ * A single authored mesh cannot bend its own segments the way the procedural
+ * knot did, and pretending otherwise — scaling it evenly and calling that
+ * strain — reads as a balloon inflating. What it CAN do is behave like
+ * something rooted: the pivot sits on the ground at the rig origin, so every
+ * rotation of the group moves the top of the snarl and leaves its base planted,
+ * which is geometrically what a plant being pulled does. Four channels stack
+ * into the hold:
+ *
+ *  - a **lean** toward one authored direction per instance (the player's pull),
+ *  - a **stretch** up the Y axis with a matching pinch in X and Z, so the mass
+ *    necks the way a fibrous thing does before it lets go,
+ *  - a **wring**: a slow twist about Y, because the tangle is resisting,
+ *  - a **shudder** at 26 rad/s riding on top of all three, scaled by strain.
+ *
+ * The litter skirt at its feet stays planted through all of it, and that is
+ * what sells the deformation: the eye has a fixed reference an inch away from
+ * the thing that is moving.
+ *
+ * The clear is a recoil-and-snap rather than a shrink — draw past the hold's
+ * own maximum, whip back through vertical and out the other side as the fibres
+ * part, then crush into the ground with a spin — and the thirty-chip leaf burst
+ * (unchanged, see `CHIP_COUNT`) fires off the root through the whole window, so
+ * the SFX and the VFX still land on real motion.
  */
 function buildVine(variant: number): ChaosPropRig {
-  const r = rng(101 + variant * 37)
+  const r = rng(101 + variant * 37 + serialOf('vine') * 811)
   const root = new THREE.Group()
   const tangle = new THREE.Group()
   const skirt = litterSkirt(r, 7, 0.45, 0.95)
@@ -438,64 +615,42 @@ function buildVine(variant: number): ChaosPropRig {
   const debris = new THREE.Group()
   root.add(tangle, skirt, debris)
 
-  // The knot. Two populations, because a pile of same-sized closed rings reads
-  // as a stack of tyres: tight coils for the mass, plus long shallow arcs that
-  // sweep out past them and tie the tangle to the ground.
-  const nCoil = 5 + Math.floor(r() * 3)
-  for (let i = 0; i < nCoil; i++) {
-    const coil = shadedFloor(
-      new THREE.TorusGeometry(0.2 + r() * 0.16, 0.055 + r() * 0.025, 6, 10, Math.PI * (1.1 + r() * 0.85)),
-      r() < 0.6 ? VINE_BARK : VINE_BARK_LIT,
-      VINE_FLOOR,
-    )
-    coil.position.set((r() - 0.5) * 0.45, 0.22 + r() * 0.5, (r() - 0.5) * 0.45)
-    coil.rotation.set(r() * Math.PI, r() * Math.PI * 2, r() * Math.PI)
-    tangle.add(coil)
-  }
-  const nArc = 3 + Math.floor(r() * 2)
-  for (let i = 0; i < nArc; i++) {
-    const arc = shadedFloor(
-      new THREE.TorusGeometry(0.5 + r() * 0.28, 0.038 + r() * 0.018, 5, 12, Math.PI * (0.45 + r() * 0.5)),
-      i % 2 === 0 ? VINE_BARK : VINE_BARK_LIT,
-      VINE_FLOOR,
-    )
-    arc.position.set((r() - 0.5) * 0.3, 0.1 + r() * 0.3, (r() - 0.5) * 0.3)
-    arc.rotation.set(1.1 + (r() - 0.5) * 1.6, r() * Math.PI * 2, (r() - 0.5) * 1.2)
-    tangle.add(arc)
-  }
-  // Tendrils whipping out of the knot: they break the round mass and read as
-  // something still growing, so the tangle is alive rather than a discarded rope.
-  for (let i = 0; i < 4; i++) {
-    const tendril = cyl(0.012, 0.03, 0.55 + r() * 0.5, i % 2 === 0 ? VINE_BARK : VINE_BARK_LIT, 5)
-    tendril.position.set((r() - 0.5) * 0.6, 0.5 + r() * 0.45, (r() - 0.5) * 0.6)
-    tendril.rotation.set((r() - 0.5) * 1.2, r() * Math.PI, (r() - 0.5) * 1.2)
-    tangle.add(tendril)
-  }
+  /*
+   * The snarl itself.
+   *
+   * Sized by HEIGHT rather than by its longest axis: the beat is "a thing at
+   * knee height you walk up to", and the model is a low sprawling mass (its
+   * footprint is nearly twice its height), so fitting the long axis would have
+   * put a snarl on the grass you could step over.
+   *
+   * Everything that separates one of the five vines from the next lives here:
+   * a height anywhere in the knee-to-thigh band, a non-uniform stretch that
+   * makes each footprint its own oblong, a full random yaw so a different part
+   * of the tangle faces the camera each time, and a tilt that beds it into the
+   * ground at its own angle. Nothing else in the rig varies, and nothing here
+   * is a per-variant lookup — with only three `variant` numbers across five
+   * placements, a lookup would have produced two identical pairs.
+   */
+  const vineTilt = new THREE.Euler((r() - 0.5) * 0.22, r() * Math.PI * 2, (r() - 0.5) * 0.22, 'YXZ')
+  const vineHeight = VINE_H_MIN + r() * (VINE_H_MAX - VINE_H_MIN)
+  withModels('vine', (models) =>
+    tangle.add(
+      authoredMesh(models.chaosVine, {
+        height: vineHeight,
+        stretch: new THREE.Vector3(0.9 + r() * 0.34, 1, 0.88 + r() * 0.4),
+        tilt: vineTilt,
+        // Bedded in a finger's depth: a tangle that has been growing here sits
+        // IN the litter, and it hides the flat underside of the export.
+        sink: vineHeight * 0.06,
+      }),
+    ),
+  )
 
-  // Leaves living in the tangle. Two thirds green, a third dead — the tangle
-  // has been strangling itself for a while. They are pushed OUT past the coils
-  // and tipped up toward the light, because the foliage has to be what forms
-  // the outer silhouette: the pale leaf edge against the dark knot is the whole
-  // reason the prop reads from across the clearing.
-  //
-  // They are children of `tangle` and stay that way through the clear: the knot
-  // collapses and takes them with it. Nothing this size leaves the prop.
-  const foliage: { mesh: THREE.Mesh; baseY: number; phase: number }[] = []
-  const nLeaf = 16 + Math.floor(r() * 5)
-  for (let i = 0; i < nLeaf; i++) {
-    const a = r() * Math.PI * 2
-    const d = 0.3 + r() * 0.48
-    const tone = r()
-    const l = leaf(
-      0.3 + r() * 0.2,
-      0.19 + r() * 0.12,
-      tone < 0.36 ? LEAF_PALE : tone < 0.68 ? LEAF_MID : tone < 0.86 ? LEAF_DEEP : LEAF_DRY,
-    )
-    l.position.set(Math.cos(a) * d, 0.16 + r() * 0.85, Math.sin(a) * d)
-    l.rotation.set(-0.5 - r() * 0.7, a + (r() - 0.5) * 0.9, (r() - 0.5) * 1.5)
-    tangle.add(l)
-    foliage.push({ mesh: l, baseY: l.position.y, phase: l.position.x * 9 })
-  }
+  // The direction this one is pulled in. Rotating about +Z tips the top toward
+  // −X and about +X toward +Z, so the lean is written across both channels.
+  const pullA = r() * Math.PI * 2
+  const leanX = Math.sin(pullA)
+  const leanZ = -Math.cos(pullA)
 
   /*
    * The burst proper: small torn scraps, born inside the knot and thrown out
@@ -550,31 +705,54 @@ function buildVine(variant: number): ChaosPropRig {
   root.rotation.y = r() * Math.PI * 2
   return assembleRig(root, {
     time: VINE_CLEAR,
-    idle(elapsed) {
-      tangle.rotation.y = Math.sin(elapsed * 0.7 + variant * 2.1) * 0.03
-    },
     strain(s, elapsed) {
-      tangle.scale.set(1 - 0.13 * s, 1 + 0.3 * s, 1 - 0.13 * s)
-      tangle.rotation.z = Math.sin(elapsed * 26) * 0.05 * s
-      tangle.position.y = 0.06 * s
-      for (const f of foliage) {
-        f.mesh.position.y = f.baseY + 0.1 * s
-        f.mesh.rotation.z = Math.sin(elapsed * 30 + f.phase) * 0.25 * s
-      }
+      // The idle sway is folded in here rather than into `idle()`: this hook
+      // writes the group's rotation absolutely, so anything the idle wrote
+      // would be overwritten a line later.
+      const sway = Math.sin(elapsed * 0.7 + variant * 2.1) * 0.03
+      const shudder = Math.sin(elapsed * 26) * s
+      const lean = VINE_LEAN * s
+      tangle.rotation.set(
+        leanX * lean + shudder * 0.03,
+        sway + 0.16 * s + shudder * 0.02,
+        leanZ * lean + shudder * 0.045,
+      )
+      // Necking: what goes up comes out of the waist.
+      tangle.scale.set(1 - 0.12 * s, 1 + 0.28 * s, 1 - 0.12 * s)
+      tangle.position.y = 0.05 * s
     },
     clear(p) {
-      // The knot's own collapse happens in the first third — foliage included,
-      // since the leaves ride it — and the chip spray owns the whole window.
-      const knot = Math.min(1, p / 0.34)
-      if (knot < 0.5) {
-        tangle.scale.set(0.86, 1.3 + knot * 0.5, 0.86)
-      } else {
-        const q = (knot - 0.5) / 0.5
-        const s = Math.max(0.001, 1 - q)
-        tangle.scale.set(s, s * 0.45, s)
-      }
-      tangle.position.y = 0.06 * (1 - knot)
-      skirt.scale.setScalar(Math.max(0.001, 1 - knot))
+      /*
+       * Three overlapping phases inside the one-second window, all written as
+       * pure functions of progress:
+       *
+       *   draw  0.00–0.16  one last over-stretch past the hold's own maximum
+       *   snap  0.16–0.36  the release — whipped back THROUGH vertical and out
+       *                    the far side, stretch collapsing into a squash
+       *   fall  0.30–1.00  the crush: flattened into the soil, spinning, gone
+       *
+       * The whip is the whole point. A prop that stops moving and shrinks reads
+       * as deleted; a prop that overshoots the other way reads as elastic that
+       * finally parted, which is what the spec asks the vine to feel like.
+       */
+      const draw = Math.min(1, p / 0.16)
+      const snap = Math.max(0, Math.min(1, (p - 0.16) / 0.2))
+      const fall = Math.max(0, Math.min(1, (p - 0.3) / 0.7))
+
+      const lean = VINE_LEAN * (1.35 * draw - 2.1 * snap)
+      const spin = 0.16 + 0.9 * snap + 1.7 * fall * fall
+      tangle.rotation.set(leanX * lean, spin, leanZ * lean)
+
+      const gone = 1 - fall
+      const girth = (1 + 0.36 * snap) * gone
+      const stretch = 1 + 0.42 * draw - 0.95 * snap
+      tangle.scale.set(
+        Math.max(0.001, girth),
+        Math.max(0.001, stretch * gone),
+        Math.max(0.001, girth),
+      )
+      tangle.position.y = 0.05 * draw * (1 - snap) - 0.05 * fall
+      skirt.scale.setScalar(Math.max(0.001, gone))
 
       // One fade for the whole spray: the chips go together, so the eye reads
       // the burst dissolving rather than thirty objects each ending separately.
@@ -608,77 +786,120 @@ function buildVine(variant: number): ChaosPropRig {
 
 /* -------------------------------------------------------------- 2. frond */
 
+/** The blade's own length in world units — a metre and a half to over two. */
+const FROND_LEN_MIN = 1.45
+const FROND_LEN_MAX = 2.15
+
 /**
- * A fallen palm frond — a big dry blade, nearly two metres of it, arching where
- * it fell. The quickest clear in the set: a short drag of resistance, then the
- * whole thing sweeps aside and is gone.
+ * A fallen palm frond: one authored dry blade lying where it fell, plus the
+ * leaflets that have already torn off it.
  *
- * Dead matter, so it reads ochre through bleached tan: the brightest value in
- * the pocket and the one that separates most violently from the grass. The
- * leaflets are angled up off the rachis rather than lying flat, which gives the
- * frond a ridge line and stops it reading as a painted stripe on the lawn.
+ * THE DEFECT THIS PASS EXISTS TO FIX. Four fronds are placed in and around the
+ * pocket, from two `variant` numbers, and the procedural build gave each variant
+ * one fixed pose — so the clearing contained two matched pairs of identical tan
+ * objects, each sitting square in its own patch of clear grass. Read back off
+ * two separate screenshots, that is a tray of croissants, not chaos. Three
+ * things are done about it here and all three matter:
+ *
+ *  - **Every instance is its own draw.** Length, width, thickness, yaw, pitch,
+ *    roll and sink are sampled per prop off a serial-mixed seed (`serialOf`),
+ *    not looked up per variant. No two fronds in the pocket share a pose.
+ *  - **They sprawl off their own pivot.** The blade is offset up to half a metre
+ *    from the rig origin at a random bearing, and its torn leaflets scatter out
+ *    past a metre, so a frond's mass overlaps its neighbours and the litter of
+ *    the props beside it. Nothing sits in a clear ring any more. The collider
+ *    stays a 0.35 circle on the origin, so the sprawl never fences the player.
+ *  - **They lie down.** Pitch and roll are kept under a fifth of a radian: a
+ *    frond is a dead thing on the ground, and the pastry read came partly from
+ *    props that sat up off it. Contact is recomputed after the tilt, so the low
+ *    edge rests on the soil instead of hovering over it.
+ *
+ * The quickest act in the set, and the lightest: the hold drags it a few
+ * degrees with a dry 34 rad/s rustle, and the clear is a sweep — the blade
+ * swings about the pivot, skips off the ground and away, and the loose leaflets
+ * scatter out from under it.
  */
 function buildFrond(variant: number): ChaosPropRig {
-  const r = rng(211 + variant * 53)
+  const r = rng(211 + variant * 53 + serialOf('frond') * 977)
   const root = new THREE.Group()
   const blade = new THREE.Group()
-  const skirt = litterSkirt(r, 5, 0.5, 1.1)
+  // Wide and thin on purpose: the skirt is what knits one prop's footprint into
+  // the next, and the frond is the prop most often on the pocket's rim.
+  const skirt = litterSkirt(r, 6, 0.55, 1.35)
   root.add(blade, skirt)
 
-  // The rachis, built in three segments so it can arch.
-  let x = -0.9
-  let y = 0.05
-  for (let i = 0; i < 3; i++) {
-    const seg = cyl(0.022, 0.036, 0.66, FROND_RACHIS, 6)
-    seg.rotation.z = Math.PI / 2
-    seg.position.set(x + 0.33, y + i * 0.035, 0)
-    blade.add(seg)
-    x += 0.62
-  }
+  const bearing = r() * Math.PI * 2
+  const reach = 0.18 + r() * 0.42
+  withModels('frond', (models) =>
+    blade.add(
+      authoredMesh(models.chaosFrond, {
+        longest: FROND_LEN_MIN + r() * (FROND_LEN_MAX - FROND_LEN_MIN),
+        stretch: new THREE.Vector3(0.78 + r() * 0.5, 0.85 + r() * 0.45, 1),
+        // Pitch and roll only. The yaw belongs to the blade group, which is
+        // also the thing that sweeps — see the note on rotation order below.
+        tilt: new THREE.Euler((r() - 0.5) * 0.3, 0, (r() - 0.5) * 0.62, 'YXZ'),
+        offset: new THREE.Vector2(Math.cos(bearing) * reach, Math.sin(bearing) * reach),
+        sink: 0.015,
+      }),
+    ),
+  )
 
-  const nLeaflet = 15
-  for (let i = 0; i < nLeaflet; i++) {
-    const t = i / (nLeaflet - 1)
-    const along = -0.86 + t * 1.75
-    const side = i % 2 === 0 ? 1 : -1
-    // Leaflets shorten toward the tip, the way a real frond tapers.
-    const len = (0.62 - t * 0.26) * (0.85 + r() * 0.3)
-    const tone = r()
-    const l = leaf(len, 0.17 + r() * 0.07, tone < 0.4 ? FROND_TAN : tone < 0.8 ? FROND_DRY : FROND_BROWN)
-    // Offset outward by half its length: a leaflet grows *from* the rachis. The
-    // card straddles its own origin, so without this every leaflet sticks out
-    // both sides and the frond collapses into a stripe.
-    l.position.set(along, 0.07 + t * 0.09 + r() * 0.03, side * len * 0.46)
-    // Swept back toward the tip and lifted off the ground into a shallow vee.
-    l.rotation.set(side * (0.5 + r() * 0.3), -side * (0.3 + r() * 0.2), 0)
-    blade.add(l)
-  }
-  // A couple of loose leaflets that have already torn off.
-  for (let i = 0; i < 3; i++) {
-    const l = leaf(0.42 + r() * 0.22, 0.16, i % 2 === 0 ? FROND_BROWN : FROND_DRY)
-    l.position.set(-0.7 + r() * 1.7, 0.025, (r() - 0.5) * 0.9)
-    l.rotation.set((r() - 0.5) * 0.5, r() * Math.PI * 2, (r() - 0.5) * 0.4)
+  /*
+   * Leaflets already torn off, thrown well past the blade's own footprint.
+   *
+   * These are the prop's overlap with its neighbours, and they are also its
+   * scatter: they are children of `root`, not of `blade`, so the sweep leaves
+   * them behind for a moment and then flings them, which is what turns "the
+   * object left" into "something was ripped up here".
+   */
+  const scatter: Flung[] = []
+  const nLoose = 4 + Math.floor(r() * 3)
+  for (let i = 0; i < nLoose; i++) {
+    const a = r() * Math.PI * 2
+    const d = 0.35 + r() * 0.75
+    const l = leaf(0.34 + r() * 0.3, 0.13 + r() * 0.08, r() < 0.45 ? FROND_BROWN : FROND_DRY)
+    l.position.set(Math.cos(a) * d, 0.02 + r() * 0.03, Math.sin(a) * d)
+    l.rotation.set((r() - 0.5) * 0.5, r() * Math.PI * 2, (r() - 0.5) * 0.45)
     l.castShadow = false
-    blade.add(l)
+    root.add(l)
+    scatter.push({
+      mesh: l,
+      basePos: l.position.clone(),
+      baseScale: l.scale.clone(),
+      dir: new THREE.Vector3(Math.cos(a), 0.4, Math.sin(a)).normalize(),
+    })
   }
 
   root.rotation.y = r() * Math.PI * 2
-  blade.rotation.y = (r() - 0.5) * 0.5
-  const baseYaw = blade.rotation.y
-  const sweepDir = new THREE.Vector3(Math.sin(r() * Math.PI * 2), 0, Math.cos(r() * Math.PI * 2))
+  /*
+   * The blade group carries the frond's yaw AND is the animation group, in YXZ
+   * order — so the yaw applies outermost and the pitch channel below tips the
+   * blade about its OWN long axis rather than about a world axis. Written the
+   * other way round (yaw on the mesh, pitch on the group) a frond lying east
+   * would lift its tip and a frond lying north would roll onto its side from
+   * the same number.
+   */
+  blade.rotation.order = 'YXZ'
+  const baseYaw = r() * Math.PI * 2
+  blade.rotation.y = baseYaw
+  const sweepDir = new THREE.Vector3(Math.sin(bearing + 1.4), 0, Math.cos(bearing + 1.4))
   return assembleRig(root, {
-    time: 0.5,
+    time: 0.45,
     strain(s, elapsed) {
-      blade.rotation.y = baseYaw + s * 0.4 + Math.sin(elapsed * 24) * 0.04 * s
-      blade.rotation.x = s * 0.14
+      // Dry and fast: a frond does not stretch, it rattles and drags.
+      const rustle = Math.sin(elapsed * 34) * 0.045 * s
+      blade.rotation.set(-0.06 * s, baseYaw + 0.3 * s + rustle, 0.05 * s + rustle * 0.4)
       blade.position.y = 0.03 * s
       skirt.rotation.y = s * 0.1
     },
     clear(p) {
-      blade.rotation.y = baseYaw + 0.4 + p * 2.1
+      // One sweep, away and over: it swings about the pivot, skips off the
+      // ground and rolls as it goes.
+      blade.rotation.set(-0.06 - p * 0.55, baseYaw + 0.3 + p * 2.3, 0.05 + p * 0.8)
       blade.position.copy(sweepDir).multiplyScalar(p * 1.05)
-      blade.position.y = 0.03 + Math.sin(p * Math.PI) * 0.22
-      blade.scale.setScalar(Math.max(0.001, 1 - p))
+      blade.position.y = 0.03 + Math.sin(p * Math.PI) * 0.24
+      blade.scale.setScalar(Math.max(0.001, 1 - p * p))
+      for (const f of scatter) fling(f, p, 0.7, 0.22)
       skirt.scale.setScalar(Math.max(0.001, 1 - p))
     },
   })
@@ -686,54 +907,88 @@ function buildFrond(variant: number): ChaosPropRig {
 
 /* ---------------------------------------------------------- 3. driftwood */
 
+/** A two-handed branch, not a twig: metre and a half to two metres of it. */
+const DRIFT_LEN_MIN = 1.5
+const DRIFT_LEN_MAX = 2.0
+
 /**
- * A silvered branch, two metres of it, thick at one end with a snag of side
- * twigs and a split already opening at the middle. Bleached grey-tan: the
- * beach's memory of a tree, and the second-lightest thing in the pocket.
+ * The breakable branch — the one prop in the pocket whose clear is a *break*.
  *
- * The strain flexes the two halves about the split; the clear cracks it in two
- * and the pieces arc apart — the wood ×2 payout made visible.
+ * The spec's act here is a hold-break dropping wood ×2, and the payout is only
+ * honest if there are two pieces at the end of it. So the authored mesh is cut
+ * in half at build time (`splitAlongX`, along its long axis, at a jittered
+ * point either side of the middle) and the two halves are hung in pivot groups
+ * that both sit ON the cut plane. At rest they reassemble into exactly the
+ * branch that was exported — one continuous silhouette, no seam, no doubled
+ * geometry — and the moment the player finishes the hold there are genuinely
+ * two objects to throw.
+ *
+ *  - `setStrain` **bows** it: the halves hinge a few degrees the same way about
+ *    the break, so the branch flexes and quivers, the way wood does right
+ *    before it goes. A single stiff mesh cannot do this at all, which is the
+ *    reason for the cut beyond the payout.
+ *  - `playClear` **breaks** it: the bow snaps through in a tenth of a second,
+ *    the halves counter-rotate hard about the break, and they arc apart and
+ *    away from each other. They only start shrinking a third of the way in,
+ *    after the eye has already read two separate pieces of wood in flight.
+ *
+ * Everything inside the `lie` group is authored in MODEL units (the branch is
+ * one unit long there), so every distance below is a fraction of the branch's
+ * own length and the break looks identical at any size.
  */
 function buildDriftwood(variant: number): ChaosPropRig {
-  const r = rng(307 + variant * 41)
+  const r = rng(307 + variant * 41 + serialOf('driftwood') * 641)
   const root = new THREE.Group()
-  const skirt = litterSkirt(r, 4, 0.5, 1.0)
+  const skirt = litterSkirt(r, 5, 0.5, 1.15)
   root.add(skirt)
 
+  /*
+   * `lie` holds the whole branch's pose — length, thickness, the angle it came
+   * to rest at, and the lift that puts its lowest point on the soil. The two
+   * half pivots live inside it, so their hinge axis is the branch's own, not
+   * the world's: a branch lying north-south breaks the same way as one lying
+   * east-west.
+   */
+  const lie = new THREE.Group()
+  lie.rotation.order = 'YXZ'
+  lie.rotation.set((r() - 0.5) * 0.2, r() * Math.PI * 2, (r() - 0.5) * 0.34)
   const halfA = new THREE.Group()
-  const logA = cyl(0.1, 0.135, 1.15, DRIFT_PALE, 7)
-  logA.rotation.z = Math.PI / 2
-  logA.position.set(-0.56, 0.13, 0)
-  halfA.add(logA)
-  // Root flare at the heavy end reads as *broken off a tree*, not sawn.
-  const flare = ball(0.17, DRIFT_MID, 0)
-  flare.scale.set(0.9, 0.85, 1.05)
-  flare.position.set(-1.1, 0.15, 0.02)
-  halfA.add(flare)
-  for (let i = 0; i < 2; i++) {
-    const stub = cyl(0.028, 0.055, 0.38 + r() * 0.2, DRIFT_DARK, 5)
-    stub.position.set(-0.75 + i * 0.3, 0.3, 0.04 - i * 0.12)
-    stub.rotation.set(0.5 + r() * 0.4, r() * Math.PI, 0.6 + r() * 0.5)
-    halfA.add(stub)
-  }
-
   const halfB = new THREE.Group()
-  const logB = cyl(0.062, 0.095, 0.9, DRIFT_PALE, 7)
-  logB.rotation.z = Math.PI / 2
-  logB.rotation.y = 0.16
-  logB.position.set(0.47, 0.11, 0.04)
-  halfB.add(logB)
-  const knot = ball(0.07, DRIFT_DARK, 0)
-  knot.position.set(0.72, 0.13, 0.06)
-  halfB.add(knot)
-  const twig = cyl(0.018, 0.03, 0.34, DRIFT_MID, 4)
-  twig.position.set(0.86, 0.2, 0.02)
-  twig.rotation.set(0.3, 0.4, 1.0)
-  halfB.add(twig)
+  lie.add(halfA, halfB)
+  root.add(lie)
 
-  root.add(halfA, halfB)
+  const length = DRIFT_LEN_MIN + r() * (DRIFT_LEN_MAX - DRIFT_LEN_MIN)
+  const girth = 0.85 + r() * 0.4
+  // Off-centre, so the two pieces are visibly a long one and a short one — a
+  // branch that snaps into two equal halves looks manufactured.
+  const cut = (r() - 0.5) * 0.3
+
+  withModels('driftwood', (models) => {
+    const model = models.chaosDriftwood
+    const box = model.geometry.boundingBox!
+    const size = box.getSize(new THREE.Vector3())
+    const fit = length / size.x
+    lie.scale.set(fit, fit * girth, fit * girth)
+
+    const [geoA, geoB] = splitAlongX(model.geometry, cut)
+    for (const [pivot, geo] of [
+      [halfA, geoA],
+      [halfB, geoB],
+    ] as const) {
+      const mesh = new THREE.Mesh(geo, model.material)
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      pivot.position.x = cut
+      pivot.add(mesh)
+    }
+
+    // Ground contact, measured on the assembled branch after its pose — the two
+    // halves share one plane because they share one parent.
+    lie.updateMatrix()
+    lie.position.y = -box.clone().applyMatrix4(lie.matrix).min.y
+  })
+
   root.rotation.y = r() * Math.PI * 2
-  root.rotation.z = (r() - 0.5) * 0.12
   return assembleRig(root, {
     time: 0.5,
     strain(s, elapsed) {
@@ -743,10 +998,22 @@ function buildDriftwood(variant: number): ChaosPropRig {
       root.position.y = 0.02 * s
     },
     clear(p) {
-      halfA.rotation.z = 0.13 + p * 0.9
-      halfB.rotation.z = -0.13 - p * 0.9
-      halfA.position.set(-p * 0.45, Math.sin(p * Math.PI) * 0.32, 0)
-      halfB.position.set(p * 0.45, Math.sin(p * Math.PI) * 0.34, 0)
+      /*
+       * The crack is the first tenth: the bow reverses through zero and the
+       * halves kick apart. After that they are simply two pieces of wood in the
+       * air, tumbling on their own axes.
+       */
+      const crack = Math.min(1, p / 0.1)
+      const fly = Math.max(0, (p - 0.08) / 0.92)
+      const hinge = 0.13 - 1.5 * crack - 1.1 * fly
+
+      halfA.rotation.set(fly * 0.7, -fly * 0.5, hinge)
+      halfB.rotation.set(-fly * 0.6, fly * 0.6, -hinge)
+      // Apart along the branch, and outward: fractions of its own length.
+      halfA.position.set(-fly * 0.34, Math.sin(Math.min(1, fly * 1.2) * Math.PI) * 0.3, -fly * 0.12)
+      halfB.position.set(fly * 0.34, Math.sin(Math.min(1, fly * 1.15) * Math.PI) * 0.32, fly * 0.14)
+      // Held at full size through the first third — the read is "it broke in
+      // two", and it needs the frames to land before anything starts leaving.
       const s = Math.max(0.001, 1 - Math.max(0, (p - 0.35) / 0.65))
       halfA.scale.setScalar(s)
       halfB.scale.setScalar(s)
@@ -823,137 +1090,199 @@ function buildMorningGlory(variant: number): ChaosPropRig {
 
 /* -------------------------------------------------------------- 5. basket */
 
+/** Knee-height at most — a basket tipped over, not a barrel. */
+const BASKET_H_MIN = 0.48
+const BASKET_H_MAX = 0.64
+
 /**
- * A broken woven basket, tipped on its side with the weave sprung open.
+ * The broken basket: the authored weave, tipped over where somebody dropped it,
+ * with its sprung staves lying loose around it.
  *
- * Now actually woven: vertical staves running up through three courses of
- * horizontal weave, several of them snapped and splayed out where something
- * stood on it. That silhouette — a torn ring of sticks — is the first hint on
- * screen that people were here before, so it earns the extra geometry.
+ * This is the spec's *surprise inside chaos* — the crush that gives up a spiral
+ * shell along with its fibre, and the beat that teaches, once and without a
+ * word, that clearing contains gifts. The whole animation is built around
+ * getting out of the way of that reveal.
  *
- * (The spiral-shell surprise inside is the pocket's drop, not a mesh of this
- * rig — the reveal lands with the payout arc, where the eye already is.)
+ *  - The **crush** is a compression, not a shrink: the basket squats, its walls
+ *    bulge out under the load, and it flattens to a fifth of its height by
+ *    p = 0.45. Whatever is left after that is a mat of weave on the soil.
+ *  - The sprung staves fly LOW and OUTWARD — `fling` with barely any lift —
+ *    because the pocket spawns the shell at the prop's own position the instant
+ *    the clear begins (`onClear` in game/opening/chaos-pocket.ts, which is not
+ *    this file's to change) and the drop arcs up out of it. The column of air
+ *    directly above the basket is the shell's, and nothing here is allowed in
+ *    it. The old rig threw its sticks up at 0.55 of their reach; these go up at
+ *    0.16 of it.
+ *  - Nothing is left standing after p = 0.5 to occlude the arc.
  */
 function buildBasket(variant: number): ChaosPropRig {
-  const r = rng(523 + variant * 31)
+  const r = rng(523 + variant * 31 + serialOf('basket') * 733)
   const root = new THREE.Group()
   const body = new THREE.Group()
   root.add(body)
 
-  const R = 0.4
-  const base = cyl(R * 0.85, R * 0.95, 0.07, WICKER_DARK, 11)
-  base.position.y = 0.035
-  body.add(base)
-  // Packed dead weave inside. Without it the basket is a birdcage: the eye
-  // looks straight through the staves at the grass and never resolves a volume.
-  const fill = ball(R * 0.78, WICKER_DARK, 0)
-  fill.scale.set(1, 0.55, 1)
-  fill.position.y = 0.19
-  body.add(fill)
+  const height = BASKET_H_MIN + r() * (BASKET_H_MAX - BASKET_H_MIN)
+  withModels('basket', (models) =>
+    body.add(
+      authoredMesh(models.chaosBasket, {
+        height,
+        stretch: new THREE.Vector3(0.92 + r() * 0.22, 1, 0.92 + r() * 0.22),
+        // Tipped and settled, never square to the world: a basket somebody
+        // dropped and walked away from, not one set down.
+        tilt: new THREE.Euler(0.2 + r() * 0.3, r() * Math.PI * 2, (r() - 0.5) * 0.5, 'YXZ'),
+        sink: height * 0.05,
+      }),
+    ),
+  )
 
-  // Staves: the vertical ribs. Two are missing and three lean out, broken.
-  const nStave = 13
-  for (let i = 0; i < nStave; i++) {
-    if (i === 4 || i === 9) continue
-    const a = (i / nStave) * Math.PI * 2
-    const broken = i === 3 || i === 10 || i === 11
-    const h = broken ? 0.34 + r() * 0.14 : 0.52
-    const stave = cyl(0.017, 0.021, h, i % 3 === 0 ? WICKER_DARK : WICKER, 4)
-    stave.position.set(Math.cos(a) * R, h / 2 + 0.03, Math.sin(a) * R)
-    stave.rotation.set(broken ? Math.cos(a) * 0.75 : 0, 0, broken ? -Math.sin(a) * 0.75 : 0)
-    if (!broken) {
-      stave.rotation.x = Math.cos(a) * 0.12
-      stave.rotation.z = -Math.sin(a) * 0.12
-    }
-    body.add(stave)
-  }
-  // Weave courses, each an open arc so the basket reads as burst, not intact.
-  const courses = [0.13, 0.28, 0.44]
-  for (let i = 0; i < courses.length; i++) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(R + i * 0.012, 0.032, 5, 14, Math.PI * (1.35 + r() * 0.35)),
-      mat(i === 1 ? WICKER_LIT : WICKER),
-    )
-    ring.castShadow = true
-    ring.receiveShadow = true
-    ring.rotation.x = Math.PI / 2
-    ring.rotation.z = r() * Math.PI * 2
-    ring.position.y = courses[i]
-    body.add(ring)
-  }
-
-  // Loose weave ends that pop out when it is crushed.
+  /*
+   * Weave ends sprung out of the rim, procedural because they have to move
+   * independently of the mesh and because wicker is the one colour in this set
+   * that has to match a texture rather than the grass. They also break the
+   * authored silhouette, which a single tipped basket badly needs.
+   */
   const sticks: Flung[] = []
-  for (let i = 0; i < 4; i++) {
+  const R = height * 0.62
+  for (let i = 0; i < 5; i++) {
     const a = r() * Math.PI * 2
-    const stick = cyl(0.013, 0.018, 0.32 + r() * 0.2, WICKER_DARK, 4)
-    stick.position.set(Math.cos(a) * R * 0.8, 0.34 + r() * 0.16, Math.sin(a) * R * 0.8)
-    stick.rotation.set((r() - 0.5) * 1.3, 0, 0.5 + r() * 0.7)
-    body.add(stick)
+    const stick = cyl(0.013, 0.019, 0.3 + r() * 0.24, i % 2 === 0 ? WICKER_DARK : WICKER, 4)
+    stick.position.set(Math.cos(a) * R, 0.06 + r() * 0.2, Math.sin(a) * R)
+    stick.rotation.set((r() - 0.5) * 1.3, a, 0.8 + r() * 0.6)
+    root.add(stick)
     sticks.push({
       mesh: stick,
       basePos: stick.position.clone(),
       baseScale: stick.scale.clone(),
-      dir: new THREE.Vector3(Math.cos(a), 0.55, Math.sin(a)).normalize(),
+      dir: new THREE.Vector3(Math.cos(a), 0.16, Math.sin(a)).normalize(),
     })
   }
+  // A course of weave that has already come off, lying flat beside it.
+  const loose = new THREE.Mesh(
+    new THREE.TorusGeometry(R * 0.8, 0.026, 5, 12, Math.PI * (1.1 + r() * 0.5)),
+    mat(WICKER_LIT),
+  )
+  loose.castShadow = true
+  loose.rotation.set(Math.PI / 2 + (r() - 0.5) * 0.3, 0, r() * Math.PI * 2)
+  loose.position.set((r() - 0.5) * 0.7, 0.03, (r() - 0.5) * 0.7)
+  root.add(loose)
 
-  root.add(litterSkirt(r, 4, 0.5, 0.95))
-  root.rotation.z = 0.26
+  root.add(litterSkirt(r, 5, 0.5, 1.05))
   root.rotation.y = r() * Math.PI * 2
   return assembleRig(root, {
     time: 0.5,
     strain(s, elapsed) {
-      body.scale.set(1 + 0.2 * s, 1 - 0.42 * s, 1 + 0.2 * s)
+      // Giving under the hands: down, and out at the waist.
+      body.scale.set(1 + 0.16 * s, 1 - 0.34 * s, 1 + 0.16 * s)
       body.rotation.y = Math.sin(elapsed * 24) * 0.05 * s
+      body.position.y = -0.02 * s
     },
     clear(p) {
-      body.scale.set(1.2 + p * 0.25, Math.max(0.05, 0.58 - p * 0.5), 1.2 + p * 0.25)
+      const crush = Math.min(1, p / 0.45)
+      const flat = 0.66 - crush * 0.5
+      body.scale.set(1.16 + crush * 0.3, Math.max(0.04, flat), 1.16 + crush * 0.3)
+      body.position.y = -0.02 * (1 - crush)
+      // Only after the collapse has read: the mat sinks away while the shell
+      // is already on its way up.
       const s = Math.max(0.001, 1 - Math.max(0, (p - 0.55) / 0.45))
       body.scale.multiplyScalar(s)
-      for (const f of sticks) fling(f, p, 0.8, 0.3)
+      for (const f of sticks) fling(f, p, 0.85, 0.1)
+      loose.scale.setScalar(Math.max(0.001, 1 - Math.max(0, (p - 0.4) / 0.6)))
     },
   })
 }
 
 /* --------------------------------------------------------------- 6. stone */
 
+/** The boulder's longest axis in world units — knee-high, wider than tall. */
+const STONE_LEN_MIN = 0.9
+const STONE_LEN_MAX = 1.2
+/** Seconds the pry runs: pop, land, wobble, settle. Longer than the rest. */
+const STONE_CLEAR = 0.72
+
 /**
- * A half-sunk basalt stone: near-black, hard-faceted, crusted white with dried
- * salt on its weather side, with a scatter of chips where it has spalled.
+ * The half-sunk basalt stone, authored — with its salt crust still built here.
  *
- * This is the darkest object in the game's opening and it is deliberately the
- * least round thing in it — flat-shaded facets and a couple of shoulders, so it
- * reads as volcanic rock next to a world made of spheres. The salt crust is the
- * only pure white on screen and does all the work of keeping it from becoming a
- * hole in the grass.
+ * VALUE, which is the whole problem with this prop. The file's palette note
+ * records what happened the last time this stone was authored at the spec's
+ * `#2A2622`: at hour 7.2 a near-horizontal dark surface comes back at about
+ * half its albedo, so the rock rendered near `#171513` and the eye filed it as
+ * a shadow bug rather than as basalt — a pocket full of black holes. The
+ * authored texture averages `#332f2a`, brighter than that failure but still
+ * genuinely dark, so the two things that saved the procedural version are kept
+ * on top of it: a small emissive floor on the material, so a face turned away
+ * from the low sun settles at a warm near-black you can read a silhouette
+ * against rather than at nothing, and the white salt crust, which is the only
+ * pure white in the opening and is what makes the mass read as *rock* — a dark
+ * thing with a light thing on it is an object, a dark thing alone is a hole.
  *
- * The longest hold in the set — the shovel pry rocks it back and forth, lifting
- * a little more each moment, and the clear pops it free in an arc.
+ * The act is the shovel pry: `setStrain` levers the stone in its socket about
+ * one edge — it tips and grinds rather than rising — and `playClear` pops it
+ * free, drops it, and lets it WOBBLE-SETTLE on the soil before it goes. That
+ * last third is the part that sells the weight: everything else in the pocket
+ * leaves at speed, and the stone is the one thing that lands.
  */
 function buildStone(variant: number): ChaosPropRig {
-  const r = rng(631 + variant * 43)
+  const r = rng(631 + variant * 43 + serialOf('stone') * 557)
   const root = new THREE.Group()
+  /*
+   * The socket edge the shovel levers against, offset from the rig origin, so
+   * the strain is a genuine pry — the far side lifts, the near side stays down
+   * in the ground. Rocking the stone about its own centre reads as a wobbling
+   * ball.
+   */
+  const lever = new THREE.Group()
+  root.add(lever)
+  const rock = new THREE.Group()
+  lever.add(rock)
 
-  const boulder = shadedFloor(new THREE.IcosahedronGeometry(0.4 + r() * 0.09, 0), BASALT, BASALT_FLOOR)
-  boulder.scale.set(1, 0.66, 0.86)
-  boulder.rotation.set(r() * 0.6, r() * Math.PI * 2, r() * 0.6)
-  boulder.position.y = 0.09
-  root.add(boulder)
+  const length = STONE_LEN_MIN + r() * (STONE_LEN_MAX - STONE_LEN_MIN)
+  const socket = 0.3 + r() * 0.12
+  lever.position.set(-socket * length * 0.5, 0, 0)
+  rock.position.set(socket * length * 0.5, 0, 0)
 
-  // A second, smaller mass fused to the first: two shoulders read as rock,
-  // one reads as a ball.
-  const shoulder = shadedFloor(new THREE.IcosahedronGeometry(0.22 + r() * 0.06, 0), BASALT_LIT, BASALT_FLOOR)
-  shoulder.scale.set(1, 0.7, 0.9)
-  shoulder.rotation.set(r(), r() * Math.PI, r())
-  shoulder.position.set(0.26, 0.12, -0.16)
-  root.add(shoulder)
+  let crustY = length * 0.22
+  withModels('stone', (models) => {
+    const mesh = authoredMesh(models.chaosStone, {
+      longest: length,
+      stretch: new THREE.Vector3(1, 0.88 + r() * 0.3, 1),
+      tilt: new THREE.Euler((r() - 0.5) * 0.4, r() * Math.PI * 2, (r() - 0.5) * 0.4, 'YXZ'),
+      // Half-buried, per the spec. This is the only prop in the set that is
+      // meant to be substantially IN the ground rather than on it.
+      sink: length * 0.14,
+    })
+    /*
+     * The emissive floor, applied to a material of this rig's own. The shared
+     * cache hands every stone the same instance, and lifting that one would
+     * lift the copy the tide line and the gallery draw as well — so this is
+     * cloned, which costs one material and keeps the texture upload shared.
+     */
+    const lifted = (mesh.material as THREE.MeshStandardMaterial).clone()
+    lifted.emissive = new THREE.Color(BASALT_FLOOR)
+    lifted.emissiveIntensity = 1
+    mesh.material = lifted
+    rock.add(mesh)
 
-  // Spalled chips at the foot.
+    const box = new THREE.Box3().setFromObject(mesh)
+    crustY = box.max.y
+  })
+
+  // Salt crust on the crown and the weather side — flat patches, not blobs, and
+  // dropped on after the mesh is measured so they sit on the rock's own top.
+  const crust: THREE.Mesh[] = []
+  for (let i = 0; i < 5; i++) {
+    const a = r() * Math.PI * 2
+    const patch = ball(length * (0.08 + r() * 0.05), SALT, 0)
+    patch.scale.set(1.25, 0.16, 1)
+    patch.position.set(Math.cos(a) * length * 0.2, 0, Math.sin(a) * length * 0.16)
+    patch.rotation.set((r() - 0.5) * 0.3, a, (r() - 0.5) * 0.3)
+    rock.add(patch)
+    crust.push(patch)
+  }
+  // Spalled chips at the foot, left behind on the soil.
   for (let i = 0; i < 3; i++) {
     const a = r() * Math.PI * 2
     const chip = shadedFloor(
-      new THREE.IcosahedronGeometry(0.06 + r() * 0.045, 0),
+      new THREE.IcosahedronGeometry(length * (0.06 + r() * 0.04), 0),
       i % 2 === 0 ? BASALT : BASALT_LIT,
       BASALT_FLOOR,
     )
@@ -963,29 +1292,46 @@ function buildStone(variant: number): ChaosPropRig {
     root.add(chip)
   }
 
-  // Salt crust on the top and the weather side — flat patches, not blobs.
-  for (let i = 0; i < 5; i++) {
-    const a = r() * Math.PI * 2
-    const crust = ball(0.07 + r() * 0.05, SALT, 0)
-    crust.scale.set(1.25, 0.16, 1)
-    crust.position.set(Math.cos(a) * 0.2, 0.22 + r() * 0.06, Math.sin(a) * 0.16)
-    crust.rotation.set((r() - 0.5) * 0.3, a, (r() - 0.5) * 0.3)
-    root.add(crust)
-  }
-
-  const baseY = root.position.y
+  root.rotation.y = r() * Math.PI * 2
   return assembleRig(root, {
-    time: 0.5,
+    time: STONE_CLEAR,
     strain(s, elapsed) {
-      root.rotation.x = Math.sin(elapsed * 19) * 0.07 * s
-      root.rotation.z = Math.cos(elapsed * 16) * 0.06 * s
-      root.position.y = baseY + 0.13 * s
+      // The crust rides the rock, so it is placed once here rather than at
+      // build time — the mesh it sits on may not have arrived yet.
+      for (const c of crust) c.position.y = crustY * 0.92
+      // Grinding in its socket: it tips further with the strain and shudders
+      // against the grit, and it barely rises until it lets go.
+      const grind = Math.sin(elapsed * 19) * 0.05 * s
+      lever.rotation.z = -0.34 * s + grind
+      lever.rotation.x = Math.cos(elapsed * 16) * 0.05 * s
+      lever.position.y = 0.03 * s
     },
     clear(p) {
-      root.position.y = baseY + 0.13 + Math.sin(Math.min(1, p * 1.1) * Math.PI) * 0.42 + p * 0.05
-      root.rotation.z = p * 1.1
-      const s = Math.max(0.001, 1 - Math.max(0, (p - 0.45) / 0.55))
-      root.scale.setScalar(s)
+      /*
+       *   pop     0.00–0.30  it comes out of the socket, over the lip
+       *   land    0.30–0.55  down onto the soil beside the hole
+       *   settle  0.55–1.00  two damped rocks and it is still
+       *
+       * The settle is written as a decaying cosine rather than as keyframes so
+       * the amplitude and the rate can be read off the line: a fifth of a
+       * radian, dying over the last four tenths of a second.
+       */
+      const pop = Math.min(1, p / 0.3)
+      const land = Math.max(0, Math.min(1, (p - 0.3) / 0.25))
+      const rest = Math.max(0, (p - 0.55) / 0.45)
+
+      const hop = Math.sin(Math.min(1, p / 0.55) * Math.PI) * 0.34
+      lever.position.y = 0.03 + hop
+      lever.position.x = (pop * 0.18 + land * 0.12) * 0.6
+      const tumble = -0.34 - pop * 0.9 - land * 0.5
+      const wobble = rest > 0 ? Math.cos(rest * Math.PI * 3.4) * 0.2 * (1 - rest) * (1 - rest) : 0
+      lever.rotation.z = tumble * (1 - rest * 0.55) + wobble
+      lever.rotation.x = wobble * 0.5
+
+      // It stays whole almost to the end — the stone is the heaviest thing in
+      // the pocket and it has to look like it stopped, not like it evaporated.
+      const s = Math.max(0.001, 1 - Math.max(0, (p - 0.82) / 0.18))
+      rock.scale.setScalar(s)
     },
   })
 }
@@ -1002,59 +1348,58 @@ function buildStone(variant: number): ChaosPropRig {
  * once, and is gone to the satchel.
  */
 function buildAmphora(variant: number): ChaosPropRig {
-  const r = rng(733 + variant * 17)
+  const r = rng(733 + variant * 17 + serialOf('amphora') * 419)
   const root = new THREE.Group()
   const piece = new THREE.Group()
   root.add(piece)
 
-  // A patch of pot wall. Double-sided because both faces of a shard show; the
-  // inner face gets its own paler mesh just inside it.
-  const shell = new THREE.Mesh(
-    new THREE.SphereGeometry(0.38, 10, 7, 0, Math.PI * 0.8, Math.PI * 0.2, Math.PI * 0.52),
-    new THREE.MeshLambertMaterial({ color: TERRACOTTA, side: THREE.DoubleSide }),
+  /*
+   * A fragment, not a pot: a hand's span across, part-buried at the pocket
+   * edge. Sized deliberately below every other authored prop in the set — it is
+   * the one object here the player is meant to walk over to and pick UP, and a
+   * keepsake that reads as furniture is not a keepsake.
+   *
+   * Buried a fifth of its depth. The tap is a discrete act with no hold to
+   * telegraph it, so the shard has to look like it has been lying here since
+   * long before the player arrived, and something resting cleanly on top of the
+   * soil looks placed this morning.
+   */
+  const span = 0.4 + r() * 0.12
+  withModels('amphora', (models) =>
+    piece.add(
+      authoredMesh(models.chaosAmphora, {
+        longest: span,
+        tilt: new THREE.Euler(0.18 + (r() - 0.5) * 0.3, r() * Math.PI * 2, (r() - 0.5) * 0.4, 'YXZ'),
+        sink: span * 0.06,
+      }),
+    ),
   )
-  shell.castShadow = true
-  shell.receiveShadow = true
-  piece.add(shell)
 
-  const inner = new THREE.Mesh(
-    new THREE.SphereGeometry(0.355, 10, 7, 0.02, Math.PI * 0.76, Math.PI * 0.22, Math.PI * 0.48),
-    new THREE.MeshLambertMaterial({ color: TERRACOTTA_IN, side: THREE.DoubleSide }),
-  )
-  piece.add(inner)
-
-  const band = new THREE.Mesh(
-    new THREE.TorusGeometry(0.362, 0.019, 5, 14, Math.PI * 0.74),
-    new THREE.MeshLambertMaterial({ color: TERRACOTTA_BAND, side: THREE.DoubleSide }),
-  )
-  band.rotation.x = Math.PI / 2
-  band.rotation.z = 0.05
-  band.position.y = -0.07
-  piece.add(band)
-
-  // Lying open-side-up, slightly sunk, like it washed in years ago.
-  piece.rotation.set(2.4 + (r() - 0.5) * 0.3, r() * Math.PI * 2, 0.2)
-  piece.position.y = -0.04
-
-  // A splinter that broke off the shard, left in the dirt beside it.
+  // A splinter that broke off it, left in the dirt beside it — still built
+  // here, because two pieces is what says "this broke" rather than "this is a
+  // curved orange object", and one authored mesh cannot say it alone.
   const splinter = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 7, 5, 0, Math.PI * 0.7, Math.PI * 0.3, Math.PI * 0.4),
+    new THREE.SphereGeometry(0.11, 7, 5, 0, Math.PI * 0.7, Math.PI * 0.3, Math.PI * 0.4),
     new THREE.MeshLambertMaterial({ color: TERRACOTTA, side: THREE.DoubleSide }),
   )
+  splinter.castShadow = true
   splinter.rotation.set(2.1, r() * Math.PI * 2, 0.4)
-  splinter.position.set(0.38 + r() * 0.15, 0.01, -0.2 + r() * 0.3)
+  splinter.position.set(0.3 + r() * 0.14, 0.02, -0.18 + r() * 0.3)
   root.add(splinter)
 
-  const baseYaw = piece.rotation.y
-  const baseY = piece.position.y
   return assembleRig(root, {
     time: 0.5,
     strain() {
-      /* Tap-collect: the shard never strains. */
+      /* Tap-collect: the shard never strains. ChaosPocket surfaces it through
+         tapTargetNear(), not holdTargets(), so this hook is never driven. */
     },
     clear(p) {
-      piece.position.y = baseY + p * 0.6
-      piece.rotation.y = baseYaw + p * 5
+      // The collect: it lifts out of the dirt, turns over once so the player
+      // sees the piece they now own, and goes to the satchel. Unchanged in
+      // shape from the procedural version — this is the motion the DOM
+      // fly-to and the terracotta chime are already timed against.
+      piece.position.y = p * 0.6
+      piece.rotation.y = p * 5
       piece.scale.setScalar(Math.max(0.001, 1 - p))
       splinter.scale.setScalar(Math.max(0.001, 1 - p * 1.4))
     },
