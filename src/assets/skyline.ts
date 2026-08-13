@@ -185,6 +185,112 @@ function buildRange(layer: RangeLayer, gap: SkylineGap | null): THREE.Mesh {
   return mesh
 }
 
+/**
+ * The distant island (spec asset manifest, environment 4).
+ *
+ * "Faint, never referenced." The sea gap exists so the horizon can be empty,
+ * and an empty horizon is honest but it is also *finished* — nothing out there,
+ * nothing coming. One low silhouette off to one side turns the same shot into a
+ * world with an elsewhere in it, which is the whole reason the spec spends an
+ * asset on something no beat ever mentions.
+ *
+ * It sits just inside the water plane's own edge so the sea draws in front of
+ * its foot and it reads as land rising out of water rather than as a cutout
+ * pasted on the sky. Deliberately small, deliberately hazy, deliberately off
+ * the gap's centre line — dead ahead of the wake camera it would look like a
+ * destination, and it is not one yet.
+ */
+const ISLAND = {
+  /** Inside the water plane's half-width (150) so the sea covers its base. */
+  radius: 142,
+  /** Bearing offset from the middle of the sea gap, in radians. */
+  bearing: 0.34,
+  /** Angular half-width. */
+  half: 0.105,
+  /**
+   * Low, and darker than the haze wants to make it.
+   *
+   * The first pass stood it twelve units tall at seventy percent haze and it
+   * came back as a pale blue-white mound on the horizon — an iceberg, and a
+   * destination. What reads as far-off land under a bright dawn sky is a
+   * *darker* shape, not a lighter one: aerial perspective lifts a distant hill
+   * toward the sky only when the sky is duller than the hill. Half the haze and
+   * two thirds the height turns it back into something you notice on the third
+   * look and never think about again.
+   */
+  rise: 8.5,
+  /** Below the waterline, so the sea plane cuts it off. */
+  base: -7,
+  haze: 0.44,
+  seed: 0x151a5d,
+}
+
+function buildDistantIsland(gap: SkylineGap): THREE.Mesh {
+  const r = rng(ISLAND.seed)
+  const at = gap.at + ISLAND.bearing
+  const segments = 26
+
+  // Two shoulders and a saddle: the cheapest profile that reads as an island
+  // instead of as a hill. The bigger shoulder is off-centre, because a
+  // symmetrical silhouette on a horizon reads as a shape rather than as land.
+  const crest = (t: number) => {
+    const a = Math.exp(-Math.pow((t - 0.38) / 0.24, 2))
+    const b = 0.62 * Math.exp(-Math.pow((t - 0.68) / 0.17, 2))
+    // Falls to nothing at both ends so the island meets the sea, not the frame.
+    const skirt = Math.sin(Math.PI * Math.min(1, Math.max(0, t)))
+    return Math.max(a, b) * (0.35 + 0.65 * skirt)
+  }
+
+  const positions: number[] = []
+  const colors: number[] = []
+  const low = C_ROCK_LOW.clone().lerp(C_SKY, ISLAND.haze)
+  const high = C_ROCK.clone().lerp(C_SKY, ISLAND.haze * 0.86)
+
+  const push = (x: number, y: number, z: number, t: number) => {
+    positions.push(x, y, z)
+    const c = low.clone().lerp(high, smoothstep(0.1, 1, t))
+    colors.push(c.r, c.g, c.b)
+  }
+
+  for (let i = 0; i < segments; i++) {
+    const t0 = i / segments
+    const t1 = (i + 1) / segments
+    const a0 = at + (t0 - 0.5) * 2 * ISLAND.half
+    const a1 = at + (t1 - 0.5) * 2 * ISLAND.half
+    // A little wobble on the radius keeps the silhouette from being a perfect
+    // arc, which at this width would read as a dome.
+    const r0 = ISLAND.radius * (1 + (r() - 0.5) * 0.02)
+    const r1 = ISLAND.radius * (1 + (r() - 0.5) * 0.02)
+    const h0 = crest(t0) * ISLAND.rise * (0.92 + r() * 0.16)
+    const h1 = crest(t1) * ISLAND.rise * (0.92 + r() * 0.16)
+    const x0 = Math.cos(a0) * r0
+    const z0 = Math.sin(a0) * r0
+    const x1 = Math.cos(a1) * r1
+    const z1 = Math.sin(a1) * r1
+
+    push(x0, ISLAND.base, z0, 0)
+    push(x1, ISLAND.base, z1, 0)
+    push(x1, h1, z1, h1 / ISLAND.rise)
+
+    push(x0, ISLAND.base, z0, 0)
+    push(x1, h1, z1, h1 / ISLAND.rise)
+    push(x0, h0, z0, h0 / ISLAND.rise)
+  }
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+
+  const mesh = new THREE.Mesh(
+    geo,
+    // Unlit and unfogged like the ranges: its aerial perspective is painted in,
+    // and scene fog at this distance would simply delete it.
+    new THREE.MeshBasicMaterial({ vertexColors: true, fog: false, side: THREE.DoubleSide }),
+  )
+  mesh.frustumCulled = false
+  return mesh
+}
+
 /** One cloud: a clump of squashed blobs, deliberately lumpy. */
 function buildCloud(seed: number, material: THREE.Material): THREE.Group {
   const r = rng(seed)
@@ -217,6 +323,14 @@ export class Skyline {
       const mesh = buildRange(layer, gap)
       this.rangeMaterials.push(mesh.material as THREE.MeshBasicMaterial)
       this.group.add(mesh)
+    }
+
+    // Only where there is a sea to put it in. Tinted with the ranges, so it
+    // tracks the time of day without a second code path.
+    if (gap) {
+      const island = buildDistantIsland(gap)
+      this.rangeMaterials.push(island.material as THREE.MeshBasicMaterial)
+      this.group.add(island)
     }
 
     this.cloudMaterial = new THREE.MeshBasicMaterial({

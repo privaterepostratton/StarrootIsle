@@ -35,6 +35,9 @@ const RT_HEIGHT = 640
  *  invisible in motion and saves a full scene pass per frame. */
 const AUX_INTERVAL = 2
 
+/** Sunlight on water, with the hue taken out. See `update` for why. */
+const GLINT_WARM_WHITE = new THREE.Color(0xfff6e2)
+
 const vertexShader = /* glsl */ `
   attribute float aDepth;
 
@@ -55,11 +58,18 @@ const vertexShader = /* glsl */ `
     // Two crossing swells plus a finer ripple. Amplitude fades out in the
     // shallows so the surface doesn't visibly clip through the shoreline.
     float shore = smoothstep(0.0, 1.2, aDepth);
+    // A long ocean swell under the two crossing wind waves. The first pass had
+    // only the short ones, and a sea with no swell in it is a lake: the horizon
+    // sat dead flat and the whole plane read as a sheet of glass.
+    float swell = sin(pos.x * 0.055 - uTime * 0.52) * 0.13
+                + sin((pos.x * 0.7 + pos.z) * 0.048 + uTime * 0.37) * 0.09;
     float wave =
-        sin(pos.x * 0.20 + uTime * 1.10) * 0.055
-      + cos(pos.z * 0.17 + uTime * 0.85) * 0.055
-      + sin((pos.x + pos.z) * 0.42 + uTime * 1.90) * 0.022;
-    pos.y += wave * shore;
+        sin(pos.x * 0.20 + uTime * 1.10) * 0.065
+      + cos(pos.z * 0.17 + uTime * 0.85) * 0.065
+      + sin((pos.x + pos.z) * 0.42 + uTime * 1.90) * 0.026;
+    // The swell fades out further from shore than the chop does, so it never
+    // pumps the waterline where the surf band is drawn.
+    pos.y += wave * shore + swell * smoothstep(0.6, 3.2, aDepth);
 
     vec4 worldPos = modelMatrix * vec4(pos, 1.0);
     vWorldPos = worldPos.xyz;
@@ -164,7 +174,25 @@ const fragmentShader = /* glsl */ `
      * it inside a couple of units puts that band right where the bed shelves,
      * which is where the eye already expects the change.
      */
-    vec3 waterColor = mix(uShallowColor, uDeepColor, smoothstep(1.0, 2.6, vDepth));
+    /*
+     * ...and a second driver: distance.
+     *
+     * Depth alone put the band wherever the bed happened to shelve, and off
+     * this beach the bed shelves slowly — so from a low camera the entire
+     * visible sea came back as one flat sheet of milky cyan with the azure
+     * nowhere on screen. The spec asks for turquoise across the first stretch
+     * of shallows falling to azure by the middle distance, which is a statement
+     * about the *picture*, not about the bathymetry. Distance from the viewer
+     * delivers that read on any bed, and it doubles as the aerial perspective
+     * an open sea needs to recede at all.
+     */
+    // Gated on depth so it cannot reach the valley's ponds: a shallow pool
+    // stays its own colour however far away it is standing, and only water with
+    // real depth under it takes the distance ramp.
+    float far = smoothstep(20.0, 55.0, length(vWorldPos.xz - uCameraPos.xz))
+              * smoothstep(0.35, 1.7, vDepth);
+    float band = max(smoothstep(0.8, 2.3, vDepth), far);
+    vec3 waterColor = mix(uShallowColor, uDeepColor, band);
 
     /*
      * Translucency — how much of the bed survives.
@@ -219,7 +247,20 @@ const fragmentShader = /* glsl */ `
     // that was eating the turquoise. Narrower and brighter: a hot foam edge
     // right on the waterline, and the colour left alone a pixel behind it.
     float wash = 1.0 - smoothstep(0.0, depthPx * 8.0, vDepth);
-    color = mix(color, uFoamColor, clamp(surf * 0.95 + wash * 0.14, 0.0, 1.0));
+    /*
+     * Break the foam edge up.
+     *
+     * Drawn solid, the surf band comes out as a single unbroken white stroke
+     * ruled along the waterline — the tell of a cartoon water plane, and the
+     * one thing on this beach that looked *drawn on* rather than lit. Real surf
+     * arrives in patches. A high-frequency crossing pattern, thresholded soft
+     * and multiplied into the band, dissolves the stroke into lace and moves it
+     * with the water instead of pinning it to the coastline.
+     */
+    float lace = sin(vWorldPos.x * 7.3 + uTime * 1.6) * sin(vWorldPos.z * 6.1 - uTime * 1.1);
+    float broken = smoothstep(-0.6, 0.4, lace);
+    float surfEdge = clamp(surf * (0.42 + 0.86 * broken), 0.0, 1.0);
+    color = mix(color, uFoamColor, clamp(surfEdge * 0.95 + wash * 0.11, 0.0, 1.0));
 
     /*
      * Painted ripple streaks.
@@ -379,7 +420,23 @@ export class Water {
   ) {
     const u = this.material.uniforms
     u.uTime.value = time
-    u.uSunColor.value.copy(sun.color).multiplyScalar(Math.min(1, sun.intensity * 0.4))
+    /*
+     * The glint takes the sun's *brightness* but not its hue.
+     *
+     * At the opening's pinned dawn the key light is `#FFC48C`, and a specular
+     * highlight in that colour laid a saturated gold hotspot on the water two
+     * beats before the lotto fires. Lotto gold is the one reserved colour in
+     * the game — the first time the player sees it, it has to mean luck — so a
+     * gold sun path on the sea is not a small art note, it is the reserved-
+     * colour rule breaking before the rule is ever established.
+     *
+     * Warm white keeps the highlight reading as sunlight on water and leaves
+     * the 45–55 hue band to the odd tomato.
+     */
+    u.uSunColor.value
+      .copy(sun.color)
+      .lerp(GLINT_WARM_WHITE, 0.78)
+      .multiplyScalar(Math.min(1, sun.intensity * 0.4))
     u.uSunDirection.value.copy(sun.position).sub(sun.target.position).normalize()
     camera.getWorldPosition(u.uCameraPos.value)
 

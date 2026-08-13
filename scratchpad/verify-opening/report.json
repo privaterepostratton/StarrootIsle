@@ -1,13 +1,133 @@
 {
-  "when": "2026-08-11T23:46:13.083Z",
-  "port": "5216",
-  "beat": "5",
+  "when": "2026-08-12T23:37:08.527Z",
+  "port": "5244",
+  "beat": "1-7",
   "shotsOnly": false,
   "results": [
     {
-      "id": "run",
-      "status": "fail",
-      "reason": "Inspected target navigated or closed"
+      "id": "beat-1:naked",
+      "status": "pass",
+      "reason": "hud chrome hidden (10 elements)"
+    },
+    {
+      "id": "gold:beat-1",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-1",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-1:situp",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-2:crate",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-2:satchel",
+      "status": "pass",
+      "reason": "6 .isle-el elements (satchel born)"
+    },
+    {
+      "id": "beat-2:seeds",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "gold:beat-2",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-2",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-3:shovel",
+      "status": "pass",
+      "reason": "held []"
+    },
+    {
+      "id": "gold:beat-3",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-3",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-4:refusal",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "gold:beat-4",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-4",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-5:pocket",
+      "status": "pass",
+      "reason": "cleared via holds; held [\"chaos-morning-glory-2\",\"chaos-stone-3\",\"chaos-frond-5\",\"chaos-stone-6\",\"chaos-vine-7\",\"chaos-driftwood-8\",\"chaos-vine-9\"]"
+    },
+    {
+      "id": "beat-5:voluntary",
+      "status": "pass",
+      "reason": "voluntaryCleared = 4"
+    },
+    {
+      "id": "gold:beat-5",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-5",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-6:plant",
+      "status": "pass",
+      "reason": "bedsDug=6 seedsPlanted=6 via holds+taps"
+    },
+    {
+      "id": "gold:beat-6",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-6",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "beat-7:tideline",
+      "status": "warn",
+      "reason": "tidePicked = 2 after 47 taps"
+    },
+    {
+      "id": "gold:beat-7",
+      "status": "pass",
+      "reason": "canvas 0.000% gold"
+    },
+    {
+      "id": "strings:beat-7",
+      "status": "pass",
+      "reason": ""
     }
   ],
   "pageErrors": []

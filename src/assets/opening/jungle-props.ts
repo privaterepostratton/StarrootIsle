@@ -78,19 +78,59 @@ const CANOPY_RAMP = [
   P.broadleafLit,
 ]
 
+const tmpTone = new THREE.Color()
+const tmpNext = new THREE.Color()
+
 /**
  * Pick a canopy tone for a lobe sitting at height ratio `t` (0 = ground, 1 =
- * crown top), nudged by `jitter` so neighbouring lobes never match exactly.
+ * crown top), knocked up or down by `vary` ∈ [-1, 1] so no two neighbouring
+ * lobes land on exactly the same value.
  *
  * Doing this by height rather than at random is what gives a single crown its
  * own light: the shaded belly reads as depth behind the lit cap, and at wall
  * density those bellies join up into the dark mass the whole design rests on.
+ *
+ * **`vary` used to be a ramp *index* offset, and that is what made the wall
+ * read as "a flat curtain of dark green polygon blobs."** Six discrete stops,
+ * two of them the same green, meant a whole rank of lobes drew from a palette
+ * of four values — so at wall density, adjacent metre-wide facets kept coming
+ * up identical and merged into one continuous slab of colour with polygon
+ * creases across it. The eye had nothing to separate one crown from the next.
+ *
+ * Sampling the ramp *continuously* and then applying a small multiplicative
+ * value nudge fixes it at the root: every lobe on the wall now has its own
+ * value, so a crown reads as a cluster of forms rather than as one shape with
+ * lines on it. The nudge is quantised to a dozen steps only to keep `mat()`'s
+ * material cache from growing a key per lobe.
  */
-function canopyTone(t: number, jitter: number): number {
-  const i = Math.round(
-    Math.min(CANOPY_RAMP.length - 1, Math.max(0, t * (CANOPY_RAMP.length - 1) + jitter)),
-  )
-  return CANOPY_RAMP[i]
+function canopyTone(t: number, vary: number): number {
+  const c = Math.min(1, Math.max(0, t)) * (CANOPY_RAMP.length - 1)
+  const i = Math.min(CANOPY_RAMP.length - 2, Math.floor(c))
+  tmpTone.setHex(CANOPY_RAMP[i])
+  tmpNext.setHex(CANOPY_RAMP[i + 1])
+  tmpTone.lerp(tmpNext, c - i)
+  // Linear-space exposure nudge: three converted on setHex and converts back
+  // on getHex, so this is a value change and not a hue shift.
+  tmpTone.multiplyScalar(1 + Math.round(Math.min(1, Math.max(-1, vary)) * 6) / 26)
+  return tmpTone.getHex()
+}
+
+/**
+ * A foliage lobe: a squashed low-poly sphere, turned to a random attitude.
+ *
+ * The rotation is not decoration. `ball(detail 0)` is an icosahedron, and an
+ * icosahedron placed at the same attitude every time presents the *same* twenty
+ * facets to the camera — so a rank of them shows one repeated polygon pattern
+ * across the whole wall, which is the other half of why the mass read as flat.
+ * Tumbling each one scatters the facet angles, and flat shading then does the
+ * work of breaking the silhouette up for free.
+ */
+function lobe(radius: number, color: number, r: () => number, flatten = 0.52): THREE.Mesh {
+  const m = ball(radius, color, 0)
+  m.scale.set(1.3, flatten, 1.3)
+  m.rotation.set(r() * Math.PI, r() * Math.PI, r() * Math.PI)
+  m.castShadow = false
+  return m
 }
 
 /**
@@ -194,19 +234,27 @@ export function createJungleCanopyA(variant: number): THREE.Group {
    * silhouette is ragged and pointed. So the lobes are squashed to half height
    * and pushed inward to be filler, and the leaves are the asset.
    */
+  /*
+   * Fourteen small lobes rather than nine big ones.
+   *
+   * At emergent scale a 1.6-unit lobe is nearly four metres across on screen,
+   * and four metres of one flat colour is a *slab*, not foliage — which is
+   * literally what the review saw. Halving the radius and raising the count
+   * keeps the same mass while cutting the size of the largest uninterrupted
+   * facet by two thirds, and gives the value jitter above enough separate
+   * pieces to work with.
+   */
   const crownBase = trunkH - 0.9
-  const lobes = 9
+  const lobes = 14
   for (let i = 0; i < lobes; i++) {
     const t = i / (lobes - 1)
-    const y = crownBase + t * 3.4
-    const spread = 1.5 * Math.sin(Math.PI * (0.24 + t * 0.7))
-    const a = i * 2.399 + r() * 0.6
-    const rad = 1.05 + r() * 0.6 - t * 0.2
-    const lobe = ball(rad, canopyTone(0.2 + t * 0.8, r() < 0.4 ? -1 : 0), 0)
-    lobe.scale.set(1.3, 0.52, 1.3)
-    lobe.position.set(Math.cos(a) * spread, y, Math.sin(a) * spread)
-    lobe.castShadow = false
-    g.add(lobe)
+    const y = crownBase + t * 3.6
+    const spread = 1.7 * Math.sin(Math.PI * (0.22 + t * 0.72))
+    const a = i * 2.399 + r() * 0.7
+    const rad = 0.72 + r() * 0.42 - t * 0.14
+    const piece = lobe(rad, canopyTone(0.24 + t * 0.76, r() * 2 - 1), r)
+    piece.position.set(Math.cos(a) * spread, y, Math.sin(a) * spread)
+    g.add(piece)
   }
 
   // The outline: leaves fanning out of the crown, drooping harder the further
@@ -216,26 +264,27 @@ export function createJungleCanopyA(variant: number): THREE.Group {
   // shard of coloured glass the moment it turns face-on to the camera, and a
   // wall of them looks shattered; long and slim reads as a leaf from any angle
   // and edge-on simply disappears into the mass, which is what it should do.
-  for (let i = 0; i < 20; i++) {
+  //
+  // Count raised with the lobe count: the leaves are the *ragged* part of the
+  // silhouette, and a crown of small bumps with a thin fringe still reads as
+  // broccoli. This is the rank the skyline is made of, so it earns the verts.
+  for (let i = 0; i < 30; i++) {
     const t = r()
     const a = i * 2.399 + r() * 0.5
-    const y = crownBase + 0.3 + t * 3.3
-    const tone = t > 0.8 ? P.broadleafLit : canopyTone(0.3 + t * 0.65, 0)
-    const leaf = leafMesh(1.5 + r() * 1.0, 0.48 + r() * 0.26, 0.62 + r() * 0.45, tone, 4)
+    const y = crownBase + 0.2 + t * 3.6
+    const tone = t > 0.78 ? P.broadleafLit : canopyTone(0.3 + t * 0.68, r() - 0.5)
+    const leaf = leafMesh(1.6 + r() * 1.3, 0.4 + r() * 0.24, 0.62 + r() * 0.5, tone, 4)
     leaf.castShadow = false
-    sprig(g, leaf, a, -0.05 - r() * 0.55 + t * 0.35, y, 0.5 + r() * 0.65)
+    sprig(g, leaf, a, -0.05 - r() * 0.6 + t * 0.4, y, 0.55 + r() * 0.8)
   }
 
   // Understory: the daylight-killer. Nothing gets between these and the ground.
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     const a = i * 1.9 + r()
     const y = 0.7 + r() * 2.3
-    const rad = 0.8 + r() * 0.6
-    const lobe = ball(rad, canopyTone(0.05 + r() * 0.25, 0), 0)
-    lobe.scale.set(1.35, 0.6, 1.35)
-    lobe.position.set(Math.cos(a) * (0.7 + r() * 1.1), y, Math.sin(a) * (0.7 + r() * 1.1))
-    lobe.castShadow = false
-    g.add(lobe)
+    const piece = lobe(0.62 + r() * 0.46, canopyTone(0.04 + r() * 0.26, r() * 2 - 1), r, 0.6)
+    piece.position.set(Math.cos(a) * (0.7 + r() * 1.2), y, Math.sin(a) * (0.7 + r() * 1.2))
+    g.add(piece)
   }
   for (let i = 0; i < 9; i++) {
     const a = i * 2.399 + r() * 0.6
@@ -282,14 +331,11 @@ export function createJungleCanopyB(variant: number): THREE.Group {
     const cz = Math.sin(a) * (0.22 + Math.sin(tilt) * h)
     const crownY = h * 0.86
 
-    for (let i = 0; i < 4; i++) {
-      const t = i / 3
-      const rad = 0.9 + r() * 0.5
-      const lobe = ball(rad, canopyTone(0.25 + t * 0.7, r() < 0.35 ? -1 : 0), 0)
-      lobe.scale.set(1.25, 0.55, 1.25)
-      lobe.position.set(cx + (r() - 0.5) * 1.3, crownY + t * 1.5, cz + (r() - 0.5) * 1.3)
-      lobe.castShadow = false
-      g.add(lobe)
+    for (let i = 0; i < 6; i++) {
+      const t = i / 5
+      const piece = lobe(0.62 + r() * 0.38, canopyTone(0.25 + t * 0.72, r() * 2 - 1), r, 0.55)
+      piece.position.set(cx + (r() - 0.5) * 1.5, crownY + t * 1.6, cz + (r() - 0.5) * 1.5)
+      g.add(piece)
     }
 
     // Each stem tops out in a fan — the palm/traveller's-tree read, which is
@@ -315,14 +361,11 @@ export function createJungleCanopyB(variant: number): THREE.Group {
   }
 
   // Skirt: the clump's own understory, same job as module A's.
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 9; i++) {
     const a = i * 1.7 + r()
-    const rad = 0.75 + r() * 0.5
-    const lobe = ball(rad, canopyTone(r() * 0.28, 0), 0)
-    lobe.scale.set(1.35, 0.58, 1.35)
-    lobe.position.set(Math.cos(a) * (0.9 + r() * 1.2), 0.6 + r() * 1.7, Math.sin(a) * (0.9 + r() * 1.2))
-    lobe.castShadow = false
-    g.add(lobe)
+    const piece = lobe(0.58 + r() * 0.4, canopyTone(r() * 0.3, r() * 2 - 1), r, 0.58)
+    piece.position.set(Math.cos(a) * (0.9 + r() * 1.3), 0.6 + r() * 1.7, Math.sin(a) * (0.9 + r() * 1.3))
+    g.add(piece)
   }
 
   for (let i = 0; i < 12; i++) {
@@ -370,18 +413,15 @@ export function createCanopyOverhang(variant: number): THREE.Group {
 
   // Crown carried out along the lean — flatter and wider than a standing
   // crown, because what it has to do is roof a piece of sky.
-  for (let i = 0; i < 9; i++) {
-    const t = i / 8
-    const rad = 1.0 + r() * 0.55
-    const lobe = ball(rad, canopyTone(0.4 + t * 0.6, r() < 0.4 ? -1 : 0), 0)
-    lobe.scale.set(1.3, 0.5, 1.3)
-    lobe.position.set(
-      tipX * (0.55 + t * 0.55) + (r() - 0.5) * 0.9,
-      tipY + 0.3 + (r() - 0.5) * 0.8,
-      (r() - 0.5) * 2.6,
+  for (let i = 0; i < 13; i++) {
+    const t = i / 12
+    const piece = lobe(0.68 + r() * 0.4, canopyTone(0.4 + t * 0.6, r() * 2 - 1), r, 0.5)
+    piece.position.set(
+      tipX * (0.5 + t * 0.6) + (r() - 0.5) * 1.1,
+      tipY + 0.3 + (r() - 0.5) * 0.9,
+      (r() - 0.5) * 2.8,
     )
-    lobe.castShadow = false
-    g.add(lobe)
+    g.add(piece)
   }
 
   // Big leaves hanging off the underside — the part actually seen from below,
@@ -429,6 +469,189 @@ export function createCanopyOverhang(variant: number): THREE.Group {
   return g
 }
 
+// --- the verticals ------------------------------------------------------------
+
+/**
+ * A bare jungle trunk, ~8.5 units — the wall's punctuation.
+ *
+ * The review of the last pass called the wall "a flat curtain of dark green
+ * polygon blobs", and the diagnosis is in the noun: *blobs*. Every module in
+ * this file is a rounded mass, so at wall density the whole thing is one field
+ * of overlapping lumps with nothing in it for the eye to measure. Real jungle
+ * reads deep because it is full of hard verticals — columns of dark, sharply
+ * lit down one side, standing in front of the mush and cutting it into panels.
+ *
+ * So this is a trunk and almost nothing else: no crown to speak of, buttress
+ * roots, two dead stubs, and a liana wrapped up it. It is placed *in front of*
+ * the standing ranks rather than among them, because a trunk with foliage
+ * between it and the camera is not punctuation, it is more mush.
+ *
+ * Deliberately the darkest wood in the file — a backlit trunk at dawn is a
+ * silhouette, and silhouettes are what give a mass its depth.
+ */
+export function createJungleTrunk(variant: number): THREE.Group {
+  const r = rng(11300 + variant * 233)
+  const g = new THREE.Group()
+
+  const h = 7.6 + r() * 2.2
+  const lean = (r() - 0.5) * 0.13
+  // Two stacked sections with a step in radius, so the trunk tapers visibly
+  // instead of reading as a lamp post.
+  const lower = cyl(0.3, 0.46, h * 0.55, P.trunkDark, 7)
+  lower.position.set(0, h * 0.275, 0)
+  lower.rotation.z = lean
+  g.add(lower)
+  const upper = cyl(0.19, 0.3, h * 0.5, P.trunkDark, 6)
+  upper.position.set(Math.sin(lean) * h * 0.5, h * 0.55 + h * 0.25, 0)
+  upper.rotation.z = lean * 1.5
+  g.add(upper)
+
+  // Buttress roots: the Maui banyan tell, and the reason the trunk meets the
+  // ground in a flare rather than in a seam.
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + r() * 0.7
+    const root = cyl(0.07, 0.34, 1.5 + r() * 0.6, P.trunkDark, 5)
+    root.position.set(Math.cos(a) * 0.42, 0.66, Math.sin(a) * 0.42)
+    root.rotation.set(Math.sin(a) * 0.42, 0, -Math.cos(a) * 0.42)
+    g.add(root)
+  }
+
+  // Dead stubs. Two of them, high, short — the thing that says "this trunk had
+  // branches once" without adding a second silhouette to argue with.
+  for (let i = 0; i < 2; i++) {
+    const a = r() * Math.PI * 2
+    const stub = cyl(0.05, 0.12, 0.7 + r() * 0.6, P.trunk, 5)
+    stub.position.set(Math.cos(a) * 0.35, h * (0.58 + i * 0.16), Math.sin(a) * 0.35)
+    stub.rotation.set(Math.sin(a) * 1.1, 0, -Math.cos(a) * 1.1)
+    g.add(stub)
+  }
+
+  // A liana up the shaft, with a few leaves on it. One diagonal across a
+  // vertical is all it takes to stop the column reading as a pipe.
+  const wrapA = r() * Math.PI * 2
+  for (let i = 0; i < 7; i++) {
+    const t = i / 7
+    const a = wrapA + t * 4.2
+    const seg = cyl(0.035, 0.05, h * 0.13, P.vineLeaf, 4)
+    seg.position.set(Math.cos(a) * 0.34, 0.5 + t * h * 0.75, Math.sin(a) * 0.34)
+    seg.rotation.set(0.3, -a, 0.5)
+    seg.castShadow = false
+    g.add(seg)
+    if (i % 2 === 0) {
+      const leaf = leafMesh(0.42 + r() * 0.3, 0.2 + r() * 0.1, 0.12, P.vineLeaf, 3)
+      leaf.castShadow = false
+      sprig(g, leaf, a, -0.9 - r() * 0.4, 0.5 + t * h * 0.75, 0.4)
+    }
+  }
+
+  // A thin crown, high and small: enough that the trunk is not sawn off at the
+  // top, not enough to add another lump to the canopy it stands in front of.
+  for (let i = 0; i < 3; i++) {
+    const a = i * 2.399 + r()
+    const piece = lobe(0.55 + r() * 0.35, canopyTone(0.75 + r() * 0.25, r() * 2 - 1), r, 0.45)
+    piece.position.set(
+      Math.sin(lean) * h + Math.cos(a) * (0.5 + r() * 0.7),
+      h - 0.2 + r() * 0.7,
+      Math.sin(a) * (0.5 + r() * 0.7),
+    )
+    g.add(piece)
+  }
+  for (let i = 0; i < 6; i++) {
+    const a = i * 2.399 + r() * 0.6
+    const leaf = leafMesh(1.5 + r() * 0.8, 0.44 + r() * 0.2, 0.7, P.broadleafLit, 4)
+    leaf.castShadow = false
+    sprig(g, leaf, a, -0.1 - r() * 0.4, h - 0.1 + r() * 0.8, Math.sin(lean) * h + 0.5)
+  }
+
+  return g
+}
+
+// --- the front edge -----------------------------------------------------------
+
+/**
+ * A lobed monstera/banana leaf, built as three blades off one stem.
+ *
+ * `leafMesh` makes a single tapered blade, which is a *frond*. What the front
+ * of a jungle wall needs is the other thing — a leaf the size of a person, with
+ * the split, lobed outline that reads as "tropical" from across the beach. Cut
+ * the blade into three and fan them a few degrees apart and the silhouette gets
+ * its notches for free, at three triangles' cost.
+ */
+function lobedLeaf(len: number, wid: number, droop: number, color: number): THREE.Group {
+  const g = new THREE.Group()
+  for (let i = 0; i < 3; i++) {
+    const spread = (i - 1) * 0.26
+    const blade = leafMesh(len * (i === 1 ? 1 : 0.86), wid * 0.46, droop, color, 4)
+    blade.rotation.order = 'YXZ'
+    blade.rotation.y = spread
+    blade.rotation.z = -Math.abs(spread) * 0.5
+    blade.castShadow = false
+    g.add(blade)
+  }
+  return g
+}
+
+/**
+ * Monstera stand, ~2.9 units and nearly as wide — the front edge's scale rule.
+ *
+ * The wall has no object in it whose size a player can guess at: lobes and
+ * fronds are abstractions and could be any size, so the whole treeline floats
+ * free of the beach it stands on. A person-sized leaf fixes that in one prop.
+ * These sit at the very front, spilling into the clearing, and they are
+ * authored *dark* — they are read as shapes against the lit wall behind them,
+ * not as another lit surface.
+ *
+ * Sparse by design. Two per bend, not a hedge of them: the moment they repeat,
+ * they stop being scale and start being wallpaper.
+ */
+export function createMonsteraStand(variant: number): THREE.Group {
+  const r = rng(12700 + variant * 251)
+  const g = new THREE.Group()
+
+  const n = 4 + Math.floor(r() * 3)
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + r() * 0.8
+    // Long petioles arching out of one crown — the plant's whole gesture.
+    const rise = 1.1 + r() * 1.0
+    const out = 0.35 + r() * 0.4
+    const stem = cyl(0.045, 0.075, rise * 1.25, P.vineLeaf, 5)
+    stem.position.set((Math.cos(a) * out) / 2, rise * 0.6, (Math.sin(a) * out) / 2)
+    stem.rotation.set(Math.sin(a) * 0.34, 0, -Math.cos(a) * 0.34)
+    stem.castShadow = false
+    g.add(stem)
+
+    const len = 1.5 + r() * 0.95
+    const leaf = lobedLeaf(
+      len,
+      len * (0.72 + r() * 0.2),
+      len * 0.42,
+      r() < 0.3 ? P.broadleaf : r() < 0.7 ? P.canopyMid : P.canopyDeep,
+    )
+    leaf.position.set(Math.cos(a) * out, rise, Math.sin(a) * out)
+    leaf.rotation.order = 'YXZ'
+    leaf.rotation.y = -a
+    leaf.rotation.x = -0.18 - r() * 0.4
+    g.add(leaf)
+  }
+
+  // Two half-unfurled spears, straight up — the vertical accent that stops the
+  // stand reading as a splat of leaves on the ground.
+  for (let i = 0; i < 2; i++) {
+    const spear = cyl(0.05, 0.1, 1.5 + r() * 0.9, P.broadleaf, 5)
+    spear.position.set((r() - 0.5) * 0.4, 0.85 + r() * 0.4, (r() - 0.5) * 0.4)
+    spear.rotation.z = (r() - 0.5) * 0.3
+    spear.castShadow = false
+    g.add(spear)
+  }
+
+  const core = ball(0.36, P.canopyShade, 0)
+  core.scale.set(1.3, 0.7, 1.3)
+  core.position.y = 0.22
+  core.castShadow = false
+  g.add(core)
+  return g
+}
+
 // --- the plug -----------------------------------------------------------------
 
 /**
@@ -449,18 +672,15 @@ export function createUnderThicket(variant: number): THREE.Group {
   const r = rng(9100 + variant * 211)
   const g = new THREE.Group()
 
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 10; i++) {
     const a = i * 2.399 + r() * 0.8
-    const rad = 0.75 + r() * 0.6
-    const lobe = ball(rad, r() < 0.65 ? P.canopyShade : P.canopyDeep, 0)
-    lobe.scale.set(1.45, 0.62, 1.45)
-    lobe.position.set(
-      Math.cos(a) * (0.35 + r() * 1.15),
+    const piece = lobe(0.6 + r() * 0.5, canopyTone(r() * 0.2, r() * 1.4 - 0.9), r, 0.62)
+    piece.position.set(
+      Math.cos(a) * (0.35 + r() * 1.2),
       0.42 + r() * 1.5,
-      Math.sin(a) * (0.35 + r() * 1.15),
+      Math.sin(a) * (0.35 + r() * 1.2),
     )
-    lobe.castShadow = false
-    g.add(lobe)
+    g.add(piece)
   }
   // A scatter of leaves so the plug is not a pile of bricks where it does
   // happen to be seen.
@@ -697,40 +917,113 @@ export function createBasaltOutcrop(variant: number): THREE.Group {
 // --- canopy light shafts ------------------------------------------------------
 
 /**
- * One shaft of dawn light coming through the canopy — an open cone, additive,
- * fog off, and deliberately almost invisible.
+ * One shaft of dawn light coming through the canopy — three crossed cards with
+ * the beam painted into their vertex colours, additive, fog off, and with no
+ * silhouette of its own.
  *
- * Shafts are the single easiest effect to overdo. What sells them is that the
- * player never quite catches them being there: they belong to the gap, they
- * tell you the wall has a roof and a hole in it, and the moment they read as
- * "a cone mesh" the whole wall reads as geometry. Hence opacity in the
- * hundredths, no depth write, and warm ivory rather than anything approaching
- * lotto gold.
+ * **This module has failed twice, both times the same way**, and the reason is
+ * worth writing down because the obvious construction is the wrong one.
  *
- * The first pass ran at 0.10 over metre-and-a-half beams and produced exactly
- * that failure — three white wedges standing in the doorway with visible
- * straight edges, brighter than anything else in the frame. Additive blending
- * also *stacks*, so overlapping beams compound: the safe number is far lower
- * than it looks like it should be, and the beams have to be slim enough that
- * two rarely cross.
+ * A shaft built as an open cone or cylinder — however low its opacity — is a
+ * *solid* with a hard rim. Every pixel inside the rim gets the same additive
+ * lift and every pixel outside it gets none, so the mesh announces its own
+ * edges: three grey plastic tubes standing in the doorway. Worse, the lift is
+ * constant along its whole length, so the beam ends in a straight line across
+ * the ground. And worst of all, a solid has an inside: fly the camera into one
+ * and its far wall becomes a full-screen veil, which is exactly the enormous
+ * translucent wedge that ruined beats 6 and 8. Lowering the opacity does not
+ * fix any of those three things — it only makes a badly-shaped effect fainter.
+ *
+ * What a shaft actually is, is a *gradient*: brightest at the hole it comes
+ * through, dying out as it falls and as it spreads, with no edge anywhere. So:
+ *
+ *  - **Cards, not a solid.** Three quads crossed about the beam axis. A card
+ *    has no interior, so there is no camera position that fills the screen —
+ *    a camera passing through one crosses a plane whose alpha there is already
+ *    near zero.
+ *  - **The falloff is in the vertex colours.** Additive blending multiplies by
+ *    the vertex colour, and additive black is a no-op, so a colour ramp *is* an
+ *    alpha ramp with no extra state: full at the canopy mouth, zero at the two
+ *    long edges, zero at the bottom. Nothing on this mesh has a visible border.
+ *  - **The visible beam is only its top half.** The vertical falloff is a
+ *    cubic, so the lower part of the card carries almost nothing. The beam
+ *    hangs in the canopy and dissolves before it reaches head height — which is
+ *    both what dawn light through leaves looks like and what keeps the effect
+ *    out of the gameplay camera's way.
+ *
+ * `topRadius`/`botRadius` are half-widths in world units: this thing should be
+ * a hand's width at the top and under a metre at the bottom, never "a few
+ * units". Warm ivory only — nothing here goes near lotto gold.
  *
  * Returns the mesh with `material` left transparent-additive; the caller owns
  * the tilt, the placement and the breathing.
  */
 export function createLightShaft(topRadius: number, botRadius: number, height: number): THREE.Mesh {
-  // Open-ended cylinder rather than a cone: a beam that widens as it falls has
-  // a narrow mouth up at the canopy hole, not a point, and the caps would show
-  // as two bright discs the moment the camera got under one.
-  const geo = new THREE.CylinderGeometry(topRadius, botRadius, height, 7, 1, true)
-  // Origin at the canopy end, so the caller hangs it from the hole it comes
-  // through and lets it fall to the ground on its own length.
-  geo.translate(0, -height / 2, 0)
+  /** Crossed cards. Three is enough that one is always near-facing. */
+  const PLANES = 3
+  /** Columns of vertices across a card: the outer two carry zero brightness. */
+  const COLS = 6
+  /** Rows down a card, enough to resolve the falloff without banding. */
+  const ROWS = 8
+
+  const base = new THREE.Color(0xf3ead2)
+  const pos: number[] = []
+  const col: number[] = []
+  const idx: number[] = []
+
+  for (let p = 0; p < PLANES; p++) {
+    // Planes, not half-planes — a card already spans both sides of the axis, so
+    // the set only has to sweep 180°.
+    const a = (p / PLANES) * Math.PI
+    const ca = Math.cos(a)
+    const sa = Math.sin(a)
+    const first = pos.length / 3
+
+    for (let j = 0; j <= ROWS; j++) {
+      const t = j / ROWS
+      // Cubic decay down the beam, with the mouth itself pulled back a little
+      // so the very top edge is not a bright line where the card is cut off.
+      const fall = (1 - t) * (1 - t) * (1 - t)
+      const mouth = Math.min(1, t / 0.09)
+      const vFade = fall * mouth
+      const half = topRadius + (botRadius - topRadius) * t
+      const y = -t * height
+      for (let i = 0; i <= COLS; i++) {
+        const u = (i / COLS) * 2 - 1
+        // Smooth across the width, zero at both long edges: the card has no
+        // side you can see, only a core that gets brighter toward the middle.
+        const hFade = Math.cos((u * Math.PI) / 2) ** 1.5
+        const k = vFade * hFade
+        pos.push(ca * u * half, y, sa * u * half)
+        col.push(base.r * k, base.g * k, base.b * k)
+      }
+    }
+
+    const stride = COLS + 1
+    for (let j = 0; j < ROWS; j++) {
+      for (let i = 0; i < COLS; i++) {
+        const v0 = first + j * stride + i
+        idx.push(v0, v0 + stride, v0 + 1, v0 + 1, v0 + stride, v0 + stride + 1)
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
+  geo.setIndex(idx)
+
   const material = new THREE.MeshBasicMaterial({
-    color: 0xf0e6cd,
+    vertexColors: true,
     transparent: true,
-    opacity: 0.035,
+    // The gradient carries the shape; this is only the master dimmer, and the
+    // three cards cross, so the core sees roughly three times this number.
+    opacity: 0.055,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
+    // A card is one triangle thick, so a pixel is covered once whichever face
+    // wins — double-siding costs nothing and stops the beam popping out of
+    // existence as the camera swings past its plane.
     side: THREE.DoubleSide,
     fog: false,
   })

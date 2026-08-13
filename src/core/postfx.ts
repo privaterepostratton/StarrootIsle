@@ -240,13 +240,51 @@ export class PostFX {
     this.resize()
   }
 
+  /**
+   * The isle opening's dawn grade.
+   *
+   * The opening is played almost entirely inside a jungle wall, at an hour when
+   * the key light is grazing — which is the one situation the ordinary grade is
+   * worst at. Its S-curve is steep (1.28) and its shadow lift is nearly black,
+   * a pairing tuned for a bright open valley at midday; point it at foliage
+   * shade and everything below mid-grey collapses into the same murky green,
+   * which is precisely how the clearing frames came back. Dawn softens the
+   * curve, warms and strengthens the lift so shade lands *above* the crush
+   * point, and opens the vignette that was closing the corners of an already
+   * dark frame.
+   *
+   * **Saturation is a reserved-colour constraint, not a taste call.** The scene
+   * it grades is lit entirely by warm sources, so the sand — an ivory whose
+   * blue channel is already the first thing that low sun takes away — drifts
+   * toward orange, and 1.2 on top of that walks it straight into `#F2C14E`.
+   * Gold means luck and nothing else in this game, and the verifier scans every
+   * pre-lotto beat for it: at 1.17 the tide-line beat came back eleven percent
+   * gold. 1.09 keeps the beach ivory with room to spare.
+   *
+   * Set by the integrator for the length of the opening, cleared at handover;
+   * `setNightAmount` reads it so the per-frame night call cannot stamp over it.
+   */
+  openingDawn = false
+
   /** Night grading: cooler, more contrast, heavier vignette. */
   setNightAmount(t: number) {
     const u = this.grade.uniforms
-    u.uVignette.value = 0.16 + t * 0.4
-    u.uSaturation.value = 1.2 - t * 0.32
-    u.uContrast.value = 1.28 + t * 0.22
-    u.uGain.value.setRGB(1 - t * 0.12, 1 - t * 0.06, 1 + t * 0.06).multiplyScalar(1)
+    const dawn = this.openingDawn
+    u.uVignette.value = (dawn ? 0.09 : 0.16) + t * 0.4
+    u.uSaturation.value = (dawn ? 1.09 : 1.2) - t * 0.32
+    u.uContrast.value = (dawn ? 1.1 : 1.28) + t * 0.22
+    u.uLift.value.setHex(dawn ? 0x2b2115 : 0x1d160e)
+    // Exposure. The opening plays under a canopy at an hour when the key is
+    // grazing, so the *scene* is legitimately dark and the grade has to open up
+    // for it — at 1.04 the clearing frames came back with the player, the beds
+    // and the props all sitting in the bottom third of the range, which is the
+    // difference between "dawn" and "gloomy". Neutral rather than warm-weighted
+    // on purpose: every light in the dawn rig is already warm, so a warm gain
+    // on top of them is what pushed the sand into reserved gold. The warmth in
+    // the picture is supposed to come from the *direction* of the key, not from
+    // a filter over the whole frame.
+    if (dawn) u.uGain.value.setRGB(1.12, 1.13, 1.13)
+    else u.uGain.value.setRGB(1 - t * 0.12, 1 - t * 0.06, 1 + t * 0.06)
   }
 
   /**

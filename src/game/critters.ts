@@ -18,8 +18,29 @@ import { groundHeight, isSand, isWalkable, WALK_LIMIT } from './terrain'
  * less thing that can be restored into a spot the coast no longer has.
  */
 
-/** How many crabs the beach carries at once. */
-const POPULATION = 16
+/**
+ * How many crabs the beach carries at once.
+ *
+ * Down from sixteen. Sixteen is the right number for "the beach is inhabited"
+ * seen from the valley; it is the wrong number for the opening, which spends
+ * its first four beats with the camera *on* the sand, and where the review read
+ * them as strewn everywhere — small black blobs punched into the ivory at
+ * random, competing with the crate and the shovel for the only two props the
+ * player is supposed to find. The spec asks for two ambient crabs in shot. Nine
+ * scattered over the whole coast is roughly that, and the beach is no less
+ * alive for it: what sells a crab is that it *moves when you get near*, not
+ * that there is another one behind it.
+ */
+const POPULATION = 9
+
+/**
+ * Crabs never spawn this close to another one.
+ *
+ * Independent samples clump — that is what independent samples do — and three
+ * crabs in a huddle is the one arrangement that reads as a spawn table rather
+ * than as animals.
+ */
+const MIN_SEPARATION = 9
 
 /** Inside this range of the player a crab breaks off and runs. */
 const FLEE_RANGE = 4.2
@@ -65,7 +86,9 @@ export class Critters {
       // one with sixteen.
       if (!spot) continue
 
-      const scale = 0.75 + this.rng() * 0.5
+      // Smaller, too: at the old scale a crab seen from a low beach camera was
+      // a hand-sized black shape and read as a prop, not as scenery with legs.
+      const scale = 0.6 + this.rng() * 0.32
       const object = modelGroup(getModels().crab, PROP_HEIGHT.crab * scale)
       object.position.set(spot.x, groundHeight(spot.x, spot.z), spot.z)
       // Crabs are small and there are a lot of them: they belong on the layer
@@ -96,6 +119,18 @@ export class Critters {
       const x = Math.cos(angle) * reach
       const z = Math.sin(angle) * reach
       if (!isSand(x, z) || !isWalkable(x, z)) continue
+      // Keep them apart — see MIN_SEPARATION. Late in the loop the constraint
+      // is relaxed rather than dropping the crab: a beach short two crabs is
+      // fine, but so is one crab standing a little nearer than the ideal.
+      const need = i < 60 ? MIN_SEPARATION : MIN_SEPARATION * 0.5
+      let tooClose = false
+      for (const other of this.crabs) {
+        if (Math.hypot(other.pos.x - x, other.pos.y - z) < need) {
+          tooClose = true
+          break
+        }
+      }
+      if (tooClose) continue
       return { x, z }
     }
     return null

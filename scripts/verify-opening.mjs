@@ -723,18 +723,38 @@ async function beat8(s) {
 }
 
 async function beat9(s) {
-  // Arrival is scripted once the beat stages; give it time, then force. The
-  // goat's script is ~12 s of *game* time — minutes of real time headless —
-  // so these polls are the longest in the run.
-  let r = await pollStats(s, (st) => st.goatDone, 180000, 600)
-  if (!r.ok) {
+  /*
+   * Arrival is scripted once the beat stages; force it only if it never started.
+   *
+   * This leg used to poll 180 s, fire `__isle.goat()` "to force it", then poll
+   * 480 s — and it failed two runs out of three for a reason that had nothing
+   * to do with the goat. Its phase machine is driven by `dt`, and the engine
+   * clamps `dt` per frame; under SwiftShader at roughly a frame a second that
+   * makes game time run about thirty times slower than the wall clock. A
+   * `probe-goat` sample measured the 2.0 s rustle taking 65 real seconds, which
+   * puts the whole ~18 s script near ten real minutes. The old first poll
+   * therefore expired mid-walk *every* time, and the "force" restarted the
+   * script from rustle with less budget left than it had just failed with —
+   * the retry could not succeed by construction.
+   *
+   * So: one long budget, and the nudge only when the goat is genuinely idle.
+   */
+  const idle = async () => {
+    try {
+      return await s.eval("(() => { const g = window.game && window.game.goatArrival; return !g || g.phase === 'idle' })()")
+    } catch {
+      return false
+    }
+  }
+  let r = await pollStats(s, (st) => st.goatDone, 45000, 600)
+  if (!r.ok && (await idle())) {
     try {
       await s.eval('window.__isle.goat()')
     } catch {
       // goat() may refuse mid-script; the poll below decides.
     }
-    r = await pollStats(s, (st) => st.goatDone, 480000, 600)
   }
+  if (!r.ok) r = await pollStats(s, (st) => st.goatDone, 900000, 800)
   record('beat-9:goat', r.ok ? 'pass' : 'fail', r.ok ? '' : 'goatDone never became true')
 
   // Journal page: wait for string #7 to render, screenshot it, then tap to
@@ -880,11 +900,25 @@ async function main() {
   mkdirSync(outDir, { recursive: true })
 
   // Preflight: a dead dev server should be one readable line, not a timeout.
-  try {
-    await fetch(BASE, { signal: AbortSignal.timeout(4000) })
-  } catch {
-    console.error(`Dev server not reachable at ${BASE} — start it first (npx vite --port ${port}).`)
-    process.exit(2)
+  // Retried with a generous window because a *cold* vite dev server answers
+  // its first request only after the initial transform pass (seconds), and on
+  // an IPv6-only bind the happy-eyeballs fallback adds more still — a single
+  // short probe reports a perfectly healthy server as dead.
+  {
+    let reachable = false
+    const t0 = Date.now()
+    while (!reachable && Date.now() - t0 < 45000) {
+      try {
+        await fetch(BASE, { signal: AbortSignal.timeout(15000) })
+        reachable = true
+      } catch {
+        await sleep(500)
+      }
+    }
+    if (!reachable) {
+      console.error(`Dev server not reachable at ${BASE} — start it first (npx vite --port ${port}).`)
+      process.exit(2)
+    }
   }
 
   const s = await launchChrome({ width: VIEW_W, height: VIEW_H })
@@ -915,6 +949,25 @@ async function main() {
       await s.eval("window.__isle.goto('done')")
       await sleep(2000)
       await returnTest(s)
+    } else if (/^\d+-\d+$/.test(beatArg)) {
+      // Range mode (harness-only convenience, not in the CLI doc comment):
+      // drive several beats back-to-back in ONE session so later beats in
+      // the range inherit real progress (bedsDug/seedsPlanted/etc) from
+      // earlier ones, instead of the single-beat mode's goto()-only staging
+      // which does not backfill per-beat stat progress for beats that build
+      // on prior beats (e.g. beat 8's ripening needs beat 6's planted beds).
+      const [lo, hi] = beatArg.split('-').map(Number)
+      await s.navigate(BASE + '?new')
+      await waitReady(s)
+      const stage = STAGE_FOR_BEAT[lo]
+      if (stage) {
+        await s.eval(`window.__isle.goto(${JSON.stringify(stage)})`)
+        await sleep(2500)
+      }
+      for (let n = lo; n <= hi; n++) {
+        console.log(`— beat ${n} —`)
+        await BEAT_FNS[n](s)
+      }
     } else if (beatArg !== 'all') {
       const n = Number(beatArg)
       if (!BEAT_FNS[n]) {

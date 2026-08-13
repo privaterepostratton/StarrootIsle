@@ -20,11 +20,25 @@ import { MINOR_LAYER } from '../style'
  *                    every roll, forever: odd crops, hatching eggs, tide
  *                    rarities. No text ever explains it; the grammar carries it.
  *
+ * `playLeafBurst` (spec VFX #2) rides along because it shares the file's one
+ * real discipline — scale and colour authored against the grade — and because
+ * the clearing beat fires it more often than anything else on screen.
+ *
  * Colour discipline: LOTTO_GOLD (0xf2c14e) appears in `playLottoTell` and
- * `createOddShimmer` and NOWHERE else in this file. The breath motes sit in
- * the green-ivory band specifically so the two tells can never be confused,
- * even after the postfx grade pushes saturation by 1.2 (which is also why the
- * breath colours below are authored slightly desaturated).
+ * `createOddShimmer` and NOWHERE else in this file. Every other colour here is
+ * held clear of the 45–55° hue band that gold owns — the breath's pale end was
+ * measured back onto the green side for exactly that reason — so the two tells
+ * can never be confused, even after the postfx grade pushes saturation by 1.2
+ * (which is also why every colour below is authored slightly desaturated).
+ *
+ * A note on *scale*, because it is what broke the second pass. The opening's
+ * camera came in from 8 units to 4.8, and everything here is either a point
+ * sprite or a world-space quad — both scale as 1/distance, so a field tuned at
+ * the farming boom doubled on screen without a line changing. The sizes below
+ * are measured against the thing the effect is *about* (a mote against the
+ * pocket, a shimmer against one fruit, a leaf against a torn frond), and the
+ * two point fields additionally carry a hard pixel ceiling so no future camera
+ * move can turn them back into bokeh.
  *
  * A note on *apparent* size, because it is what made the first pass invisible.
  * three sizes a point sprite as `size * (height/2) / dist`, with no term for
@@ -153,21 +167,45 @@ function unitQuad(): THREE.PlaneGeometry {
 }
 
 /**
- * Per-point size, which `PointsMaterial` does not offer.
+ * Per-point size, which `PointsMaterial` does not offer, plus a hard ceiling
+ * on how much of the screen one mote may own.
  *
  * A field of identically sized motes reads as a grid of dots however random
  * their positions are — the size spread is most of what makes it read as
  * *pollen*. One attribute and one shader-chunk replacement buys that for the
  * whole cloud; if the chunk ever moves, the field simply falls back to the
  * uniform size rather than breaking.
+ *
+ * The ceiling is the lesson of the first camera pass. Point sprites scale as
+ * `1/distance`, and the opening's camera came *in* — from the farming boom at
+ * 8 units to 4.8, and closer still on the goat. Every mote in these fields
+ * doubled on screen overnight and the island's breath stopped reading as
+ * breath: it became half a dozen soft white discs the size of a fist, which
+ * the eye files as dirt on the lens, not as something the ground gave up.
+ * A per-material pixel clamp makes the effect distance-proof — motes shrink
+ * with depth as they should and simply refuse to grow past legibility as the
+ * camera closes. It is applied after three's own size attenuation, which is
+ * why the splice lands on `clipping_planes_vertex` rather than on the
+ * `gl_PointSize = size` line (that value has not been attenuated yet).
  */
-function patchPointSize(material: THREE.PointsMaterial) {
+function patchPointSize(material: THREE.PointsMaterial, maxPx: number) {
+  // gl_PointSize is framebuffer pixels, so the CSS-pixel budget has to be
+  // taken up to device pixels (capped where the renderer caps its own DPR).
+  const dpr = Math.min(typeof devicePixelRatio === 'number' ? devicePixelRatio : 1, 2)
   material.onBeforeCompile = (shader) => {
+    shader.uniforms.uMaxPointPx = { value: maxPx * dpr }
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aSize;')
+      .replace(
+        '#include <common>',
+        '#include <common>\nattribute float aSize;\nuniform float uMaxPointPx;',
+      )
       .replace('gl_PointSize = size;', 'gl_PointSize = size * aSize;')
+      .replace(
+        '#include <clipping_planes_vertex>',
+        'gl_PointSize = min( gl_PointSize, uMaxPointPx );\n\t#include <clipping_planes_vertex>',
+      )
   }
-  material.customProgramCacheKey = () => 'isle-vfx-point-size'
+  material.customProgramCacheKey = () => `isle-vfx-point-size-${maxPx}`
 }
 
 const easeOut = (u: number) => 1 - Math.pow(1 - u, 3)
@@ -183,50 +221,123 @@ const easeOut = (u: number) => 1 - Math.pow(1 - u, 3)
  * gives something up.
  */
 const BREATH_RISE = 0.42
-/** Colour band the motes are dealt across: leaf-gold green → pale straw. */
+/**
+ * Colour band the motes are dealt across: leaf green → pale green-straw.
+ *
+ * Both ends sit clear of the 45–55° hue band that lotto gold owns (`#F2C14E`
+ * sits at 42°): `#BFD98A` measures 78°, `#E8E4B0` 56° at a fifth of gold's
+ * saturation. What the third pass had to fix was not the hue — it was that the
+ * field *printed white*. Additive light climbs toward white wherever it
+ * overlaps, and at the old count and brightness a two-hundred-mote cloud
+ * overlapped everywhere; the frame showed a screen-wide dust of white dots and
+ * the colour authored here never survived to the pixel. The band is warmer now
+ * and the pile-up is what got fixed (see `BREATH_GLOW` and `BREATH_DENSITY`).
+ */
 const BREATH_COLOR_A = 0xbfd98a
 const BREATH_COLOR_B = 0xe8e4b0
 /**
  * Deal biased toward A. The breath must never be mistaken for the lotto tell,
- * so the field's average hue sits green; the straw end is a highlight, not the
+ * so the field's average hue sits green; the pale end is a highlight, not the
  * body of it.
  */
 const BREATH_MIX_BIAS = 1.8
 /**
  * Blue trim on the written colour. Additive motes overlap, and overlapping
- * additive light climbs toward white — which would turn a golden-green breath
- * into silver dust. Holding blue down means the pile-up saturates toward the
- * green-gold the palette asked for instead.
+ * additive light climbs toward white — which would turn a green breath into
+ * silver dust. Holding blue down means the pile-up saturates toward the
+ * leaf-green the palette asked for instead.
  */
-const BREATH_BLUE_TRIM = 0.72
-/** Motes per square unit of blessed area (clamped to a sane pool). */
+const BREATH_BLUE_TRIM = 0.8
+/**
+ * Motes per square unit of blessed area (clamped to a sane pool).
+ *
+ * Halved from the pass that doubled it, because the doubling is what broke the
+ * effect. Two hundred and sixty additive motes over a 6×4 pocket means several
+ * of them stack on almost every pixel, and stacked additive light is white by
+ * arithmetic — the field stopped being golden-green motes and became a screen
+ * of white dots, uniform because saturation is the first thing clipping takes.
+ * A hundred and thirty still reads as a volume of air with something in it, and
+ * each mote keeps the colour it was dealt.
+ */
 const BREATH_DENSITY = 5.5
-const BREATH_MIN = 60
-const BREATH_MAX = 220
-/** Seconds a mote lives, min..max. Long lives keep the drift unhurried. */
-const BREATH_LIFE_MIN = 3.4
-const BREATH_LIFE_MAX = 6.2
+const BREATH_MIN = 70
+const BREATH_MAX = 160
+/**
+ * Seconds a mote lives, min..max.
+ *
+ * Shorter than the first pass. The breath is a single exhale that answers one
+ * moment — it has to be visibly OVER before the beat moves on, and a six-second
+ * mote born at the end of the spawn window was still drifting through the
+ * planting beat. See `stop()` and `BREATH_TAIL` for the hard end.
+ */
+const BREATH_LIFE_MIN = 2.6
+const BREATH_LIFE_MAX = 4.4
 /** Fractions of a life spent fading in / fading out. */
 const BREATH_FADE_IN = 0.22
 const BREATH_FADE_OUT = 0.45
-/** Lateral sway amplitude, units — trade-wind wander, not turbulence. */
-const BREATH_SWAY = 0.22
-/** Per-mote lateral drift, units/s — spreads the field as it rises. */
-const BREATH_DRIFT = 0.05
 /**
- * Point size for a mote of average weight (~0.3 u on screen, see the file
- * header on the point/quad size discrepancy).
+ * Seconds a mote in flight is allowed after `stop()`.
+ *
+ * The caller's timer decides when the breath is *over*; this decides how long
+ * "over" takes. Without it the tail is whatever life each mote happened to be
+ * dealt, which is how motes from the clearing beat survived into the harvest.
  */
-const BREATH_SIZE = 0.62
+const BREATH_TAIL = 1.3
+/** Lateral sway amplitude, units — trade-wind wander, not turbulence. */
+const BREATH_SWAY = 0.16
+/** Per-mote lateral drift, units/s — spreads the field as it rises. */
+const BREATH_DRIFT = 0.035
+/**
+ * Fraction of the area's half-extent a mote may be born within.
+ *
+ * Tightened so the cloud sits ON the footprint the player just cleared rather
+ * than spilling a fifth of its width past the edges: the tell means "this
+ * ground approves", and ground it is not standing over cannot say that.
+ */
+const BREATH_SPREAD = 0.45
+/**
+ * Point size for a mote of average weight (~0.11 u on screen, see the file
+ * header on the point/quad size discrepancy).
+ *
+ * Cut to a third of the first pass. At the opening's close camera the old
+ * value put a single mote at seventy screen pixels — an inch of soft white on
+ * a phone — and a field of those is bokeh, not pollen. A mote has to be small
+ * enough that the player counts *the field* rather than the individual, and
+ * `BREATH_MAX_PX` guarantees that stays true however close the lens gets.
+ */
+const BREATH_SIZE = 0.26
+/**
+ * Hard screen ceiling for one mote, CSS pixels. See `patchPointSize`.
+ *
+ * Down from 40: at the opening's close camera the ceiling was what the biggest
+ * motes were actually rendering at, which flattened the size spread the field
+ * depends on — a clamp every large mote hits is a clamp that makes them all the
+ * same size, and a field of identical dots is the thing the spread exists to
+ * prevent.
+ */
+const BREATH_MAX_PX = 26
 /**
  * Fraction of the field that is low, wide, dim haze instead of a mote. The
  * haze is what makes the effect read as breath hugging the ground rather than
  * as confetti — it must stay dim or it turns into fog.
+ *
+ * It is the one element still allowed to be *wide*, and the only reason that
+ * is safe is that its brightness is now a fifth of a mote's: a haze quad you
+ * can see the edge of is a defect, a haze quad you can only see the *tint* of
+ * is ground mist.
  */
-const BREATH_HAZE_SHARE = 0.3
-const BREATH_HAZE_GLOW = 0.26
-/** Peak brightness of an ordinary mote — see `BREATH_BLUE_TRIM` on pile-up. */
-const BREATH_GLOW = 0.62
+const BREATH_HAZE_SHARE = 0.18
+const BREATH_HAZE_GLOW = 0.11
+/**
+ * Peak brightness of an ordinary mote — see `BREATH_BLUE_TRIM` on pile-up.
+ *
+ * Held down hard on the third pass. Additive brightness is the other half of
+ * the white problem: at 0.6 a mote is already two-thirds of the way to clipping
+ * on its own, so any two that overlap print white and take the field's colour
+ * with them. At 0.42 a single mote is still unmistakable against dark loam and
+ * a pair of them stays green.
+ */
+const BREATH_GLOW = 0.42
 /** Seconds the first inhale is spread over — it must land WITH the mandolin. */
 const BREATH_SWELL = 1.4
 
@@ -291,7 +402,7 @@ export function createIslandBreath(area: { centre: THREE.Vector3; w: number; d: 
     // Light, not matter: fog dimming an additive mote just greys the glow.
     fog: false,
   })
-  patchPointSize(material)
+  patchPointSize(material, BREATH_MAX_PX)
 
   const points = new THREE.Points(geometry, material)
   points.position.copy(area.centre)
@@ -310,8 +421,8 @@ export function createIslandBreath(area: { centre: THREE.Vector3; w: number; d: 
     // motes has corners, and corners are the one thing a breath cannot have.
     const a = Math.random() * Math.PI * 2
     const r = Math.sqrt(Math.random())
-    m.x = Math.cos(a) * r * area.w * 0.56
-    m.z = Math.sin(a) * r * area.d * 0.56
+    m.x = Math.cos(a) * r * area.w * BREATH_SPREAD
+    m.z = Math.sin(a) * r * area.d * BREATH_SPREAD
     m.y0 = 0.04 + Math.random() * 0.22
     m.swayPhase = Math.random() * Math.PI * 2
     m.swaySpeed = 0.4 + Math.random() * 0.4
@@ -323,13 +434,18 @@ export function createIslandBreath(area: { centre: THREE.Vector3; w: number; d: 
 
     if (Math.random() < BREATH_HAZE_SHARE) {
       // Ground haze: wide, slow, dim, and greener than the motes above it.
-      m.size = 1.6 + Math.random() * 0.5
+      m.size = 2.2 + Math.random() * 0.8
       m.rise = BREATH_RISE * (0.3 + Math.random() * 0.25)
       m.mix = Math.random() * 0.4
       m.peak = BREATH_HAZE_GLOW
       m.y0 *= 0.5
     } else {
-      m.size = 0.8 + Math.random() * 0.75
+      // A wide size spread with most of the weight low: a field where a few
+      // motes are twice their neighbours reads as depth, one where they are
+      // all the same reads as a texture. Widened along with the pixel ceiling
+      // cut — the spread only exists on screen if the top of it clears the
+      // bottom by more than the clamp allows.
+      m.size = 0.5 + Math.pow(Math.random(), 1.8) * 1.5
       m.rise = BREATH_RISE * (0.72 + Math.random() * 0.6)
       m.mix = Math.pow(Math.random(), BREATH_MIX_BIAS)
       m.peak = BREATH_GLOW * (0.8 + Math.random() * 0.35)
@@ -362,8 +478,24 @@ export function createIslandBreath(area: { centre: THREE.Vector3; w: number; d: 
     },
 
     stop() {
-      // In-flight motes finish their lives; respawn simply stops.
       active = false
+      /*
+       * And in-flight motes are given a deadline rather than left to finish
+       * whatever life they were dealt.
+       *
+       * "Stops spawning" is not the same as "ends", and the difference showed:
+       * a mote born a moment before the caller's timer expired could still be
+       * drifting five seconds later, so the clearing beat's breath was visibly
+       * hanging over the frame during planting and harvest — where it means
+       * nothing, and where a permanent tell is no tell at all. Clamping the
+       * remaining life keeps the fade-out ramp (`BREATH_FADE_OUT` is a fraction
+       * of life, so a shortened life simply falls off faster) and guarantees
+       * the field is empty within `BREATH_TAIL` of the request.
+       */
+      for (const m of motes) {
+        const remain = m.life - m.age
+        if (remain > BREATH_TAIL) m.life = m.age + BREATH_TAIL
+      }
     },
 
     update(dt: number, elapsed: number) {
@@ -436,18 +568,46 @@ export function createIslandBreath(area: { centre: THREE.Vector3; w: number; d: 
  *  The lotto tell
  * ------------------------------------------------------------------------- */
 
-/** Fast sparks / slow shimmer counts for the full-size tell. */
-const TELL_SPARKS = 34
-const TELL_SHIMMER = 12
-/** The pale gold companion colour — hot core against LOTTO_GOLD. */
-const TELL_PALE = 0xfff8d0
+/**
+ * Fast sparks / slow shimmer counts for the full-size tell.
+ *
+ * Third pass, and this one was measured rather than judged: the verifier's
+ * reserved-gold scan reported **zero** pixels within its radius of LOTTO_GOLD
+ * in the odd-pick frame, and a pixel probe of the capture found a 60-pixel
+ * core sitting at (252, 252, 252) with only a thin amber fringe. The rig's
+ * colours were already right; the arithmetic was not. Thirty-four additive
+ * sparks born at `jitter: 0.1` are thirty-four quads stacked on one another at
+ * t=0, and an additive stack that deep clips to white no matter what colour
+ * each member is. The counts come down, the births spread out, and the sizes
+ * shrink — the same shower, dealt across the corona instead of dealt onto one
+ * pixel — so the frame prints gold where the spec says the player learns what
+ * gold means.
+ */
+const TELL_SPARKS = 22
+const TELL_SHIMMER = 10
+/**
+ * The pale gold companion colour — the highlight against LOTTO_GOLD.
+ *
+ * Pulled off near-white (`0xfff8d0`) for the same clipping reason: it was the
+ * member of the palette with nowhere left to go. It still reads as the hot end
+ * of the burst next to the flash gold, and it no longer drags the overlap to
+ * white on its own.
+ */
+const TELL_PALE = 0xffe6a4
 /**
  * The flash's own gold. Warmer and much less blue than TELL_PALE, because the
  * rig's quads stack additively on top of each other: with a pale colour the
  * overlap clips to white and the one moment in the game that must read GOLD
  * reads as a camera flash instead. Holding blue down keeps the pile-up amber.
+ *
+ * Deepened from `0xffd980` after the first review, which found the burst
+ * landing as "one more yellow blob among yellows". The colour was never the
+ * whole story — see `TELL_*` opacities below — but four additive quads whose
+ * *brightest* member is near-white have nowhere to go but white, and the one
+ * moment in the session that must be unmistakably GOLD cannot be the moment
+ * the frame blows out.
  */
-const TELL_FLASH = 0xffd980
+const TELL_FLASH = 0xffc85e
 /** Slow-mo request: 0.3 s at quarter speed, the grammar's exact numbers. */
 const TELL_SLOWMO_SECONDS = 0.3
 const TELL_SLOWMO_SCALE = 0.25
@@ -511,7 +671,10 @@ function createTellRig(): TellRig {
   const glow = make(moteTexture(), LOTTO_GOLD, 2)
   const ringA = make(shimmerRingTexture(), TELL_FLASH, 3)
   const ringB = make(shimmerRingTexture(), LOTTO_GOLD, 3)
-  const core = make(coreFlashTexture(), TELL_FLASH, 4)
+  // The core used to be the flash gold, which put the hottest, most bloom-prone
+  // element on the palest colour in the rig. It is LOTTO_GOLD now: whatever the
+  // bloom smears across the frame in that half-second is the reserved hue.
+  const core = make(coreFlashTexture(), LOTTO_GOLD, 4)
 
   let startMs = -1
   let scale = 1
@@ -526,31 +689,49 @@ function createTellRig(): TellRig {
       return
     }
 
+    /*
+     * Sizes and opacities below are the second pass, and both moved for the
+     * same reason: the tell was a wide, pale event happening *near* the fruit
+     * instead of a tight, saturated one happening *to* it.
+     *
+     *  - **Reach.** The rings used to sweep out past two world units — seven
+     *    times the width of the tomato they were about. At that size the burst
+     *    stops pointing at anything; it is weather. Every element is now sized
+     *    against the fruit, so the whole tell fits inside a metre and the eye
+     *    lands on the plant that was lucky.
+     *  - **Weight.** Four additive quads at 0.4–0.85 alpha stack past 1.0 wherever
+     *    they overlap, and a clipped additive pile is white by definition. Held
+     *    down, the same rig prints amber at the overlap and gold at the edges —
+     *    the colour survives the pile-up instead of being destroyed by it.
+     */
+
     // Core: a hard pop that is gone almost before the eye resolves it, and the
     // only element authored to sit above the 0.8 bloom threshold.
     const cu = Math.min(1, t / 0.34)
+    // 0.40, not 0.58: the core lands on top of the spark shell, and the two
+    // together were what clipped. Alone, either one printed gold.
     core.material.opacity =
-      0.8 * (t < 0.045 ? t / 0.045 : Math.pow(Math.max(0, 1 - (t - 0.045) / 0.295), 1.7))
-    core.scale.setScalar(scale * (0.5 + 1.2 * easeOut(cu)))
+      0.4 * (t < 0.045 ? t / 0.045 : Math.pow(Math.max(0, 1 - (t - 0.045) / 0.295), 1.7))
+    core.scale.setScalar(scale * (0.32 + 0.72 * easeOut(cu)))
 
     // Glow: dim, wide and slow — it is what the bloom smears into a halo and
     // what keeps gold on the frame for the whole slow-mo window.
     const gu = Math.min(1, t / 0.95)
-    glow.material.opacity = 0.42 * Math.min(1, t / 0.06) * Math.pow(1 - gu, 1.3)
-    glow.scale.setScalar(scale * (1 + 1.9 * easeOut(gu)))
+    glow.material.opacity = 0.22 * Math.min(1, t / 0.06) * Math.pow(1 - gu, 1.3)
+    glow.scale.setScalar(scale * (0.78 + 1.1 * easeOut(gu)))
 
     // Rings: the outward statement. Two, offset, so the shimmer reads as a
     // pulse travelling out rather than as a single expanding circle.
     const ru = t / 0.5
     if (ru < 1) {
-      ringA.material.opacity = 0.85 * Math.min(1, ru / 0.08) * Math.pow(1 - ru, 1.4)
-      ringA.scale.setScalar(scale * (0.35 + 1.85 * easeOut(ru)))
+      ringA.material.opacity = 0.52 * Math.min(1, ru / 0.08) * Math.pow(1 - ru, 1.4)
+      ringA.scale.setScalar(scale * (0.3 + 1.1 * easeOut(ru)))
     } else ringA.material.opacity = 0
 
     const rb = (t - 0.11) / 0.62
     if (rb > 0 && rb < 1) {
-      ringB.material.opacity = 0.5 * Math.min(1, rb / 0.1) * Math.pow(1 - rb, 1.5)
-      ringB.scale.setScalar(scale * (0.3 + 2.3 * easeOut(rb)))
+      ringB.material.opacity = 0.4 * Math.min(1, rb / 0.1) * Math.pow(1 - rb, 1.5)
+      ringB.scale.setScalar(scale * (0.28 + 1.45 * easeOut(rb)))
     } else ringB.material.opacity = 0
   }
 
@@ -637,19 +818,22 @@ export function playLottoTell(opts: {
   // the pale reads brighter and an even deal turns the burst white.
   opts.bursts.emit(opts.at, Math.round(TELL_SPARKS * k), [LOTTO_GOLD, LOTTO_GOLD, TELL_PALE], {
     kind: 'spark',
-    speed: 3.6,
-    life: 0.62,
-    scale: 0.32 * k,
-    jitter: 0.14 * k,
+    speed: 2.4,
+    life: 0.55,
+    scale: 0.15 * k,
+    // Wide enough that the shell is born as a ring of sparks rather than as
+    // one point that happens to contain twenty-two of them. Still inside the
+    // fruit's own hand-span, so the burst is unmistakably *about* the tomato.
+    jitter: 0.26 * k,
   })
   // Slow shimmer: near-stationary motes that hang inside the slow-mo window,
   // so the frame still reads gold after the shell has flown.
   opts.bursts.emit(opts.at, Math.round(TELL_SHIMMER * k), [LOTTO_GOLD, TELL_PALE], {
     kind: 'spark',
-    speed: 1.2,
+    speed: 0.8,
     life: 1.15,
-    scale: 0.26 * k,
-    jitter: 0.1 * k,
+    scale: 0.12 * k,
+    jitter: 0.2 * k,
   })
 
   opts.audio.play('lotto-chime')
@@ -662,11 +846,19 @@ export function playLottoTell(opts: {
 
 /** Motes in the orbit. Few enough to read as jewellery, not as a firework. */
 const ODD_MOTES = 7
-/** Orbit radius / height, units — sized to ring a single plump fruit. */
-const ODD_RADIUS = 0.36
-const ODD_HEIGHT = 0.34
-/** Base point size (~0.3 u on screen at the average twinkle). */
-const ODD_SIZE = 0.62
+/**
+ * Orbit radius / height, units — sized to ring a single plump fruit, and
+ * re-measured against one. A plump Sun Tomato is roughly 0.16 u across and the
+ * odd one 1.4× that; an orbit at 0.36 was circling empty air a hand's width
+ * clear of the fruit, which is why the shimmer read as a separate object
+ * hovering near the bed instead of as something *on* the tomato.
+ */
+const ODD_RADIUS = 0.24
+const ODD_HEIGHT = 0.26
+/** Base point size (~0.15 u on screen at the average twinkle). */
+const ODD_SIZE = 0.3
+/** Screen ceiling for one glint, CSS pixels. See `patchPointSize`. */
+const ODD_MAX_PX = 26
 /** Revolutions per second — slow. The shimmer must never look busy. */
 const ODD_SPIN = 0.55
 
@@ -706,7 +898,7 @@ export function createOddShimmer(): { object: THREE.Group; update(t: number): vo
     vertexColors: true,
     fog: false,
   })
-  patchPointSize(material)
+  patchPointSize(material, ODD_MAX_PX)
 
   const points = new THREE.Points(geometry, material)
   points.frustumCulled = false
@@ -746,11 +938,86 @@ export function createOddShimmer(): { object: THREE.Group; update(t: number): vo
         colors[i * 3] = tmp.r * glow
         colors[i * 3 + 1] = tmp.g * glow
         colors[i * 3 + 2] = tmp.b * glow
-        sizes[i] = 0.6 + twinkle * 0.8
+        sizes[i] = 0.55 + twinkle * 0.65
       }
       geometry.attributes.position.needsUpdate = true
       geometry.attributes.color.needsUpdate = true
       geometry.attributes.aSize.needsUpdate = true
     },
   }
+}
+
+/* ------------------------------------------------------------------------- *
+ *  Leaf burst
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Jungle greens for torn foliage, authored a step *below* the spec's range.
+ *
+ * The palette's `#2E6B3A → #8FCF6B` describes the jungle as the player should
+ * see it after the grade; postfx then multiplies saturation by 1.2, so writing
+ * the sunlit end literally is how the first pass ended up throwing fluorescent
+ * lime. These are the same three greens pulled back to survive that push, with
+ * the deep end carrying most of the weight: a vine that has just been ripped
+ * open shows its shaded underside, not its canopy face.
+ *
+ * Two dry browns ride along with the greens. A vine that has been strangling
+ * itself for a season shakes out dead matter as well as living leaf, and a
+ * burst dealt in greens alone — however dark — comes off the prop as one flat
+ * colour, which is most of what makes a spray read as *decoration* rather than
+ * as something coming apart.
+ */
+const LEAF_COLORS = [0x2b5f34, 0x6e5a35, 0x3d7a40, 0x2b5f34, 0x63955a, 0x8a6f40]
+/**
+ * Leaf scale, world units. A torn frond fragment is a few centimetres of green
+ * — at the opening's close camera the old default put 20-pixel slabs across the
+ * frame, which read as confetti at a children's party rather than as something
+ * tearing. Small and many is the shape of destruction; large and few is party
+ * decoration.
+ *
+ * Halved again on the third pass, alongside a matching cut in the vine rig's
+ * own chips (assets/opening/chaos-props.ts, `CHIP_COUNT`): these particles and
+ * those meshes land in the same frame, so they have to be sized against each
+ * other or the smaller of the two simply disappears under the larger.
+ */
+const LEAF_SCALE = 0.042
+const LEAF_COUNT = 30
+
+/**
+ * "Something green just tore": the vine-snap / frond-sweep burst.
+ *
+ * Spec VFX #2. Not permanent grammar the way the breath and the tell are — it
+ * is allowed to mean nothing beyond *this object came apart* — but it fires on
+ * every clearable in the pocket, which makes it the effect the player sees more
+ * often than any other in the opening, and the one whose scale and colour set
+ * how violent the clearing feels.
+ *
+ * Two emissions rather than one: a fast shell of torn fragments thrown along
+ * the tear, and a slower drift of a handful of whole leaves that flutter down
+ * afterwards. The second one is the whole feeling — debris that settles reads
+ * as matter, debris that vanishes at the top of its arc reads as a particle
+ * system.
+ *
+ * Both are held inside about a second and inside a metre. The old drift ran to
+ * 2.6 s at full life roll, which is long enough that a player who clears three
+ * tangles in a row is never once looking at a clean frame — the leaves from the
+ * first snap are still in the air when the third one goes, and a pocket with
+ * permanent green in the air over it is a pocket that never reads as *cleared*.
+ */
+export function playLeafBurst(opts: { at: THREE.Vector3; bursts: Bursts; k?: number }): void {
+  const k = opts.k ?? 1
+  opts.bursts.emit(opts.at, Math.round(LEAF_COUNT * k), LEAF_COLORS, {
+    kind: 'petal',
+    speed: 1.6,
+    life: 0.7,
+    scale: LEAF_SCALE * k,
+    jitter: 0.18 * k,
+  })
+  opts.bursts.emit(opts.at, Math.round(6 * k), LEAF_COLORS, {
+    kind: 'petal',
+    speed: 0.7,
+    life: 0.95,
+    scale: LEAF_SCALE * 1.4 * k,
+    jitter: 0.24 * k,
+  })
 }

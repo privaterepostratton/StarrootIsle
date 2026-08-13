@@ -33,6 +33,25 @@ const MARCH_STARTS: { x: number; z: number }[] = [
 
 /** March until the ground drops to here: the wet band, a hand above the sea. */
 const TARGET_H = WATER_LEVEL + 0.25
+/**
+ * Where the *band* puts its waterline, as opposed to where a washup sits.
+ *
+ * These have to be two different heights and conflating them is what put the
+ * tide on the dry beach. A washup wants to lie a hand clear of the water, so
+ * `TARGET_H` is a quarter-unit above it — right for an object, wrong for the
+ * shoreline, because this beach is deliberately shallow (see terrain.ts's
+ * SHORE_START/SHORE_FULL) and a quarter of a unit of height is about two
+ * *metres* of sand. Sampling the band's centreline at TARGET_H therefore drew
+ * the whole strip two metres inland and its foam lip two metres inland of
+ * that: a caramel stain with a cream ribbon along it, marooned on dry sand
+ * with clear beach between it and the sea.
+ *
+ * A hair above the water plane instead, so the strip's seaward rows run down
+ * to the surf and its foam breaks on the same line the water shader's does.
+ * The lower bar also makes the inland wet hollow BAND_SEA_PROOF exists to
+ * reject rarer still — that hollow bottoms out well above this.
+ */
+const BAND_TARGET_H = WATER_LEVEL + 0.02
 /** March resolution and give-up distance. */
 const MARCH_STEP = 0.25
 const MARCH_MAX = 24
@@ -68,10 +87,38 @@ const FOAM_WANDER = 0.34
 /** Skin offsets above the baked terrain, wet band then foam on top of it. */
 const WET_SKIN = 0.035
 const FOAM_SKIN = 0.055
-/** Radial search window for the waterline, either side of the anchors. */
-const BAND_SEARCH_IN = 7
-const BAND_SEARCH_OUT = 14
+/**
+ * Radial search window for the waterline, either side of the anchor-derived
+ * seed. Deliberately tight: the seed is already a point on this shoreline, so
+ * the search is refining a curve, not looking for one, and a wide window is
+ * only an opportunity to find the wrong water (see BAND_SEA_PROOF).
+ */
+const BAND_SEARCH_IN = 3.5
+/**
+ * Wider than the inward half, because the seed is an *anchor* radius and an
+ * anchor deliberately stands clear of the water: the answer this search wants
+ * is always seaward of the seed, by however far the shallow shore takes to
+ * drop the last quarter-unit.
+ */
+const BAND_SEARCH_OUT = 7
 const BAND_SEARCH_STEP = 0.2
+/**
+ * How much further out the ground must still be below the waterline for a
+ * sample to count as *the sea*.
+ *
+ * The west arc has a wet hollow lying about fourteen units inland of the true
+ * shore, and "the first radius at which the ground drops to WATER_LEVEL +
+ * 0.25" finds that hollow first over roughly a third of the arc. The band then
+ * latched onto it, and because each sample seeds the next the whole strip
+ * walked up the dry beach — a hard-edged ivory ribbon running diagonally past
+ * the wake spot and behind the crate, which is what beat 1 photographed.
+ *
+ * The discriminator is what happens *beyond* the water's edge: the open sea
+ * keeps going down, and a hollow comes back up onto its own far bank. Nine
+ * units clears the hollow (its far bank is dry by about seven) and is still
+ * comfortably inside the surf anywhere the real shoreline is found.
+ */
+const BAND_SEA_PROOF = 9
 
 /** The two scripted sets, one id per anchor, in anchor order. */
 const SETS: Record<1 | 2, TideDrop['id'][]> = {
@@ -177,14 +224,43 @@ export class Tideline {
     const radii = this.anchors.map((a) => Math.hypot(a.x, a.z))
     const a0 = Math.min(...angles) - BAND_ARC_PAD
     const a1 = Math.max(...angles) + BAND_ARC_PAD
-    const rMid = radii.reduce((s, r) => s + r, 0) / radii.length
+
+    /*
+     * Seed every sample from the anchors themselves, interpolated across the
+     * arc and held flat past the outermost pair — the search is then a local
+     * refinement of a shoreline we already know rather than a free hunt for
+     * low ground.
+     *
+     * It used to seed from the previous sample's answer, and that is what put
+     * the band on the dry beach. The west arc has a broad wet hollow lying
+     * roughly fourteen units inland of the shore; over the northern third of
+     * the arc it is the first thing an outward march meets, so the strip
+     * latched onto it, and because each answer seeded the next the whole band
+     * followed it inland — a hard-edged ivory ribbon running diagonally past
+     * the wake spot and behind the crate. `marchSeaward` never had this problem
+     * because it also demands `isSand`, and the three anchors it produces are
+     * exactly the shoreline the band is supposed to join up.
+     */
+    const knots = angles
+      .map((a, i) => ({ a, r: radii[i] }))
+      .sort((p, q) => p.a - q.a)
+    const seedAt = (a: number) => {
+      if (a <= knots[0].a) return knots[0].r
+      const end = knots[knots.length - 1]
+      if (a >= end.a) return end.r
+      for (let i = 1; i < knots.length; i++) {
+        if (a > knots[i].a) continue
+        const p = knots[i - 1]
+        const q = knots[i]
+        return p.r + (q.r - p.r) * ((a - p.a) / (q.a - p.a || 1))
+      }
+      return end.r
+    }
 
     const shoreR: number[] = []
-    let last = rMid
     for (let i = 0; i <= BAND_SAMPLES; i++) {
       const a = a0 + ((a1 - a0) * i) / BAND_SAMPLES
-      shoreR.push(this.waterlineRadius(a, last))
-      last = shoreR[shoreR.length - 1]
+      shoreR.push(this.waterlineRadius(a, seedAt(a)))
     }
     // Three-tap smooth: the height field is noisy at this resolution and an
     // unsmoothed waterline reads as a torn edge rather than as a shore.
@@ -228,15 +304,33 @@ export class Tideline {
   }
 
   /**
-   * March outward at a fixed angle to find the radius where the ground drops
-   * to the wet band. Seeded from the previous sample's answer so the search
-   * window travels with the shoreline instead of being fixed to the mean.
+   * March outward at a fixed angle to find the radius where the ground meets
+   * the sea — BAND_TARGET_H, not the higher line the washups sit on. Seeded
+   * from the anchors so the search window travels with the shoreline instead
+   * of being fixed to the mean.
    */
   private waterlineRadius(angle: number, seed: number): number {
     const cx = Math.cos(angle)
     const cz = Math.sin(angle)
-    for (let r = seed - BAND_SEARCH_IN; r <= seed + BAND_SEARCH_OUT; r += BAND_SEARCH_STEP) {
-      if (heightAt(cx * r, cz * r) <= TARGET_H) return r
+    /*
+     * A window whose inner bound is already in the water contains no dry→wet
+     * transition, so the loop below would report the bound itself as a shore.
+     * That happens where a ray runs along the mouth of the bay at the north
+     * end of the arc rather than across a beach, and the answer it invents is
+     * a band tilted the wrong way — its inland edge lower than its seaward
+     * one. Trust the anchors there instead.
+     */
+    const inner = seed - BAND_SEARCH_IN
+    if (heightAt(cx * inner, cz * inner) <= BAND_TARGET_H) return seed
+    for (let r = inner; r <= seed + BAND_SEARCH_OUT; r += BAND_SEARCH_STEP) {
+      if (heightAt(cx * r, cz * r) > BAND_TARGET_H) continue
+      // The same two demands `marchSeaward` makes of an anchor: this is a
+      // *beach*, and what it runs into is the sea. Low ground on its own is
+      // neither — see BAND_SEA_PROOF.
+      if (!isSand(cx * r, cz * r)) continue
+      const proof = r + BAND_SEA_PROOF
+      if (heightAt(cx * proof, cz * proof) > TARGET_H) continue
+      return r
     }
     return seed
   }

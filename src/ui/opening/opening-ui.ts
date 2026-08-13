@@ -185,6 +185,26 @@ export class OpeningUi {
   /** Hide all HUD chrome. Called once, before the first frame of the wake. */
   begin(): void {
     document.body.classList.add('isle-opening')
+    document.body.classList.remove('isle-settings')
+  }
+
+  /**
+   * Let the settings glyph exist.
+   *
+   * The spec's UI element 9 is "settings glyph (present but 40% opacity)", and
+   * the first build read that as *from frame one* — so the very first image of
+   * the game, a stranger face-down in the sand before they have touched
+   * anything, carried a blue gear in the corner. "Screen naked at wake" is not
+   * a rule about how many pixels of chrome there are; it is about the player's
+   * first second belonging to the body, not to the interface. So the glyph is
+   * withheld and then fades in over a second and a half, and it is `setPrompt`
+   * that calls this: the opening's first verb is *Pull* at beat 3, which is
+   * both the moment the player has demonstrably taken control and the earliest
+   * point the spec's own review would allow. Idempotent; safe every frame.
+   */
+  revealSettings(): void {
+    if (this.retired) return
+    document.body.classList.add('isle-settings')
   }
 
   /**
@@ -208,6 +228,7 @@ export class OpeningUi {
       el.style.transitionDelay = `${Math.min(i * REBIRTH_STAGGER, 0.7)}s`
     })
     document.body.classList.remove('isle-opening')
+    document.body.classList.remove('isle-settings')
     window.setTimeout(() => {
       for (const el of chrome) {
         el.style.transition = ''
@@ -286,6 +307,10 @@ export class OpeningUi {
       }
       return
     }
+
+    // The first verb the island gives is also when the settings glyph is
+    // allowed to exist — see `revealSettings`.
+    this.revealSettings()
 
     // Retarget: keep the anchor fresh even when the key is unchanged.
     this.promptPos = worldPos ? (this.promptPos ?? new THREE.Vector3()).copy(worldPos) : null
@@ -419,6 +444,17 @@ export class OpeningUi {
    * Tap anywhere dismisses. The sketch is authored inline SVG — wobbled by
    * a turbulence filter so the line reads as hand-drawn charcoal, with a
    * faint second pass like a sketcher finding the line.
+   *
+   * The page itself is four things a rounded rectangle is not, and it needs
+   * all four or it reads as a toast with a drawing in it: a **fibre weave**
+   * (linen is woven, and a flat fill is the single loudest tell that a surface
+   * is a div); a **stitched binding** down one side with the thread showing,
+   * because a logbook is bound and a card is not; a **warp** — the sheet is
+   * held at an angle in someone's hands, so it takes perspective rather than
+   * sitting parallel to the glass; and a **charcoal smudge**, the heel of the
+   * hand dragged across the drawing while it was being made. The last one is
+   * the cheapest and does the most work: nothing says *this was drawn by a
+   * person a moment ago* like the mess they left doing it.
    */
   showJournal(onDismiss: () => void): void {
     if (this.retired || this._journalOpen) return
@@ -428,7 +464,9 @@ export class OpeningUi {
     el.className = 'isle-el isle-journal'
     el.innerHTML =
       `<div class="isle-page">` +
-      `<div class="isle-sketch">${goatSketchSvg()}</div>` +
+      `<div class="isle-bind"></div>` +
+      `<div class="isle-sketch">${goatSketchSvg()}<i class="isle-smudge"></i>` +
+      `<i class="isle-smear"></i></div>` +
       `<div class="isle-want"></div>` +
       `<div class="isle-caption"></div>` +
       `</div>`
@@ -494,8 +532,26 @@ export class OpeningUi {
       }
     }
 
-    // Standalone marker.
-    if (this.markPos) {
+    /*
+     * Standalone marker — suppressed while the prompt is ringing the same
+     * thing.
+     *
+     * "Max one on screen, ever" is the spec's rule for the contextual prompt,
+     * and the letter of it is kept by `setPrompt` owning a single element. The
+     * *spirit* of it is about rings: the marker and the prompt speak the same
+     * ivory language, and the staging quite reasonably points both at whatever
+     * the player should touch next — so the dig beat was drawing two
+     * concentric ivory circles around one patch of loam, which reads as a
+     * targeting reticle rather than as the island quietly indicating. Whenever
+     * the two anchors are close enough to overlap, the prompt wins: it carries
+     * the verb, and the marker is only ever the wordless version of it.
+     */
+    const markMerged =
+      !!this.markPos &&
+      !!this.promptPos &&
+      this.promptEl.style.display !== 'none' &&
+      this.markPos.distanceTo(this.promptPos) < PULSE_WORLD_R + this.markRadius
+    if (this.markPos && !markMerged) {
       const p = this.project(this.markPos, 0.12)
       if (p) {
         this.markEl.style.visibility = ''
@@ -511,6 +567,8 @@ export class OpeningUi {
       } else {
         this.markEl.style.visibility = 'hidden'
       }
+    } else if (markMerged) {
+      this.markEl.style.visibility = 'hidden'
     }
 
     // Sundials.
@@ -760,12 +818,39 @@ body.isle-opening #ui .hud-chrome {
   pointer-events: none !important;
 }
 
-/* The settings glyph — the spec's one visible piece of chrome, at 40%.
+/* The settings glyph — the spec's one visible piece of chrome, at 40%, and
+ * only once revealSettings() has stamped body.isle-settings (beat 3). Until
+ * then it inherits the hide above, so the wake frame is genuinely naked.
  * Double-ID specificity beats every class-shaped hide rule; the :not()
- * guards hand it back to panel-open and the letterbox when those are up. */
-body.isle-opening:not(.panel-open):not(.cinematic) #ui #menuBtn {
+ * guards hand it back to panel-open and the letterbox when those are up. The
+ * long fade is deliberate — chrome that pops into a quiet beach announces
+ * itself; chrome that resolves over a second and a half is just there. */
+body.isle-opening.isle-settings:not(.panel-open):not(.cinematic) #ui #menuBtn {
   opacity: 0.4;
   pointer-events: auto !important;
+  transition: opacity 1.5s ease;
+}
+
+/* ...and stripped back to a glyph while it is here.
+ *
+ * Opacity alone was not enough. The valley's settings button is a cream token
+ * with a saturated cyan gear on it, authored to hold its own against a bright
+ * green farm — and cyan is the one hue the opening's palette does not contain
+ * anywhere. At 40% over a dark jungle wall it still read as the only cool
+ * thing on screen and the only element with a hard-edged rounded-rect plate,
+ * which is to say it read as an app pasted over a beach. Losing the well and
+ * the cyan leaves a warm ivory glyph: findable if you look for it, invisible
+ * if you are looking at the island. The valley gets its token back the moment
+ * body.isle-opening comes off. */
+body.isle-opening #ui #menuBtn {
+  background: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+body.isle-opening #ui #menuBtn .nav-ico {
+  /* Grayscale kills the cyan; sepia+brightness lands it on the palette's
+   * linen (#E8DECC) rather than on a grey that would read as dead UI. */
+  filter: grayscale(1) sepia(0.45) brightness(1.3) drop-shadow(0 1px 2px rgba(30, 22, 12, 0.5));
 }
 
 /* ---------- opening layer ---------- */
@@ -1047,44 +1132,112 @@ body.isle-opening:not(.panel-open):not(.cinematic) #ui #menuBtn {
 .isle-journal.born { opacity: 1; }
 
 /* Linen, not paper-white: the page is cut from the same cloth as the pouch
-   and the avatar's shirt (#E8DECC), tea-stained toward its edges. The old
-   hard 10px offset block under it read as a sticker — replaced by two soft
-   diffuse shadows, so it sits on the beach instead of on the screen. */
+   and the avatar's shirt (#E8DECC), tea-stained toward its edges and pulled a
+   couple of steps down in value — the first pass sat so close to white that on
+   a bright beach it read as a system dialog.
+
+   The two repeating gradients at the top of the stack are the weave. They are
+   nearly invisible one at a time (3.5% ink on a 3px period) and that is the
+   point: a woven surface does not announce itself, it just refuses to be flat,
+   and refusing to be flat is the entire difference between paper and a div.
+   Crossed at 8° and 96° rather than 0/90 so the grain never lines up with the
+   page edges or the pixel grid. */
 .isle-page {
   position: relative;
   width: min(80vw, 620px);
   min-height: min(62vh, 420px);
   padding: clamp(18px, 4vmin, 34px) clamp(20px, 4.5vmin, 40px) clamp(56px, 9vmin, 74px);
+  padding-left: clamp(38px, 7vmin, 62px);
   display: flex;
   align-items: center;
   gap: clamp(12px, 3vmin, 28px);
   background:
-    radial-gradient(120% 90% at 18% 12%, rgba(176, 152, 110, 0.17), transparent 55%),
-    radial-gradient(70% 60% at 86% 78%, rgba(146, 116, 78, 0.16), transparent 60%),
-    radial-gradient(24% 20% at 70% 22%, rgba(142, 112, 72, 0.11), transparent 70%),
-    linear-gradient(168deg, #ece2cd 0%, #e5d9bf 54%, #d9caa8 100%);
-  border-radius: 10px 14px 12px 16px;
+    repeating-linear-gradient(
+      8deg,
+      rgba(120, 96, 62, 0.05) 0 1px,
+      rgba(255, 250, 236, 0.05) 1px 3px
+    ),
+    repeating-linear-gradient(
+      96deg,
+      rgba(120, 96, 62, 0.045) 0 1px,
+      rgba(255, 250, 236, 0.04) 1px 3.5px
+    ),
+    radial-gradient(120% 90% at 18% 12%, rgba(160, 132, 88, 0.2), transparent 55%),
+    radial-gradient(70% 60% at 86% 78%, rgba(132, 102, 64, 0.2), transparent 60%),
+    radial-gradient(24% 20% at 70% 22%, rgba(126, 96, 58, 0.14), transparent 70%),
+    linear-gradient(168deg, #e4d8be 0%, #dccfb0 54%, #cbb994 100%);
+  /* Four different corner radii and no two edges alike: cut card, not preset. */
+  border-radius: 7px 16px 9px 20px;
   box-shadow:
-    0 4px 12px rgba(52, 36, 16, 0.18),
-    0 20px 46px rgba(28, 19, 8, 0.26),
-    inset 0 0 46px rgba(146, 116, 78, 0.2);
-  transform: rotate(-1.4deg) translateY(10px) scale(0.96);
+    0 4px 12px rgba(52, 36, 16, 0.2),
+    0 22px 50px rgba(28, 19, 8, 0.3),
+    inset 0 0 52px rgba(132, 102, 64, 0.24);
+  /* Held, not mounted: a shallow perspective turn plus the tilt. The sheet
+     leans away at the binding, which is what a bound page does when the book
+     is open in someone's lap. */
+  transform: perspective(1200px) rotateY(2.6deg) rotate(-1.5deg) translateY(10px) scale(0.96);
   transition: transform 0.5s var(--spring);
 }
-.isle-journal.born .isle-page { transform: rotate(-1.4deg) translateY(0) scale(1); }
+.isle-journal.born .isle-page {
+  transform: perspective(1200px) rotateY(2.6deg) rotate(-1.5deg) translateY(0) scale(1);
+}
 
-/* Stitched spine shadow down the left edge — it is a logbook, not a card. */
+/* The curl: the page darkens into the binding and catches a little light at
+   the outer edge, which is the shading that sells the warp above. */
 .isle-page::before {
   content: '';
   position: absolute;
-  left: 6px;
-  top: 4%;
-  bottom: 4%;
-  width: 3px;
-  border-left: 2px dashed rgba(110, 88, 56, 0.3);
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(96, 74, 44, 0.3) 0,
+      rgba(96, 74, 44, 0.08) 5%,
+      transparent 14%,
+      transparent 88%,
+      rgba(255, 251, 238, 0.16) 100%
+    );
+}
+
+/* The binding: a strip of darker cloth down the left edge with the thread
+   showing through it. Two rows of dashes offset half a period apart, which is
+   how a saddle stitch actually looks — one thread over, one thread under. */
+.isle-bind {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: clamp(20px, 3.6vmin, 32px);
+  border-radius: inherit;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  background:
+    linear-gradient(90deg, rgba(104, 80, 48, 0.26), rgba(104, 80, 48, 0.04) 62%, transparent);
+  pointer-events: none;
+}
+.isle-bind::before,
+.isle-bind::after {
+  content: '';
+  position: absolute;
+  top: 5%;
+  bottom: 5%;
+  width: 0;
+  border-left: 1.5px dashed rgba(86, 66, 40, 0.5);
+}
+.isle-bind::before { left: 34%; }
+/* Half a dash out of phase with the row beside it — the stitch crossing over. */
+.isle-bind::after {
+  left: 58%;
+  border-left-style: dashed;
+  border-left-color: rgba(86, 66, 40, 0.32);
+  top: 8%;
+  bottom: 8%;
 }
 
 .isle-sketch {
+  position: relative;
   flex: 1.5;
   min-width: 0;
 }
@@ -1092,6 +1245,47 @@ body.isle-opening:not(.panel-open):not(.cinematic) #ui #menuBtn {
   width: 100%;
   height: auto;
   display: block;
+}
+
+/* The heel of the hand, dragged across the drawing while it was being made.
+   Multiply, not overlay: charcoal dust sits *in* the fibre and darkens it, and
+   the smudge has to lose its own edge into the weave or it reads as a shape
+   somebody drew on purpose. */
+.isle-smudge,
+.isle-smear {
+  position: absolute;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+.isle-smudge {
+  left: 8%;
+  bottom: 6%;
+  width: 46%;
+  height: 30%;
+  transform: rotate(-9deg);
+  background: radial-gradient(
+    58% 50% at 42% 50%,
+    rgba(63, 56, 48, 0.17),
+    rgba(63, 56, 48, 0.06) 62%,
+    transparent 82%
+  );
+  filter: blur(3px);
+}
+/* One quick streak away from the smudge — the direction the hand travelled. */
+.isle-smear {
+  right: 12%;
+  top: 22%;
+  width: 26%;
+  height: 9%;
+  transform: rotate(6deg);
+  background: linear-gradient(
+    100deg,
+    transparent,
+    rgba(63, 56, 48, 0.11) 38%,
+    rgba(63, 56, 48, 0.05) 74%,
+    transparent
+  );
+  filter: blur(2.5px);
 }
 
 /* The empty want-slot — a pencilled-in frame waiting for something. */

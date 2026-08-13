@@ -100,15 +100,23 @@ const LEAF_DRY = 0xb08a4e
 const LEAF_DEAD = 0x8d7148
 
 /** Fallen palm frond — dead matter, ochre through bleached tan. */
-const FROND_RACHIS = 0xa8873f
+const FROND_RACHIS = 0x9a7a38
 const FROND_DRY = 0xd2ae5f
 const FROND_TAN = 0xe6cd96
 const FROND_BROWN = 0xa8834a
 
-/** Sun-bleached driftwood: grey-tan, the lightest wood on the beach. */
-const DRIFT_PALE = 0xd6cdb8
-const DRIFT_MID = 0xb2a78e
-const DRIFT_DARK = 0x877d6a
+/**
+ * Sun-bleached driftwood.
+ *
+ * The first values (`#D6CDB8`) were nearly neutral, and a near-neutral pale
+ * cylinder lying in a green pocket photographs as a length of plastic pipe —
+ * the one prop in the set that did not read as anything that grew. Pulled warm
+ * and down a step: still the second-lightest thing in the pocket, now
+ * unmistakably wood the sea has had for a while.
+ */
+const DRIFT_PALE = 0xc9b391
+const DRIFT_MID = 0xa38b68
+const DRIFT_DARK = 0x776548
 
 /** Morning-glory mat: deep runner green, pale leaf faces, periwinkle trumpets. */
 const GLORY_DEEP = 0x4e8446
@@ -129,9 +137,19 @@ const SALT = 0xefece2
 const BASALT_FLOOR = 0x1a1714
 const VINE_FLOOR = 0x161c12
 
-/** The amphora shard — the opening's only terracotta (spec #C4693B). */
-const TERRACOTTA = 0xc4693b
-const TERRACOTTA_IN = 0xd9906a
+/**
+ * The amphora shard — the opening's only terracotta (spec #C4693B), pulled
+ * down in saturation and value.
+ *
+ * At the book value it photographed as a fluorescent orange fin sitting at the
+ * pocket edge, and it was the second most saturated thing on screen after the
+ * bougainvillea — which breaks the one job the gap's magenta has, to be the
+ * only saturated warm anywhere near the treeline. This is a shard of a pot
+ * that has been in salt water: still unmistakably terracotta, no longer
+ * competing with the flowers for the eye.
+ */
+const TERRACOTTA = 0xa96346
+const TERRACOTTA_IN = 0xbc8464
 const TERRACOTTA_BAND = 0x8f4a2c
 
 /** Bougainvillea — the only magenta on screen (spec #D14D8B), gap dressing. */
@@ -334,41 +352,91 @@ function litterSkirt(r: () => number, count: number, inner: number, outer: numbe
 
 /* --------------------------------------------------------------- 1. vine */
 
-/** Seconds the vine's snap runs — long enough for its leaf burst to fly. */
+/** Seconds the vine's snap runs — long enough for its chips to fly and settle. */
 const VINE_CLEAR = 1.0
-/** Gravity on burst leaves, in units/s². Light: they hang, then settle. */
-const LEAF_GRAVITY = 4.4
+/**
+ * Gravity on the torn chips, units/s².
+ *
+ * Nearly double the first pass, and the number that decides whether the snap
+ * reads as *destruction* or as a party popper. Light debris hangs; hanging
+ * debris is confetti. Torn matter goes up a little, turns over, and comes down
+ * inside a second — which is also why the chips are given a ground floor to
+ * settle on rather than being allowed to sink through the soil.
+ */
+const CHIP_GRAVITY = 8.2
+/**
+ * Chips thrown by one snap, and their size in world units.
+ *
+ * This is the third pass at this burst and the first that touches the *rig*.
+ * The two before it retuned `playLeafBurst` in assets/opening/vfx.ts — the
+ * shared-particle half of the effect — and the frame did not change, because
+ * the loud thing was never the particles: it was the tangle's own foliage.
+ * Every one of the ~18 leaves living in the knot (0.3–0.5 u long, a third of
+ * the avatar's body, a third of them the canopy-pale `LEAF_PALE`) was launched
+ * on a ballistic arc at the snap. Eighteen palm-sized lime cards tumbling out
+ * of one prop is a party popper however carefully the particle system beside it
+ * is tuned.
+ *
+ * So the foliage no longer flies at all — it collapses with the knot it grew on
+ * — and the burst is its own population: thirty *scraps*, a quarter the length
+ * of a leaf, dealt across jungle green and dry brown with the pale lime left
+ * out entirely.
+ */
+const CHIP_COUNT = 30
+const CHIP_LEN_MIN = 0.055
+const CHIP_LEN_MAX = 0.125
+const CHIP_WID_MIN = 0.032
+const CHIP_WID_MAX = 0.072
+/**
+ * Chip tones: the shaded underside of a vine that has just been torn open, and
+ * the dead matter it has been strangling. `LEAF_PALE` — the canopy face — is
+ * deliberately absent: it is the value that made the old burst read lime, and a
+ * leaf's lit face is not what shows when it is ripped off.
+ */
+const CHIP_COLORS = [LEAF_DEEP, LEAF_MID, LEAF_DEEP, LEAF_DRY, LEAF_DEAD, VINE_BARK_LIT]
+/** Fraction of the clear window after which the chips fade out. */
+const CHIP_FADE_FROM = 0.58
+/** Height a settled chip rests at — just clear of the loam decal beneath it. */
+const CHIP_REST = 0.025
 
-/** One leaf in the snap burst: ballistic, spinning, and pure in `p`. */
-interface Flake {
+/** One torn scrap: ballistic, spinning, and a pure function of progress. */
+interface Chip {
   mesh: THREE.Mesh
   base: THREE.Vector3
   vel: THREE.Vector3
   spin: THREE.Vector3
-  scale: THREE.Vector3
   /** Seconds after the snap before this one launches. */
   delay: number
-  /** False for the extra shrapnel, which is hidden until the snap. */
-  standing: boolean
+  /** Seconds of flight before it reaches the soil and stops moving. */
+  land: number
 }
 
 /**
  * A tangle of near-black woody loops with leaves caught in it — three authored
  * variants. Strain stretches the whole knot upward like pulled elastic.
  *
- * The clear is the set piece: a last over-stretch, the loops collapse, and
- * every leaf in the tangle *plus* a fistful of hidden shrapnel bursts out as
- * small tapered cards on real ballistic arcs with per-leaf spin. The first pass
- * fired a handful of large flat confetti squares upward; this fires two dozen
- * leaf-shaped chips in jungle green with dry-brown variation, which is what a
- * vine full of dead matter actually sheds when it lets go.
+ * The clear is the set piece: a last over-stretch, the knot collapses in on
+ * itself taking its own foliage down with it, and a spray of thirty small torn
+ * scraps bursts out of the tear on real ballistic arcs, spinning, settling on
+ * the ground and fading inside a second. See `CHIP_COUNT` for why the foliage
+ * no longer flies and why the scraps are a quarter of a leaf.
  */
 function buildVine(variant: number): ChaosPropRig {
   const r = rng(101 + variant * 37)
   const root = new THREE.Group()
   const tangle = new THREE.Group()
   const skirt = litterSkirt(r, 7, 0.45, 0.95)
-  root.add(tangle, skirt)
+  /*
+   * The burst hangs off the ROOT, not off the tangle.
+   *
+   * `clear()` drives `tangle.scale` to nothing over the first third of the
+   * window, and a child of the tangle is scaled by it — so the old burst was
+   * crushed back into the knot's origin and popped out of existence at 0.34 s
+   * no matter what velocities it had been given. Parented here it owns its own
+   * second, which is what lets the chips actually fall and fade.
+   */
+  const debris = new THREE.Group()
+  root.add(tangle, skirt, debris)
 
   // The knot. Two populations, because a pile of same-sized closed rings reads
   // as a stack of tyres: tight coils for the mass, plus long shallow arcs that
@@ -404,26 +472,15 @@ function buildVine(variant: number): ChaosPropRig {
     tangle.add(tendril)
   }
 
-  const flakes: Flake[] = []
-  const addFlake = (mesh: THREE.Mesh, standing: boolean) => {
-    const a = Math.atan2(mesh.position.z, mesh.position.x) + (r() - 0.5) * 0.8
-    const speed = 1.1 + r() * 1.7
-    flakes.push({
-      mesh,
-      base: mesh.position.clone(),
-      vel: new THREE.Vector3(Math.cos(a) * speed, 1.5 + r() * 1.9, Math.sin(a) * speed),
-      spin: new THREE.Vector3((r() - 0.5) * 16, (r() - 0.5) * 20, (r() - 0.5) * 16),
-      scale: mesh.scale.clone(),
-      delay: standing ? r() * 0.05 : 0.04 + r() * 0.1,
-      standing,
-    })
-  }
-
   // Leaves living in the tangle. Two thirds green, a third dead — the tangle
   // has been strangling itself for a while. They are pushed OUT past the coils
   // and tipped up toward the light, because the foliage has to be what forms
   // the outer silhouette: the pale leaf edge against the dark knot is the whole
   // reason the prop reads from across the clearing.
+  //
+  // They are children of `tangle` and stay that way through the clear: the knot
+  // collapses and takes them with it. Nothing this size leaves the prop.
+  const foliage: { mesh: THREE.Mesh; baseY: number; phase: number }[] = []
   const nLeaf = 16 + Math.floor(r() * 5)
   for (let i = 0; i < nLeaf; i++) {
     const a = r() * Math.PI * 2
@@ -437,23 +494,57 @@ function buildVine(variant: number): ChaosPropRig {
     l.position.set(Math.cos(a) * d, 0.16 + r() * 0.85, Math.sin(a) * d)
     l.rotation.set(-0.5 - r() * 0.7, a + (r() - 0.5) * 0.9, (r() - 0.5) * 1.5)
     tangle.add(l)
-    addFlake(l, true)
+    foliage.push({ mesh: l, baseY: l.position.y, phase: l.position.x * 9 })
   }
-  // Hidden shrapnel — invisible at rest, born at the snap so the burst is
-  // denser than the tangle could plausibly hold.
-  for (let i = 0; i < 11; i++) {
-    const a = r() * Math.PI * 2
-    const tone = r()
-    const l = leaf(
-      0.17 + r() * 0.13,
-      0.11 + r() * 0.08,
-      tone < 0.3 ? LEAF_PALE : tone < 0.58 ? LEAF_MID : tone < 0.8 ? LEAF_DEEP : LEAF_DEAD,
+
+  /*
+   * The burst proper: small torn scraps, born inside the knot and thrown out
+   * along the tear.
+   *
+   * Rig-local materials, because they have to fade. The shared `cardMat` cache
+   * is used by every leaf in the pocket, so turning transparency on there would
+   * make the whole clearing dissolve every time one vine let go. Six of them —
+   * one per tone — is cheap and lets the whole spray fade as one event.
+   */
+  const chipMats = CHIP_COLORS.map(
+    (color) =>
+      new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide, transparent: true }),
+  )
+  const chips: Chip[] = []
+  for (let i = 0; i < CHIP_COUNT; i++) {
+    const mesh = new THREE.Mesh(unitLeaf(), chipMats[i % chipMats.length])
+    mesh.scale.set(
+      CHIP_WID_MIN + r() * (CHIP_WID_MAX - CHIP_WID_MIN),
+      1,
+      CHIP_LEN_MIN + r() * (CHIP_LEN_MAX - CHIP_LEN_MIN),
     )
-    l.position.set(Math.cos(a) * 0.16, 0.32 + r() * 0.45, Math.sin(a) * 0.16)
-    l.visible = false
-    l.castShadow = false
-    tangle.add(l)
-    addFlake(l, false)
+    mesh.rotation.order = 'YXZ'
+    // Too small to cast anything legible, and thirty extra shadow casters per
+    // vine is a real cost for a shadow the size of a fingernail.
+    mesh.castShadow = false
+    mesh.receiveShadow = false
+    mesh.visible = false
+    setLayer(mesh, MINOR_LAYER)
+    debris.add(mesh)
+
+    const a = r() * Math.PI * 2
+    // Lateral speed is held under 1.2 u/s so the spray stays inside a metre of
+    // the tangle it came off: the burst has to point AT the thing that broke.
+    const speed = 0.35 + r() * 0.85
+    const radius = 0.05 + r() * 0.16
+    const y0 = 0.3 + r() * 0.5
+    const vy = 0.9 + r() * 1.5
+    chips.push({
+      mesh,
+      base: new THREE.Vector3(Math.cos(a) * radius, y0, Math.sin(a) * radius),
+      vel: new THREE.Vector3(Math.cos(a) * speed, vy, Math.sin(a) * speed),
+      spin: new THREE.Vector3((r() - 0.5) * 15, (r() - 0.5) * 19, (r() - 0.5) * 15),
+      delay: r() * 0.09,
+      // Where the arc meets the soil, solved once rather than tested per frame
+      // — the clear hook has to stay a pure function of progress, so a chip
+      // cannot "notice" it has landed, it has to already know when it will.
+      land: (vy + Math.sqrt(vy * vy + 2 * CHIP_GRAVITY * Math.max(0, y0 - CHIP_REST))) / CHIP_GRAVITY,
+    })
   }
 
   root.rotation.y = r() * Math.PI * 2
@@ -466,15 +557,14 @@ function buildVine(variant: number): ChaosPropRig {
       tangle.scale.set(1 - 0.13 * s, 1 + 0.3 * s, 1 - 0.13 * s)
       tangle.rotation.z = Math.sin(elapsed * 26) * 0.05 * s
       tangle.position.y = 0.06 * s
-      for (const f of flakes) {
-        if (!f.standing) continue
-        f.mesh.position.y = f.base.y + 0.1 * s
-        f.mesh.rotation.z = Math.sin(elapsed * 30 + f.base.x * 9) * 0.25 * s
+      for (const f of foliage) {
+        f.mesh.position.y = f.baseY + 0.1 * s
+        f.mesh.rotation.z = Math.sin(elapsed * 30 + f.phase) * 0.25 * s
       }
     },
     clear(p) {
-      // The knot's own collapse happens in the first third; the burst owns the
-      // rest of the window.
+      // The knot's own collapse happens in the first third — foliage included,
+      // since the leaves ride it — and the chip spray owns the whole window.
       const knot = Math.min(1, p / 0.34)
       if (knot < 0.5) {
         tangle.scale.set(0.86, 1.3 + knot * 0.5, 0.86)
@@ -486,24 +576,31 @@ function buildVine(variant: number): ChaosPropRig {
       tangle.position.y = 0.06 * (1 - knot)
       skirt.scale.setScalar(Math.max(0.001, 1 - knot))
 
+      // One fade for the whole spray: the chips go together, so the eye reads
+      // the burst dissolving rather than thirty objects each ending separately.
+      const fade = Math.max(0, (p - CHIP_FADE_FROM) / (1 - CHIP_FADE_FROM))
+      const alpha = Math.max(0, 1 - fade * fade)
+      for (const m of chipMats) m.opacity = alpha
+
       const now = p * VINE_CLEAR
-      for (const f of flakes) {
-        const t = now - f.delay
-        if (t <= 0) {
-          f.mesh.visible = f.standing
+      for (const c of chips) {
+        const raw = now - c.delay
+        if (raw <= 0) {
+          c.mesh.visible = false
           continue
         }
-        f.mesh.visible = true
-        f.mesh.position.set(
-          f.base.x + f.vel.x * t,
-          f.base.y + f.vel.y * t - 0.5 * LEAF_GRAVITY * t * t,
-          f.base.z + f.vel.z * t,
+        // Frozen at the landing: a scrap that fell is *lying there*, which is
+        // the whole difference between debris and a particle system. Tumbling
+        // stops with the flight, or the chips look like they are still falling
+        // after they have arrived.
+        const t = Math.min(raw, c.land)
+        c.mesh.visible = alpha > 0.01
+        c.mesh.position.set(
+          c.base.x + c.vel.x * t,
+          Math.max(CHIP_REST, c.base.y + c.vel.y * t - 0.5 * CHIP_GRAVITY * t * t),
+          c.base.z + c.vel.z * t,
         )
-        f.mesh.rotation.set(f.spin.x * t, f.spin.y * t, f.spin.z * t)
-        // Hold full size for most of the flight, then shrink out fast, so the
-        // burst dies as a fade rather than as a swarm shrinking in place.
-        const tail = Math.max(0, (p - 0.66) / 0.34)
-        f.mesh.scale.copy(f.scale).multiplyScalar(Math.max(0.001, 1 - tail * tail))
+        c.mesh.rotation.set(c.spin.x * t, c.spin.y * t, c.spin.z * t)
       }
     },
   })
@@ -1058,20 +1155,36 @@ export function createBougainvilleaSpill(variant: number): THREE.Group {
     g.add(l)
   }
 
-  // Bracts: upper and outer only. Papery little cards, clustered in threes the
-  // way bougainvillea actually flowers.
-  const nCluster = 11 + Math.floor(r() * 4)
+  /*
+   * Bracts — the spill.
+   *
+   * This is the only saturated warm colour the spec allows within sight of the
+   * treeline, and it is carrying a promise (the village that will one day have
+   * this stuff pouring over its walls), so it has to be a MASS: a cascade
+   * about two metres across, not a scatter of pink flecks on a green bush,
+   * which is what the last pass photographed as.
+   *
+   * Twice the clusters, half again the bract size, and the whole flare pushed
+   * to the seaward face (−x) and DOWN it — a cascade falls, and a flower mass
+   * that sits evenly all round the crown reads as a hedge in bloom rather than
+   * as something spilling out of a gap. `castShadow` stays off: a papery bract
+   * casting a hard shadow onto the mass behind it just muddies the colour.
+   */
+  const nCluster = 22 + Math.floor(r() * 6)
   for (let i = 0; i < nCluster; i++) {
-    const a = r() * Math.PI * 2
-    const rad = 0.3 + r() * 0.36
-    const cx = Math.cos(a) * rad * 0.85
-    // Weighted to the crown: bracts sit where the dawn reaches, and a flare
-    // that starts halfway down the mass stops being a flare.
-    const cy = 0.58 + r() * r() * 0.62
-    const cz = Math.sin(a) * rad * 1.3
+    // Biased to the seaward half so the flare faces the beach the player wakes
+    // on: cos(a) is pushed negative, which is −x.
+    const a = Math.PI * 0.5 + (r() - 0.5) * 2.4
+    const rad = 0.3 + r() * 0.44
+    const cx = -Math.abs(Math.sin(a)) * rad * 0.95 + (r() - 0.5) * 0.2
+    // Cascading: the flare starts at the crown and pours down the outer face,
+    // so height and outward distance run together.
+    const fall = r()
+    const cy = 1.1 - fall * fall * 0.72
+    const cz = Math.cos(a) * rad * 1.35
     for (let k = 0; k < 3; k++) {
-      const bract = leaf(0.14 + r() * 0.06, 0.125 + r() * 0.05, r() < 0.7 ? BOUGAIN : BOUGAIN_DEEP)
-      bract.position.set(cx + (r() - 0.5) * 0.13, cy + (r() - 0.5) * 0.11, cz + (r() - 0.5) * 0.13)
+      const bract = leaf(0.2 + r() * 0.09, 0.17 + r() * 0.07, r() < 0.72 ? BOUGAIN : BOUGAIN_DEEP)
+      bract.position.set(cx + (r() - 0.5) * 0.16, cy + (r() - 0.5) * 0.14, cz + (r() - 0.5) * 0.16)
       bract.rotation.set((r() - 0.5) * 1.6, r() * Math.PI * 2, (r() - 0.5) * 1.6)
       bract.castShadow = false
       g.add(bract)

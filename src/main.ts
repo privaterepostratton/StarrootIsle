@@ -18,7 +18,7 @@ import { CROPS, CROP_BY_ID, OPENING_CROP_IDS, growSecondsFor } from './game/crop
 import { rng } from './assets/style'
 import { Player, PLAYER_HEIGHT } from './game/player'
 import { HOTBAR_SLOTS, Inventory } from './game/inventory'
-import { DayCycle, DAY_LENGTH } from './game/daycycle'
+import { DayCycle, DAY_LENGTH, OPENING_HOUR } from './game/daycycle'
 import { Weather } from './game/weather'
 import { formatCoins } from './ui/format'
 import { Hud } from './ui/hud'
@@ -107,7 +107,7 @@ import { GoatArrival, type GoatPhase } from './game/opening/goat'
 import { Butterflies } from './game/opening/butterflies'
 import { OpeningUi } from './ui/opening/opening-ui'
 import { OpeningMusic } from './game/opening/music'
-import { createIslandBreath, playLottoTell } from './assets/opening/vfx'
+import { createIslandBreath, playLeafBurst, playLottoTell } from './assets/opening/vfx'
 
 /*
  * `?new` starts a genuinely fresh farm, and it is the only thing that can.
@@ -1818,6 +1818,8 @@ function isleEnsureSeeds() {
 
 /** Walk the farmer to `gap` units short of a point (tap-to-approach). */
 function isleMoveNear(x: number, z: number, gap: number) {
+  // Any other walk order supersedes a gap-routed one — see isleWalkTo.
+  isleWaypoint = null
   const dx = player.position.x - x
   const dz = player.position.z - z
   const d = Math.hypot(dx, dz) || 1
@@ -1856,15 +1858,52 @@ function isleWrapStrain(t: HoldTarget): HoldTarget {
 }
 
 /**
- * Deliver a chaos payout: silent inventory credit, satchel blip, a small
- * 'produce' doober arc for the eye (never 'coin'/'xp' — the opening grants
- * neither), and the kind's destruction sound.
+ * Material colours for the chaos payout spark — what the thing that just came
+ * apart was made of. Fibre is dry vine and husk, wood is wet-broken driftwood.
+ * Both are deliberately low-saturation browns and olives: the payout is debris
+ * catching the light, and the only saturated colours the opening is allowed to
+ * spend are the breath's green-gold and the lotto's gold.
+ */
+const ISLE_DROP_SPARK: Record<string, number[]> = {
+  fiber: [0x9c8a5a, 0x7d8a52, 0xb5a876],
+  wood: [0x8a6a44, 0xa8875a, 0x6d5436],
+}
+
+/**
+ * Deliver a chaos payout: silent inventory credit, satchel blip, a small spray
+ * of the material itself, and the kind's destruction sound.
+ *
+ * The spray used to be `doobers.spawn(at, 'produce', …)`, and that one line is
+ * the whole of the art review's "large flat lime-green diamonds". A produce
+ * doober is an unlit octahedral gem authored for the farming camera at eight
+ * units, where it is a small green spark crossing a wide frame. The opening
+ * stands the camera at under five and puts the same gem against dark volcanic
+ * ground: it renders about forty pixels across, its near-primary green is the
+ * loudest thing in a jungle frame, and being a faceted gem it reads as *loot*
+ * — a currency pickup — in the one sequence whose entire promise is that
+ * nothing here is a currency. Three separate passes retuned the two leaf-burst
+ * emitters without touching it, because it does not live in the VFX file.
+ *
+ * Shrinking the doober was the wrong lever: `produce` is the farm game's
+ * harvest arc and it is correct there. So the opening simply stops using it
+ * and spends the existing `bursts` spark instead, tinted to the material —
+ * which is already the idiom `isleTideCollect` uses for the tide's gifts, and
+ * the "arcing to the satchel" read the spec asks for is carried by
+ * `blipMaterial` either way.
  */
 function isleGrantDrop(at: THREE.Vector3, drop: ChaosDrop, kind: ChaosKind) {
   if (drop.material) {
     inventory.addMaterial(drop.material, drop.amount)
     isleUi?.blipMaterial(drop.material, drop.amount)
-    doobers.spawn(at, 'produce', Math.min(3, drop.amount + 1), 0)
+    const tint = ISLE_DROP_SPARK[drop.material] ?? ISLE_DROP_SPARK.fiber
+    bursts.emit(at, 7 + Math.min(4, drop.amount * 2), tint, {
+      kind: 'spark',
+      speed: 2.0,
+      life: 0.55,
+      // A twentieth of a unit: at the opening's camera that is a few pixels of
+      // grit, which is the size debris is allowed to be.
+      scale: 0.05,
+    })
   }
   if (drop.keepable) {
     inventory.addMaterial(drop.keepable, 1)
@@ -1930,6 +1969,13 @@ function isleStageWake() {
   engine.yaw = WAKE_YAW
   engine.targetYaw = WAKE_YAW
   engine.setCinematicDistance(WAKE_CAM_DIST)
+  /*
+   * Snap the boom rather than letting it ease in. Beat 1 fades up from white
+   * into a composed frame; a camera still travelling in from the player's
+   * saved farming distance spends the first two seconds of the game backing
+   * into position, which is the one shot in the session that has to be still.
+   */
+  engine.distance = WAKE_CAM_DIST
   engine.focus.copy(player.position)
   engine.focus.y -= WAKE_CAM_FOCUS_DROP
   isleWakeFade()
@@ -1951,6 +1997,7 @@ function isleCamPlay(snap: boolean) {
     engine.pitch = ISLE_CAM_PITCH
     engine.yaw = WAKE_YAW
     engine.targetYaw = WAKE_YAW
+    engine.distance = ISLE_CAM_DIST
     isleCamSettle = 0
   } else {
     isleCamSettle = 1.6
@@ -2004,6 +2051,15 @@ function isleSnapWake() {
 function isleStage(beat: BeatId) {
   const target = isleSeq ? isleSeq.beat : isleBootBeat
   const replay = BEAT_ORDER.indexOf(beat) < BEAT_ORDER.indexOf(target)
+  /*
+   * The beds are dug earth this session, not the valley's terracotta tray.
+   *
+   * Set here rather than beside `openBare()` because staging is the one thing
+   * that runs for every beat on a fresh start, a resume and a jumpTo alike —
+   * and the call is idempotent, so paying it nine times costs nothing. It is
+   * cleared at the handover, where the clearing becomes a farm.
+   */
+  farm.setOpeningLoam(true)
   switch (beat) {
     case 'wake':
       if (!replay) isleStageWake()
@@ -2302,9 +2358,62 @@ function isleRefuse(x: number, z: number) {
  * apart.
  */
 function isleLeadButterflies() {
-  const from = new THREE.Vector3(player.position.x + 1.2, 0, player.position.z)
   const to = isleWall ? isleWall.gapCentre : new THREE.Vector3(-40, groundHeight(-40, 0), 0)
+  /*
+   * Start a few paces along the route rather than on top of the player. They
+   * fly at head height, and the opening's camera is now low enough that a pair
+   * launched at arm's length fills the top edge of the frame with two peach
+   * wings and points at nothing. Three units out they sit in the middle of the
+   * shot, clearly between the player and the doorway, which is the whole job.
+   */
+  const dx = to.x - player.position.x
+  const dz = to.z - player.position.z
+  const d = Math.hypot(dx, dz) || 1
+  const lead = Math.min(3.4, d * 0.5)
+  const from = new THREE.Vector3(
+    player.position.x + (dx / d) * lead,
+    0,
+    player.position.z + (dz / d) * lead,
+  )
   isleButterflies?.lead(from, to)
+}
+
+/**
+ * Tap-to-move, routed through the treeline gap.
+ *
+ * `Player.moveTo` is straight-line steering with a give-up timer, not a
+ * pathfinder — it slides along whatever it hits and abandons the walk after
+ * 0.7 s of being stopped. That was fine when the only things between the beach
+ * and the farm pad were a few trees; the jungle wall is a closed horseshoe with
+ * one doorway, and a player who taps the chaos pocket from the sand would walk
+ * into eight units of foliage, wedge in a concave seam between two colliders,
+ * and have the walk silently cancelled — in the beat the whole session is
+ * built around.
+ *
+ * So: when the tap is on the far side of the wall, walk to the doorway first
+ * and hold the real destination as a waypoint. `Player.arrivedThisFrame` fires
+ * the second leg. The wall is the only thing in the opening that needs this,
+ * and once it is struck at the handover the whole mechanism is inert.
+ */
+let isleWaypoint: THREE.Vector3 | null = null
+
+/** Which side of the wall a point is on: true = inside the horseshoe. */
+function isleInsideWall(x: number): boolean {
+  return isleWall !== null && x > isleWall.gapCentre.x + 0.6
+}
+
+function isleWalkTo(x: number, z: number) {
+  isleWaypoint = null
+  if (isleWall && isleInsideWall(x) !== isleInsideWall(player.position.x)) {
+    const gap = isleWall.gapCentre
+    isleWaypoint = new THREE.Vector3(x, 0, z)
+    // Aim a little to the player's side of the doorway's middle, so the
+    // approach is *through* it rather than at its far jamb.
+    const bias = isleInsideWall(player.position.x) ? 1.1 : -1.1
+    player.moveTo(isleTapVec.set(gap.x + bias, 0, gap.z))
+    return
+  }
+  player.moveTo(isleTapVec.set(x, 0, z))
 }
 
 // --- the opening tap router --------------------------------------------------
@@ -2407,8 +2516,8 @@ function isleWorldTap(x: number, z: number): boolean {
     return true
   }
 
-  // 5. Tap-to-move.
-  if (isWalkable(x, z)) player.moveTo(isleTapVec.set(x, 0, z))
+  // 5. Tap-to-move, through the doorway when the wall is in the way.
+  if (isWalkable(x, z)) isleWalkTo(x, z)
   return true
 }
 
@@ -2426,6 +2535,7 @@ function isleStartGoatShot(revisit: boolean) {
    */
   isleCamDist = GOAT_SHOT.rustle.d
   engine.setCinematicDistance(isleCamDist)
+  engine.distance = isleCamDist
   document.body.classList.add('cinematic')
   if (!revisit) openingCinematic = true
   const beds = isleBedPositions()
@@ -2448,14 +2558,8 @@ function isleGoatDone(leftTuft: boolean) {
    * seasickness. In the opening "home" is the opening's own framing; in the
    * session-2 revisit the opening is over and the boom belongs to the player.
    */
-  if (isleSeq?.active) isleCamPlay(true)
-  else {
-    engine.pitch = isleCamPrevPitch
-    engine.targetYaw = isleCamPrevYaw
-    engine.yaw = isleCamPrevYaw
-    engine.setCinematicDistance(null)
-  }
   if (isleSeq?.active) {
+    isleCamPlay(true)
     // The avatar sits, pulls the logbook, and sketches what it saw.
     player.playOpeningPose('sketch')
     if (!isleJournalProp && isleGroup) {
@@ -2468,11 +2572,19 @@ function isleGoatDone(leftTuft: boolean) {
     }
     audio.play('charcoal')
     isleJournalTimer = 0.8
-  } else if (leftTuft) {
-    isleUi?.pulseAt(
-      new THREE.Vector3(TUFT_MARK.x, groundHeight(TUFT_MARK.x, TUFT_MARK.z) + 0.5, TUFT_MARK.z),
-      0.5,
-    )
+  } else {
+    // The session-2 revisit: the opening is over, so the boom goes back to the
+    // player rather than to the opening's framing.
+    engine.pitch = isleCamPrevPitch
+    engine.targetYaw = isleCamPrevYaw
+    engine.yaw = isleCamPrevYaw
+    engine.setCinematicDistance(null)
+    if (leftTuft) {
+      isleUi?.pulseAt(
+        new THREE.Vector3(TUFT_MARK.x, groundHeight(TUFT_MARK.x, TUFT_MARK.z) + 0.5, TUFT_MARK.z),
+        0.5,
+      )
+    }
   }
 }
 
@@ -2521,6 +2633,7 @@ function isleHandover() {
     }
     isleWallObstacles = []
   }
+  isleWaypoint = null
   // The valley's own ambient life comes back with the rest of the world.
   isleRestoreCrabs()
   beachSeeds.group.visible = true
@@ -2533,6 +2646,9 @@ function isleHandover() {
     isleJournalProp = null
   }
   isleBreath?.stop()
+  // The castaway's dug earth becomes the farm's beds — the one moment the
+  // valley's terracotta tray is the right answer for ground the player made.
+  farm.setOpeningLoam(false)
   // The garden formalises itself as the game begins: fence and router in sync.
   syncGardenFence()
   hud.updateShovel(shovelMode(), farm.nextPlotCost)
@@ -2543,6 +2659,12 @@ function isleHandover() {
     /* storage off */
   }
   isleMusic?.fadeToGameMusic()
+  // W-LIGHT: the day curve owns the light again from the next tick — clearing
+  // the dawn grade here is all the handover needs, since every value
+  // applyOpeningDawn writes is also written by DayCycle.apply.
+  postfx.openingDawn = false
+  postfx.setNightAmount(day.isNight ? 1 : 0)
+  day.apply(engine)
   if (isleHold) {
     isleHold.enabled = false
     isleHold.setTargets([])
@@ -2812,6 +2934,22 @@ function isleFrame(dt: number) {
       engine.pitch += (isleCamPitch - engine.pitch) * Math.min(1, dt * 2.2)
     }
 
+    /*
+     * Second leg of a walk routed through the treeline gap (see isleWalkTo).
+     * Dropped if the walk ended any other way — a new tap, a cancel, or the
+     * stuck timer giving up — so a stale waypoint can never yank the farmer
+     * somewhere they no longer asked to go.
+     */
+    if (isleWaypoint) {
+      if (player.arrivedThisFrame) {
+        const next = isleWaypoint
+        isleWaypoint = null
+        player.moveTo(next)
+      } else if (player.destination === null) {
+        isleWaypoint = null
+      }
+    }
+
     if (refusalCooldown > 0) refusalCooldown -= dt
     if (refusalPour) {
       refusalPour.t -= dt
@@ -3034,9 +3172,13 @@ function isleCameraDrive(dt: number): boolean {
       beachSeeds.restoreEmptied()
       beachSeeds.group.visible = false
       flotsam.group.visible = false
-      day.time = (7.2 / 24) * DAY_LENGTH
-      day.apply(engine)
+      day.time = (OPENING_HOUR / 24) * DAY_LENGTH
+      // W-LIGHT: the opening runs on its own dawn rig, not on the day curve's
+      // 7 a.m. key — see DayCycle.applyOpeningDawn. Re-applied every frame from
+      // the loop below, because the key and its shadow box track engine.focus.
+      day.applyOpeningDawn(engine)
       weather.set('clear')
+      postfx.openingDawn = true
       postfx.setNightAmount(0)
 
       isleUi.begin()
@@ -3069,12 +3211,12 @@ function isleCameraDrive(dt: number): boolean {
       islePocket = new ChaosPocket(isleGroup, world.obstacles, rng(0x0c40a5))
       islePocket.onClear = (at, kind, drop, voluntary) => {
         isleGrantDrop(at, drop, kind)
-        bursts.emit(at, 10, [0x4f8a3d, 0x8fcf6b], {
-          kind: 'petal',
-          speed: 2.6,
-          life: 0.9,
-          jitter: 0.4,
-        })
+        // Spec VFX #2, authored in assets/opening/vfx.ts. The inline emit this
+        // replaces threw ten leaves at the burst system's default scale, which
+        // at the opening's close camera printed as palm-sized lime squares —
+        // the loudest thing on screen during the beat the whole session turns
+        // on. Scale, count and green are measured over there against the grade.
+        playLeafBurst({ at, bursts })
         if (voluntary) isleSeq?.notify('voluntary-clear')
         isleButterflies?.hide()
         isleRetargetHolds()
@@ -3125,6 +3267,14 @@ function isleCameraDrive(dt: number): boolean {
        */
       isleSyncMusicLayers()
       isleRetargetHolds()
+      /*
+       * A resume lands mid-opening with the wake staging skipped (its replay
+       * path is a no-op once the farmer is already on their feet), so the
+       * opening's framing has to be claimed explicitly here or a reload at
+       * beat 5 would hand the player the farming camera for the rest of the
+       * session.
+       */
+      if (isleSeq.beat !== 'wake') isleCamPlay(true)
     } else {
       // Return mode: an inert sequencer exists purely to gate and stage the
       // three §3.3 beats; beginFirstReturn self-checks every condition.
@@ -4793,6 +4943,10 @@ function frame() {
       neighbourUi.refresh()
     }
   }
+  // Read every frame rather than set once at staging: the opening ends at
+  // handover, and the valley is supposed to get its autumn drift back the
+  // moment it does.
+  ambience.suppressLeaves = openingActive()
   ambience.update(dt, elapsed, engine, weather, day.hour)
   updateChopping(dt)
   worldPlots.update(dt, engine.camera, elapsed)
@@ -4813,7 +4967,15 @@ function frame() {
 
   // Time itself is pinned at hour 7.2 while the opening runs (§4.2): the day
   // does not turn, weather holds clear, and the grade stays dawn-warm.
-  if (!openingActive() && day.update(dt, engine)) {
+  //
+  // W-LIGHT: pinned is not the same as static. The dawn rig has to be re-laid
+  // every frame because the key light and its shadow frustum are positioned
+  // relative to engine.focus, which follows the player from the beach to the
+  // clearing — applied only at boot, the sun stays aimed at the wake spot and
+  // the clearing falls off the edge of the shadow map.
+  if (openingActive()) {
+    day.applyOpeningDawn(engine)
+  } else if (day.update(dt, engine)) {
     hud.toast(`☀️ Day ${day.day} begins`, 'good')
     // A new day rolls a fresh set of challenges.
     quests.rollDailies(day.day, progression.level)
@@ -5061,6 +5223,10 @@ function frame() {
   // No gold and no arrows before the first lotto tell (contract rule 4): the
   // castaway also has no street of look-alike farms to lose yet.
   world.homeMarker.setVisible(!openingActive())
+  // ...and no road signs in a jungle nobody has cut a road through yet. Driven
+  // per frame off the same predicate so it heals in both directions — a resume
+  // into the middle of the opening hides it again without its own staging step.
+  world.setVillageFurnitureVisible(!openingActive())
   world.homeMarker.update(elapsed, engine.camera)
   world.lanterns.update(player.position)
   world.shopMarkers.update(elapsed, engine.camera, player.position)
@@ -5110,7 +5276,7 @@ if (import.meta.env.DEV) {
     engine, world, farm, player, inventory, day, weather, progression, quests, pasture, plotUi, shopUi, questUi, animalUi, postfx, ambience, bursts, popups, hood, neighbourUi, neighbourPlotUi, pets, petUi, stock, audio, settingsUi, tips, ftue, hud, catchUp, discovery, prestige, trading, requests, placeables, decorGhost, almanacUi, prestigeUi, doobers, levelUpScreen, guidePath, ftueRings, wildlife, critters, clearing, beachSeeds, flotsam, upgradeTour, grantXp, worldPlots, landMapUi, plotBuildUi, animalInfoUi,
     // The opening's modules (null on boots that owe no opening) — the verify
     // driver discovers hold-target APIs by scanning these values.
-    openingSequencer: isleSeq, chaosPocket: islePocket, beachProps: isleBeach, tidelineOpening: isleTideline, goatArrival: isleGoat, holdInput: isleHold, openingUi: isleUi,
+    openingSequencer: isleSeq, chaosPocket: islePocket, beachProps: isleBeach, tidelineOpening: isleTideline, goatArrival: isleGoat, holdInput: isleHold, openingUi: isleUi, jungleWall: isleWall, butterflies: isleButterflies,
   }
 
   /**
@@ -5162,8 +5328,13 @@ if (import.meta.env.DEV) {
     engine.pitch = pitch
     engine.distance = dist
     day.time = (hour / 24) * DAY_LENGTH
-    day.apply(engine)
-    postfx.setNightAmount(day.isNight ? 1 : 0)
+    // W-LIGHT: while the opening runs, the opening owns the rig — see
+    // DayCycle.applyOpeningDawn. `day.apply` here would relight the frame off
+    // the ordinary curve, so every art-direction capture of the clearing came
+    // back at the wrong hour with none of the dawn grade the beat ships with.
+    if (openingActive()) day.applyOpeningDawn(engine)
+    else day.apply(engine)
+    postfx.setNightAmount(!openingActive() && day.isNight ? 1 : 0)
 
     // Settle: the camera eases toward its target and the LOD needs a few ticks.
     for (let i = 0; i < 40; i++) {

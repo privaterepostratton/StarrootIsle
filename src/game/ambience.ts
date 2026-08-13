@@ -291,6 +291,23 @@ export class Ambience {
   private readonly pollenData = makeParticles(POLLEN_COUNT)
   private readonly fireflyData = makeParticles(FIREFLY_COUNT)
 
+  /**
+   * Hold the drifting-leaf field off entirely.
+   *
+   * Set for the isle opening. `LEAF_COLORS` is an autumn palette — rust, amber,
+   * russet — authored for the valley's deciduous trees, and it drifts over the
+   * whole opening because this system predates it and nothing gated it. Two
+   * things are wrong with that at once. It is off-thesis: the spec's island is
+   * Maui, evergreen and volcanic, and nothing there sheds a russet leaf. And
+   * `0xe0a83c` sits inside the verifier's reserved-gold radius of the lotto
+   * colour `0xf2c14e` — so the opening was quietly spending the one colour the
+   * canon reserves for luck, on ambient litter, for eight minutes before the
+   * first roll. The canvas scan only ever read it as a rounding error (0.013 %
+   * against a 0.15 % floor) because the flakes are small and few, which is
+   * exactly why three passes of gold auditing never caught it.
+   */
+  suppressLeaves = false
+
   /** Eased 0..1 weights so effects fade in and out instead of popping. */
   private leafWeight = 0
   private pollenWeight = 0
@@ -344,13 +361,30 @@ export class Ambience {
      * which is exactly what the mist and the mountains are. (burst.ts carries
      * the same rule for the same reason.)
      */
+    /*
+     * Pollen colour is a reserved-palette decision, not a taste one.
+     *
+     * It used to be `0xfff2c0` at 0.85 alpha — a warm straw that measures 48°
+     * on the hue wheel, six degrees off lotto gold (`#F2C14E`, 42°). Over a
+     * pale sky that reads as sunlight and nobody notices. Over the isle
+     * opening's dark jungle wall an additive quad at that alpha clears the
+     * bloom threshold, and the review found the result exactly: half a dozen
+     * saturated gold orbs hanging in the treeline, several beats before the
+     * player has ever been shown what gold means. Reserved gold cannot be
+     * reserved if the ambience is quietly spending it.
+     *
+     * `0xdde7c4` sits at 77° — unmistakably vegetal, still warm enough to read
+     * as drifting seed-fluff in daylight — and the lower alpha keeps it under
+     * bloom against dark foliage. Game-wide, deliberately: a colour that means
+     * luck has to mean luck everywhere, not only while the opening is running.
+     */
     this.pollen = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(0.16, 0.16),
       new THREE.MeshBasicMaterial({
         map: fx.pollen,
-        color: 0xfff2c0,
+        color: 0xdde7c4,
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.6,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
         fog: false,
@@ -434,7 +468,7 @@ export class Ambience {
     const windy = weather.current.type === 'storm' || weather.current.type === 'rain'
 
     // Leaves blow hardest in wind but a few always drift.
-    const wantLeaves = windy ? 1 : calm ? 0.35 : 0.6
+    const wantLeaves = this.suppressLeaves ? 0 : windy ? 1 : calm ? 0.35 : 0.6
     // Pollen is a fair-weather daytime thing.
     const wantPollen = !night && calm ? 1 : 0
     const wantFireflies = night && !windy ? 1 : 0

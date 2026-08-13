@@ -22,15 +22,27 @@ import type { CropModelOptions } from '../crops'
  * The five states (spec §Flora)
  * -----------------------------
  *   sprout    — two seed-leaves and a first true leaf. Low, flat, two-lobed.
- *   vine      — leggy: a bare stem with two sparse tiers. Open silhouette.
- *   flowering — filled out, speckled with small pale-yellow star flowers.
- *   fruiting  — plump bush, 3–5 ribbed red fruit hanging on the *outside*.
- *   odd       — ONE oversized gold-streaked fruit riding proud above the crown.
+ *   vine      — young sprawl: two stems flopping outward, leaves already broad.
+ *   flowering — the mound half-built, speckled with small pale star flowers.
+ *   fruiting  — a low sprawling vine: broad soft leaves in a wide parasol with
+ *               4–6 plump red fruit sitting out on the rim at bed height.
+ *   odd       — the same plant, 1.42× across, its fruit veined with gold.
  *
  * The five are meant to be told apart from the game camera by silhouette alone:
- * flat cross → open V → dense dome → dense dome with red spots on its rim →
- * dome with one big thing on a stalk above it. Colour is the confirmation, not
- * the read.
+ * flat cross → open V → low dome → low dome with red on its rim → the same
+ * dome grown half again as big. Colour is the confirmation, not the read.
+ *
+ * Why a sprawl and not a bush
+ * ---------------------------
+ * The pass before this one stacked narrow leaf tiers up a central stem, and it
+ * photographed as a conifer with tomatoes glued to it: rings of thin leaflets
+ * read as needle whorls, and the spire pulled every fruit up off the soil where
+ * a truss never sits. A real tomato left unstaked — which is what a castaway's
+ * first crop is — flops. So the mass here is WIDE and LOW: broad folded blades
+ * radiating from a short crown and drooping past horizontal, fruit resting out
+ * near the leaf line where a hand would reach. Wider than tall is the whole
+ * read, and it is what makes six of them look like a *bed* rather than a
+ * hedgerow.
  *
  * Reserved-colour discipline (opening contract rule 4)
  * ---------------------------------------------------
@@ -38,9 +50,11 @@ import type { CropModelOptions } from '../crops'
  * file — it is the first gold the player ever sees and it must mean luck. The
  * flowering state's petals are deliberately a pale primrose (#eedd88), far
  * enough from lotto gold in both hue and saturation to survive the automated
- * colour scan the verify plan runs over beats 1–7. The odd fruit stays mostly
- * red: four gold meridians and a shoulder streak over a deep tomato body, never
- * a gold ball, because "the wrong one" has to still be recognisably a tomato.
+ * colour scan the verify plan runs over beats 1–7. The gold on the odd fruit is
+ * *veining*: short, crooked, uneven streaks that wander over the shoulders like
+ * something grew through the skin. Not meridians — evenly spaced gold ribs read
+ * as a cage bolted around the fruit, which is a manufactured object, and the
+ * one thing this fruit must never look like is manufactured.
  *
  * Grade note: postfx multiplies saturation by 1.2 and the scene is pinned to a
  * warm 7.2am, so every colour here is authored a step under where it should
@@ -92,97 +106,132 @@ const C_SHEEN = 0xfff4de
 // --- proportions -------------------------------------------------------------
 
 /**
+ * How much bigger the odd plant is than its five neighbours.
+ *
+ * The spec's word is *oversized*, and the whole plant carries it, not just the
+ * fruit: the odd one is the same silhouette grown half again, so the player's
+ * eye finds it down the bed before a single gold pixel is resolved. Under 1.3
+ * it reads as growth jitter; past 1.6 it reads as a different species.
+ */
+const ODD_SCALE = 1.42
+
+/**
  * Authored height per state, in local units before the per-plant girth.
  *
- * The avatar is ~1.7 units. A ripe bush at 1.18 × ~1.08 girth lands near 1.27:
- * chest-high on the player, proud in a 1.2-unit bed, and still short enough
- * that six of them do not wall off the camera. The odd plant is deliberately
- * the tallest tomato in the bed before its fruit is even counted.
+ * The avatar is ~1.7 units and the beds are 1.2 apart. A ripe sprawl stands
+ * 0.88 and spans a little over a metre: knee-high on the player, filling its
+ * bed corner to corner, and — the point — WIDER THAN TALL, which is what an
+ * unstaked tomato does and what keeps six of them reading as a planted bed
+ * seen from a low camera instead of a hedge the camera has to see over.
  */
 const HEIGHT: Record<SunTomatoState, number> = {
   sprout: 0.5,
-  vine: 0.78,
-  flowering: 1.02,
-  fruiting: 1.18,
-  odd: 1.34,
+  vine: 0.66,
+  flowering: 0.8,
+  fruiting: 0.88,
+  odd: 0.88 * ODD_SCALE,
 }
 
-/** Ordinary fruit radius. 0.155 × 2 is a quarter of a tile — the smallest
- *  thing that still reads as pluckable from the default camera height. */
-const R_FRUIT = 0.155
-/** The odd fruit. Not double, but obviously wrong beside its neighbours. */
-const R_ODD = 0.27
+/**
+ * How far the leaf mass sprawls, as a multiple of the plant's height. Over 1
+ * means the plant is wider than it is tall — see the note above.
+ *
+ * Ceiling set by the bed, not by taste: tiles are TILE_SIZE 1.2 apart and the
+ * farm's own girth jitter reaches ~1.18×, so 1.12 × 0.88 lands a ripe plant
+ * just under a tile wide at its largest. Past that, six plants knit into one
+ * hedge and every fruit is buried in a neighbour. (The odd plant deliberately
+ * blows through this — it is supposed to be crowding the bed.)
+ */
+const SPREAD = 1.12
+
+/**
+ * Ordinary fruit radius: plump, but a quarter of the plant's width, not half.
+ *
+ * 0.19 was tried first and the plant photographed as two beach balls in a
+ * salad — fruit that outweighs its foliage stops being fruit and becomes the
+ * whole object. The green has to be able to frame the red.
+ */
+const R_FRUIT = 0.142
+/** The odd fruit. The body scale already carries most of the difference; this
+ *  adds the last 20% so its fruit is unmistakably the heaviest in the bed. */
+const R_ODD = R_FRUIT * ODD_SCALE * 1.2
 
 /** Foliage variants, matching the crop pipeline's own count. Three is enough
  *  that no two plants in a bed of six are twins. */
 const VARIANTS = 3
 
-/** How many fruit each variant hangs, inside the spec's 3–5. */
-const FRUIT_COUNT = [4, 5, 3]
+/** How many fruit each variant hangs. Four is the floor: a bed where one plant
+ *  carries three and another six still reads as one crop, but under four the
+ *  plant stops looking like it is feeding anything. */
+const FRUIT_COUNT = [5, 4, 6]
 
 // --- small builders ----------------------------------------------------------
 
 /**
- * One leaflet: a squashed sphere, long in Z, thin in Y.
+ * One broad, soft leaf lying along +Z, hinged at its origin.
  *
- * Local to this file rather than borrowed from the crop pipeline's leaf pad,
- * because a tomato leaf is *compound* — a rachis carrying paired leaflets — and
- * that ragged, many-lobed edge is most of what tells the plant apart from every
- * round-leaved bush in the game at silhouette distance.
- */
-function leaflet(len: number, width: number, color: number) {
-  const m = ball(0.5, color, 1)
-  m.scale.set(width, len * 0.11, len)
-  return m
-}
-
-/**
- * A compound leaf lying along +Z, hinged at its origin.
+ * A single wide blade, not a rachis of leaflets. The compound version this
+ * replaces was botanically right and photographed wrong: at the size a leaf
+ * occupies on screen here, six small leaflets are six flecks, and a plant made
+ * of flecks has no surface for the light to sit on. What sells *soft* is one
+ * big blade catching the dawn key across it.
  *
- * `tilt` lifts it out of the horizontal (positive = held up), `spin` yaws it
- * around the stem. Built in the YXZ order so the lift happens in the yawed
- * frame — otherwise every leaf tips toward world +Z regardless of which side of
- * the plant it grows on, which is the mistake that makes procedural foliage
- * look combed.
+ * The blade is folded — two half-blades tipped up off the midrib — so it is
+ * never a flat disc from above and its two halves take different light. That
+ * single crease is most of the difference between a leaf and a lily pad.
+ *
+ * `tilt` lifts it out of the horizontal (positive = held up, negative = drooped
+ * past level), `spin` yaws it around the crown. Built in YXZ order so the lift
+ * happens in the yawed frame — otherwise every leaf tips toward world +Z no
+ * matter which side of the plant it grows on, which is the mistake that makes
+ * procedural foliage look combed.
  */
-function compoundLeaf(len: number, color: number, tilt: number, spin: number, r: () => number) {
+function broadLeaf(len: number, color: number, tilt: number, spin: number, r: () => number) {
   const g = new THREE.Group()
 
-  const rachis = cyl(0.008, 0.013, len, C_STEM, 5)
-  rachis.rotation.x = Math.PI / 2
-  rachis.position.z = len / 2
-  g.add(rachis)
+  const petiole = cyl(0.011, 0.017, len * 0.42, C_STEM, 5)
+  petiole.rotation.x = Math.PI / 2
+  petiole.position.z = len * 0.21
+  g.add(petiole)
 
-  /*
-   * Three opposed pairs down the rachis, shrinking outward, plus a terminal
-   * leaflet — the real leaf's arrangement, and the shrink is what keeps the
-   * outline tapered instead of paddle-shaped.
-   *
-   * The leaflets are broad. The first pass drew them at less than half this
-   * width and the bush came out a wire armature with confetti on it: from the
-   * game camera the plant read as sticks, and sticks do not say *plump*. Leaf
-   * mass is what makes a tomato plant look like it is feeding something.
-   */
-  for (let i = 0; i < 3; i++) {
-    const t = 0.28 + i * 0.26
-    const scale = 1 - i * 0.13
-    for (const side of [-1, 1]) {
-      const lf = leaflet(len * 0.46 * scale, len * 0.3 * scale, i % 2 ? color : C_LEAF_DARK)
-      lf.position.set(side * len * 0.16 * scale, 0, len * t)
-      lf.rotation.y = side * (0.72 + r() * 0.18)
-      g.add(lf)
-    }
+  // Two half-blades, folded up ~18° off the midrib and swept back toward the
+  // stem so the outline tapers to a point instead of ending in a paddle.
+  const shade = r() < 0.4 ? C_LEAF_DARK : color
+  for (const side of [-1, 1]) {
+    const half = ball(0.5, shade, 1)
+    half.scale.set(len * 0.46, len * 0.1, len * 0.72)
+    half.position.set(side * len * 0.16, len * 0.02, len * 0.6)
+    half.rotation.order = 'YXZ'
+    half.rotation.set(0, side * 0.16, -side * 0.32)
+    g.add(half)
   }
-  const tip = leaflet(len * 0.5, len * 0.34, color)
-  tip.position.z = len * 0.9
-  g.add(tip)
+
+  // Two small basal lobes: the ragged edge that says tomato rather than hosta,
+  // for the price of two meshes on a baked mesh nobody counts.
+  for (const side of [-1, 1]) {
+    const lobe = ball(0.5, color, 1)
+    lobe.scale.set(len * 0.22, len * 0.07, len * 0.3)
+    lobe.position.set(side * len * 0.2, 0, len * 0.3)
+    lobe.rotation.y = side * 0.6
+    g.add(lobe)
+  }
+
+  const midrib = ball(0.5, C_STEM, 1)
+  midrib.scale.set(len * 0.05, len * 0.05, len * 0.9)
+  midrib.position.z = len * 0.5
+  g.add(midrib)
 
   g.rotation.order = 'YXZ'
   g.rotation.set(-tilt, spin, 0)
   return g
 }
 
-/** A ring of compound leaves around the stem at one height. */
+/**
+ * A ring of broad leaves radiating from the crown at one height.
+ *
+ * `tilt` is signed: the outer rings run negative — leaves held *below*
+ * horizontal — which is the droop that turns a rosette into a sprawl.
+ */
 function leafTier(
   parent: THREE.Group,
   count: number,
@@ -194,11 +243,11 @@ function leafTier(
 ) {
   const phase = r() * Math.PI * 2
   for (let i = 0; i < count; i++) {
-    const spin = phase + (i / count) * Math.PI * 2 + (r() - 0.5) * 0.3
-    const leaf = compoundLeaf(len * (0.85 + r() * 0.3), color, tilt + (r() - 0.5) * 0.3, spin, r)
-    // Generous vertical scatter: tiers placed on exact rings read as a stack of
-    // discs, and the gaps between them are where the sky gets through.
-    leaf.position.y = y + (r() - 0.5) * 0.11
+    const spin = phase + (i / count) * Math.PI * 2 + (r() - 0.5) * 0.35
+    const leaf = broadLeaf(len * (0.82 + r() * 0.36), color, tilt + (r() - 0.5) * 0.26, spin, r)
+    // Generous vertical scatter: leaves placed on an exact ring read as a stack
+    // of discs, and the gaps between them are where the sky gets through.
+    leaf.position.y = y + (r() - 0.5) * 0.07
     parent.add(leaf)
   }
 }
@@ -254,68 +303,98 @@ interface Anchor {
 /**
  * The fruit body at unit radius, ready to bake.
  *
- * Ribbed rather than round: five meridians cut into a squashed globe. That
- * profile is what says *tomato* at fifteen pixels — a smooth sphere at this
- * size reads as a berry, and we already have five berries in the crop table.
+ * Plump and nearly round, with two shallow creases pressed into the shoulders
+ * rather than a ring of hard meridians. A tomato's ribs are dents in a soft
+ * thing; drawn as raised ridges they turn it into a pumpkin, and drawn evenly
+ * spaced they turn it into hardware.
  *
- * The odd fruit is the same shape with four of its meridians in lotto gold and
- * one gold streak across the shoulder. Same silhouette, wrong metal.
+ * The odd fruit is the same globe VEINED with gold — short crooked streaks,
+ * unevenly spaced, running only over the upper half like something that grew
+ * out through the skin. Roughly a fifth of the surface: the fruit's colour is
+ * still red, because the lesson the player must take from beat 8 is "you got
+ * lucky", not "you grew a different crop".
  */
-function buildFruitBody(odd: boolean) {
+function buildFruitBody(odd: boolean, r: () => number) {
   const g = new THREE.Group()
 
   // The odd fruit's flesh is a shade deeper, so the gold on it has somewhere
   // dark to sit. Gold on bright red is two loud colours fighting; gold on deep
   // red is metal in fruit.
   const flesh = ball(1, odd ? C_FRUIT_DEEP : C_FRUIT, 2)
-  flesh.scale.set(1, 0.84, 1)
+  flesh.scale.set(1, 0.92, 1)
   g.add(flesh)
 
   // Shaded belly: a second globe pushed down and in, showing only as the
   // darker underside. Cheaper than a gradient and reads at any angle.
   const belly = ball(0.94, odd ? 0x7d2418 : C_FRUIT_DEEP, 1)
-  belly.scale.set(1, 0.7, 1)
-  belly.position.y = -0.16
+  belly.scale.set(1, 0.72, 1)
+  belly.position.y = -0.2
   g.add(belly)
 
-  /*
-   * Meridian ribs. A sphere flattened to a wafer, concentric with the flesh:
-   * it shows only as a great-circle ridge, which costs one mesh instead of a
-   * torus.
-   *
-   * On the odd fruit these are the lotto gold, and they stand *proud* of the
-   * skin (radius past 1). Thin gold hairlines disappeared into the ribbing at
-   * the size this fruit is actually seen — and this is the first gold in the
-   * entire game, the moment that teaches the player what gold means, so it has
-   * to be unmistakable from across the bed.
-   *
-   * The budget is deliberate and was tuned by eye against the rule that this
-   * fruit is *streaked*, never gilded: three ridges plus two short shoulder
-   * breaks, over a deep red globe, is roughly a quarter of the surface. A first
-   * pass with thicker ridges and a full crown cap came out a gold pumpkin with
-   * red seams — the red has to stay the fruit's colour, or the player learns
-   * that gold means "a different crop" instead of "you got lucky".
-   */
-  const ribCount = odd ? 3 : 5
-  for (let i = 0; i < ribCount; i++) {
-    const rib = ball(odd ? 1.05 : 1.01, odd ? LOTTO_GOLD : C_FRUIT_DEEP, 2)
-    rib.scale.set(1, 0.85, odd ? 0.1 : 0.055)
-    rib.rotation.y = (i / ribCount) * Math.PI
-    g.add(rib)
+  // Two shoulder creases, pressed IN — flattened spheres of the deeper flesh
+  // tone sunk just under the skin, so they read as soft dents at the size this
+  // fruit is actually seen and vanish politely when it is smaller than that.
+  for (const spin of [0.4, 1.9]) {
+    const crease = ball(0.99, C_FRUIT_DEEP, 2)
+    crease.scale.set(1, 0.86, 0.05)
+    crease.rotation.y = spin
+    g.add(crease)
   }
 
   if (odd) {
-    // Two broken streaks off the shoulders, so the gold looks like it grew out
-    // through the skin rather than like a decal ring painted on.
-    for (const [x, y, z, spin] of [
-      [0.46, 0.42, 0.56, 0.7],
-      [-0.58, 0.2, -0.4, -1.9],
-    ]) {
-      const streak = ball(0.42, LOTTO_GOLD, 1)
-      streak.scale.set(1, 0.3, 0.46)
-      streak.position.set(x, y, z)
-      streak.rotation.set(0.4, spin, -0.5)
-      g.add(streak)
+    /*
+     * The veining. Seven short streaks, each a thin sliver of gold sitting a
+     * hair proud of the skin, scattered by the variant's own rng so no two odd
+     * fruit carry the same map — and crucially never evenly spaced, because
+     * even spacing is the one thing that would make this read as a cage.
+     *
+     * Weighted to the upper hemisphere: gold on the shoulders catches the dawn
+     * key, and gold on the underside is invisible from any camera the player
+     * will ever have.
+     */
+    const up = new THREE.Vector3(0, 1, 0)
+    for (let i = 0; i < 9; i++) {
+      const a = r() * Math.PI * 2
+      const lift = 0.1 + r() * 0.78
+      const ring = Math.sqrt(Math.max(0.05, 1 - lift * lift))
+      const normal = new THREE.Vector3(Math.cos(a) * ring, lift, Math.sin(a) * ring).normalize()
+
+      /*
+       * Each vein is a sliver laid FLAT ON the skin, not stuck through it.
+       * The quaternion takes the sliver's local +Y onto the surface normal, so
+       * its thin axis is the radial one and its length lies in the tangent
+       * plane; a second spin about that normal points it any which way. Sunk to
+       * 0.94 of the radius, it breaks the surface as a streak and its ends
+       * disappear back under the skin, which is the whole difference between a
+       * vein and a gold thorn.
+       */
+      const orient = new THREE.Quaternion().setFromUnitVectors(up, normal)
+      orient.multiply(new THREE.Quaternion().setFromAxisAngle(up, r() * Math.PI * 2))
+
+      // Two segments, kinked: one long, one short off its end at an angle. A
+      // straight streak reads as a machined line; the kink reads as growth.
+      const len = 0.52 + r() * 0.5
+      const main = ball(0.5, LOTTO_GOLD, 1)
+      main.scale.set(0.1 + r() * 0.04, 0.12, len)
+      main.position.copy(normal).multiplyScalar(0.92)
+      main.quaternion.copy(orient)
+      g.add(main)
+
+      if (r() < 0.6) {
+        const kink = ball(0.5, LOTTO_GOLD, 1)
+        kink.scale.set(0.085, 0.12, len * 0.55)
+        kink.position.copy(normal).multiplyScalar(0.92)
+        kink.quaternion
+          .copy(orient)
+          .multiply(new THREE.Quaternion().setFromAxisAngle(up, 0.7 + r() * 0.5))
+        // Shifted along its own new heading so it hangs off the main streak's
+        // end rather than crossing it at the middle.
+        kink.position.addScaledVector(
+          new THREE.Vector3(0, 0, len * 0.3).applyQuaternion(kink.quaternion),
+          1,
+        )
+        g.add(kink)
+      }
     }
   }
 
@@ -342,11 +421,15 @@ const fruitCache = new Map<string, THREE.BufferGeometry>()
 /** Vertex-colour material shared by every baked part in this file. */
 const bakedMaterial = new THREE.MeshLambertMaterial({ vertexColors: true })
 
-function fruitGeometry(odd: boolean) {
-  const key = odd ? 'odd' : 'ordinary'
+/** Distinct vein maps baked for the odd fruit. Four is enough that no two
+ *  fruit on the one odd plant are twins, and it costs four geometries. */
+const ODD_VEIN_MAPS = 4
+
+function fruitGeometry(odd: boolean, variant = 0) {
+  const key = odd ? `odd|${variant % ODD_VEIN_MAPS}` : 'ordinary'
   let geo = fruitCache.get(key)
   if (!geo) {
-    geo = bakeGroup(buildFruitBody(odd))
+    geo = bakeGroup(buildFruitBody(odd, rng((variant + 3) * 0x2545f491 + 17)))
     fruitCache.set(key, geo)
   }
   return geo
@@ -372,10 +455,10 @@ const sheenMaterial = new THREE.MeshBasicMaterial({
   depthWrite: false,
 })
 
-function createFruit(radius: number, odd: boolean) {
+function createFruit(radius: number, odd: boolean, variant = 0) {
   const g = new THREE.Group()
 
-  const body = new THREE.Mesh(fruitGeometry(odd), bakedMaterial)
+  const body = new THREE.Mesh(fruitGeometry(odd, variant), bakedMaterial)
   body.castShadow = true
   body.receiveShadow = true
   body.scale.setScalar(radius)
@@ -434,7 +517,7 @@ function buildBody(state: SunTomatoState, r: () => number): BuiltBody {
       seedLeaf.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2
       g.add(seedLeaf)
     }
-    const first = compoundLeaf(0.19, C_LEAF, 0.5, r() * Math.PI * 2, r)
+    const first = broadLeaf(0.19, C_LEAF, 0.5, r() * Math.PI * 2, r)
     first.position.y = h * 0.8
     g.add(first)
     return { group: g, anchors }
@@ -443,78 +526,82 @@ function buildBody(state: SunTomatoState, r: () => number): BuiltBody {
   // --- everything from 'vine' up shares one armature ------------------------
   collar(g, 0.26)
 
-  const stemTop = h * (state === 'vine' ? 0.86 : 0.74)
-  const stem = cyl(0.022, 0.045, stemTop, C_STEM, 6)
+  /*
+   * A short thick trunk, and that is all the vertical there is.
+   *
+   * The crown sits low — a third of the plant's height — and everything above
+   * it is leaf held out sideways. The previous armature ran a stem to 74% of
+   * the height and hung four tiers off it, which is a shrub trained up a stake;
+   * nobody staked this one.
+   */
+  const stemTop = h * (state === 'vine' ? 0.5 : 0.34)
+  const stem = cyl(0.03, 0.055, stemTop, C_STEM, 6)
   stem.position.y = stemTop / 2
-  stem.rotation.z = (r() - 0.5) * 0.06
+  stem.rotation.z = (r() - 0.5) * 0.08
   g.add(stem)
 
-  if (state !== 'vine') {
-    // Two side branches, which is what turns a stem into a bush. Their tips are
-    // where the outer fruit hangs, so they earn their keep twice.
-    for (let i = 0; i < 2; i++) {
-      const a = r() * Math.PI * 2 + i * Math.PI
-      const len = h * 0.42
-      const branch = cyl(0.014, 0.024, len, C_STEM, 5)
-      branch.position.set(Math.cos(a) * len * 0.28, h * 0.42, Math.sin(a) * len * 0.28)
-      branch.rotation.order = 'YXZ'
-      branch.rotation.set(0, -a, 0.62)
-      g.add(branch)
-    }
-  }
+  /** Half-width of the leaf mass. Wider than the plant is tall — the read. */
+  const spread = h * SPREAD * 0.5
 
   if (state === 'vine') {
     /*
-     * Leggy on purpose: two sparse tiers with bare stem showing between them.
-     * The gap is the whole silhouette — it is what makes the next stage's fill
-     * read as the plant *bulking up* rather than merely getting taller.
+     * The young sprawl: two runners already flopping outward off a short stem,
+     * with the leaves broad from the start. Open, gappy, obviously unfinished —
+     * the gaps are what make the next stage's fill read as *bulking up* rather
+     * than as merely getting taller.
      */
-    leafTier(g, 5, h * 0.34, 0.26, C_LEAF, 0.2, r)
-    leafTier(g, 4, h * 0.7, 0.22, C_LEAF_LIGHT, 0.44, r)
+    for (let i = 0; i < 2; i++) {
+      const a = r() * Math.PI * 2 + i * Math.PI
+      const len = h * 0.5
+      const runner = cyl(0.014, 0.026, len, C_STEM, 5)
+      runner.position.set(Math.cos(a) * len * 0.3, stemTop * 0.85, Math.sin(a) * len * 0.3)
+      runner.rotation.order = 'YXZ'
+      runner.rotation.set(0, -a, 0.95)
+      g.add(runner)
+    }
+    leafTier(g, 4, stemTop * 0.75, spread * 0.62, C_LEAF, 0.08, r)
+    leafTier(g, 3, stemTop * 1.05, spread * 0.5, C_LEAF_LIGHT, 0.3, r)
     return { group: g, anchors }
   }
 
   /*
-   * Dense dome. Four tiers, widest low, tightening and lifting toward the
-   * crown — the shape of a staked tomato in a Mediterranean kitchen garden.
+   * The sprawl: three rings of broad leaves off a low crown, the outer ring
+   * held BELOW horizontal so the mass tips down toward the soil at its edge —
+   * a parasol collapsing under its own weight, which is what an unstaked
+   * tomato looks like once it is carrying fruit.
    *
-   * Held inside a tile: beds are TILE_SIZE 1.2 apart, so a bush wider than
-   * about 1.0 world units starts growing through its neighbour and the six
-   * beds merge into one hedge with the fruit buried inside it. The lowest tier
-   * is also lifted clear of the soil — leaves lying in the dirt z-fight the
-   * plot decal, and a plant that touches the ground reads as a weed.
+   * Held inside its tile: beds are TILE_SIZE 1.2 apart, so the mass tops out a
+   * shade over a unit across. Past that, six plants merge into one hedge and
+   * every fruit is buried in a neighbour.
    */
-  const lush = state === 'odd' ? 1.06 : 1
+  const crown = h * 0.36
 
   /*
    * A dark mass buried in the middle of the plant.
    *
-   * Not meant to be seen — it exists so the tiers do not show sky through the
-   * centre of the bush. Without it a procedural plant is a hollow shell of
-   * leaves and the silhouette breaks up into flecks at any distance. The crop
-   * pipeline learned this the same way.
+   * Not meant to be seen — it exists so the rings do not show sky through the
+   * centre. Without it a procedural plant is a hollow shell of leaves and the
+   * silhouette breaks into flecks at any distance. The crop pipeline learned
+   * this the same way.
    */
-  const core = ball(h * 0.115, C_LEAF_DARK, 1)
-  core.scale.set(1.2, 0.85, 1.2)
-  core.position.y = h * 0.44
+  const core = ball(h * 0.2, C_LEAF_DARK, 1)
+  core.scale.set(1.25, 0.62, 1.25)
+  core.position.y = crown
   g.add(core)
 
-  // The crown tier is held nearly as flat as the ones below it. Lifting it
-  // steeply turned the plant into a spire — a conifer, not a tomato bush; the
-  // shape wanted here is a dome that rounds off, so the top leaves fold over
-  // rather than point at the sky.
-  leafTier(g, 7, h * 0.22, 0.37 * lush, C_LEAF_DARK, 0.16, r)
-  leafTier(g, 8, h * 0.4, 0.39 * lush, C_LEAF, 0.26, r)
-  leafTier(g, 7, h * 0.63, 0.35 * lush, C_LEAF, 0.4, r)
-  leafTier(g, 6, h * 0.84, 0.29 * lush, C_LEAF_LIGHT, 0.48, r)
+  // Outer ring drooping, middle ring level, a small crown tuft on top: low,
+  // wide, and rounded off rather than pointed.
+  leafTier(g, 8, crown * 0.82, spread, C_LEAF_DARK, -0.24, r)
+  leafTier(g, 7, crown * 1.12, spread * 0.86, C_LEAF, 0.02, r)
+  leafTier(g, 5, crown * 1.5, spread * 0.6, C_LEAF_LIGHT, 0.3, r)
 
   if (state === 'flowering') {
-    // Six flowers on short sprays around the upper half. Scattered, never
+    // Six flowers on short sprays out along the leaf line. Scattered, never
     // ringed — a ring would read as decoration rather than as growth.
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2 + r() * 0.6
-      const rad = 0.2 + r() * 0.12
-      const y = h * (0.45 + r() * 0.4)
+      const rad = spread * (0.45 + r() * 0.3)
+      const y = crown * (0.9 + r() * 0.7)
       const spray = cyl(0.006, 0.009, 0.09, C_STEM, 4)
       spray.position.set(Math.cos(a) * rad * 0.8, y - 0.03, Math.sin(a) * rad * 0.8)
       spray.rotation.z = Math.cos(a) * 0.5
@@ -527,59 +614,35 @@ function buildBody(state: SunTomatoState, r: () => number): BuiltBody {
     return { group: g, anchors }
   }
 
-  // --- fruiting and odd: hang the pedicels, record the anchors --------------
-  if (state === 'odd') {
-    /*
-     * One fruit, and it rides above the crown.
-     *
-     * The spec's whole ask for this plant is that the player's eye finds it
-     * without being told. Height does that: five neighbours carry their fruit
-     * on the rim at chest height, and this one holds a single bigger fruit up
-     * where nothing else is, on a stalk visibly bowed under it.
-     */
-    const a = r() * Math.PI * 2
-    const rad = 0.13
-    const y = h * 0.78
-    const pos = new THREE.Vector3(Math.cos(a) * rad, y, Math.sin(a) * rad)
-
-    // A thick arching pedicel from the crown out to the fruit, bent by the
-    // weight — the bow is the tell that this fruit is heavier than it should be.
-    const arch = cyl(0.018, 0.028, 0.26, C_STEM, 6)
-    arch.position.set(pos.x * 0.5, y - 0.13, pos.z * 0.5)
-    arch.rotation.order = 'YXZ'
-    arch.rotation.set(0, -a, -0.32)
-    g.add(arch)
-
-    // One late flower left on the crown, so the plant still reads as alive
-    // rather than as a prop holding a jackpot.
-    const flower = starFlower(0.07, r)
-    flower.position.set(-Math.cos(a) * 0.16, h * 0.6, -Math.sin(a) * 0.16)
-    flower.rotation.set(0.3, r() * 3, 0.2)
-    g.add(flower)
-
-    anchors.push({ pos, yaw: a, tilt: 0.08 })
-    return { group: g, anchors }
-  }
-
+  /*
+   * Fruiting and odd hang the same truss.
+   *
+   * The odd plant is not a different arrangement — it is this one grown 1.42×
+   * with gold in the skin (see ODD_SCALE). Giving it a bespoke silhouette was
+   * the last pass's mistake: a single jackpot fruit on a stalk above the crown
+   * read as a *prop*, a slot machine planted in a bed, and the player learns
+   * "the game put a thing there" instead of "one of my six came up wrong".
+   *
+   * Fruit rests OUT on the rim at the leaf line, low — that is where a truss
+   * on a flopped vine actually sits, it is where a hand would reach, and from
+   * the game's low camera it is the difference between red on the silhouette
+   * and red buried in green.
+   */
   const count = FRUIT_COUNT[Math.floor(r() * FRUIT_COUNT.length)] ?? 4
   const phase = r() * Math.PI * 2
   for (let i = 0; i < count; i++) {
-    /*
-     * Fruit hangs on the OUTSIDE of the bush, at the leaf line, not inside it.
-     * That is where a real truss sits, it is where a hand would reach, and at
-     * this camera it is the difference between four red dots on a silhouette
-     * and four red dots buried in green.
-     */
     const a = phase + (i / count) * Math.PI * 2 + (r() - 0.5) * 0.4
-    const high = i === count - 1
-    const rad = high ? 0.24 : 0.34 + r() * 0.05
-    const y = high ? h * 0.66 : h * (0.3 + r() * 0.18)
+    const rad = spread * (0.6 + r() * 0.2)
+    const y = crown * (0.5 + r() * 0.42)
     const pos = new THREE.Vector3(Math.cos(a) * rad, y, Math.sin(a) * rad)
 
-    const pedicel = cyl(0.009, 0.014, 0.13, C_STEM, 5)
-    pedicel.position.set(pos.x * 0.72, y + 0.11, pos.z * 0.72)
+    // A short pedicel arcing down out of the crown to the fruit's shoulder.
+    // Kept stubby and tucked inside the leaf mass: a long one pokes out past
+    // the fruit and the plant sprouts green spikes.
+    const pedicel = cyl(0.011, 0.017, h * 0.12, C_STEM, 5)
+    pedicel.position.set(pos.x * 0.74, y + h * 0.1, pos.z * 0.74)
     pedicel.rotation.order = 'YXZ'
-    pedicel.rotation.set(0, -a, -0.5)
+    pedicel.rotation.set(0, -a, -0.7)
     g.add(pedicel)
 
     anchors.push({ pos, yaw: a, tilt: (r() - 0.5) * 0.3 })
@@ -641,8 +704,9 @@ function buildPlant(
   // jackpot channel and this must not pre-empt it.
   const jitter = r ? 0.92 + r() * 0.16 : 1
 
-  for (const anchor of body.anchors) {
-    const fruit = createFruit(radius * jitter, odd)
+  const shimmerMats: THREE.MeshBasicMaterial[] = []
+  for (const [i, anchor] of body.anchors.entries()) {
+    const fruit = createFruit(radius * jitter, odd, i + variant)
     fruit.position.copy(anchor.pos)
     fruit.rotation.order = 'YXZ'
     fruit.rotation.y = anchor.yaw
@@ -651,11 +715,12 @@ function buildPlant(
 
     if (odd) {
       /*
-       * The odd fruit's own faint shimmer: an additive gold shell breathing
-       * just above zero. Deliberately *not* the lotto tell — that is a burst
-       * fired once on the pick (assets/opening/vfx.ts), and this is the standing
-       * hint that draws the eye to the bed before anything fires at all. Kept
-       * under 0.15 opacity so it never turns the fruit into a lamp.
+       * The odd plant's standing shimmer: an additive gold shell on each fruit
+       * breathing just above zero. Deliberately *not* the lotto tell — that is
+       * a burst fired once on the pick (assets/opening/vfx.ts); this is the
+       * quiet hint that draws the eye down the bed before anything fires at
+       * all. Low amplitude on purpose: past ~0.14 the fruit becomes a lamp, and
+       * a lamp is a marker, not a plant.
        */
       const glowMat = new THREE.MeshBasicMaterial({
         color: LOTTO_GOLD,
@@ -664,15 +729,21 @@ function buildPlant(
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       })
-      const glow = new THREE.Mesh(new THREE.IcosahedronGeometry(radius * jitter * 1.16, 2), glowMat)
-      glow.scale.set(1, 0.86, 1)
+      const glow = new THREE.Mesh(new THREE.IcosahedronGeometry(radius * jitter * 1.14, 2), glowMat)
+      glow.scale.set(1, 0.9, 1)
       fruit.add(glow)
+      shimmerMats.push(glowMat)
+    }
+  }
 
-      group.userData.update = (elapsed: number) => {
-        const t = (Math.sin((elapsed / SHIMMER_PERIOD) * Math.PI * 2) + 1) / 2
-        // Squared, so it dwells dim and swells briefly rather than pulsing
-        // evenly — an even pulse reads as a UI marker, not as a shimmer.
-        glowMat.opacity = 0.035 + 0.1 * t * t
+  if (shimmerMats.length) {
+    group.userData.update = (elapsed: number) => {
+      for (const [i, m] of shimmerMats.entries()) {
+        // Each fruit breathes on its own offset, so the plant glimmers rather
+        // than pulsing as one block — an even pulse reads as a UI element.
+        const t = (Math.sin((elapsed / SHIMMER_PERIOD + i * 0.17) * Math.PI * 2) + 1) / 2
+        // Squared, so it dwells dim and swells briefly.
+        m.opacity = 0.03 + 0.09 * t * t
       }
     }
   }

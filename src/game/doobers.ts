@@ -45,7 +45,21 @@ const STYLES: Record<DooberKind, DooberStyle> = {
    */
   xp: { color: 0x9ff6ee, size: 0.085, glow: true },
   honey: { color: 0xe8a020, size: 0.1, glow: false },
-  produce: { color: 0x8fd85c, size: 0.1, glow: false },
+  /*
+   * Leaf green, pulled well back from the electric lime it used to be.
+   *
+   * `0x8fd85c` at 0.1 radius was authored against the farming camera at eight
+   * units out, where a produce arc is a handful of small green sparks crossing
+   * a wide frame. The isle opening put the same arc four units from the lens
+   * and against dark volcanic loam, and the art-direction review read the
+   * result as "huge flat lime-green confetti squares" — which is exactly what
+   * a 28-pixel unlit gem of near-primary green looks like when it hangs at head
+   * height. Deeper, smaller, and a step less saturated (the grade multiplies
+   * saturation by 1.2 on top of whatever is written here): still unmistakably
+   * *plant matter going into the bag* at any distance, and no longer the
+   * loudest thing in a jungle frame.
+   */
+  produce: { color: 0x79b45a, size: 0.082, glow: false },
 }
 
 type Phase = 'scatter' | 'settle' | 'magnet' | 'dead'
@@ -256,8 +270,49 @@ export class Doobers {
      * black in WebGL. OctahedronGeometry ships no colour attribute, so until now
      * every coin and XP orb in the game was drawn as a black gem.
      */
-    const white = new Float32Array(geo.attributes.position.count * 3).fill(1)
-    geo.setAttribute('color', new THREE.BufferAttribute(white, 3))
+    /*
+     * ...and that white is now a *shade ramp* baked per face.
+     *
+     * The material is MeshBasicMaterial, which is the right call — these are
+     * pooled instances tinted per instance, and lighting them would cost a
+     * per-kind material each. But unlit plus flat-white vertex colours means
+     * an octahedron renders as a single solid silhouette: no facets, no form,
+     * just a coloured polygon. At the valley's camera that is a spark and the
+     * eye forgives it; at the isle opening's close camera over dark loam the
+     * art-direction review read the produce arc as "huge flat lime-green
+     * confetti squares", and deepening the tint did not fix it because the
+     * problem was never the hue — it was that a flat shape at that size has no
+     * way to say *object*.
+     *
+     * Shading the vertex colours costs nothing at runtime and gives the gem
+     * its facets back: each triangle takes a fixed ramp from its own normal
+     * against a key direction, so the eight faces come out at eight values and
+     * the silhouette breaks into a solid. The instance tint multiplies through
+     * it, so every kind on this mesh gains form and none of them change hue.
+     */
+    const pos = geo.attributes.position
+    const shade = new Float32Array(pos.count * 3)
+    const key = new THREE.Vector3(0.42, 0.82, 0.39).normalize()
+    const a = new THREE.Vector3()
+    const b = new THREE.Vector3()
+    const c = new THREE.Vector3()
+    const n = new THREE.Vector3()
+    // PolyhedronGeometry is non-indexed: three consecutive vertices are a face.
+    for (let i = 0; i < pos.count; i += 3) {
+      a.fromBufferAttribute(pos, i)
+      b.fromBufferAttribute(pos, i + 1)
+      c.fromBufferAttribute(pos, i + 2)
+      n.copy(b).sub(a).cross(c.clone().sub(a)).normalize()
+      // 0.55 in the shadow to 1.0 at the key: enough range to read as a solid,
+      // not so much that a dark face disappears against dark ground.
+      const v = 0.55 + 0.45 * Math.max(0, n.dot(key))
+      for (let k = 0; k < 3; k++) {
+        shade[(i + k) * 3] = v
+        shade[(i + k) * 3 + 1] = v
+        shade[(i + k) * 3 + 2] = v
+      }
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(shade, 3))
 
     this.mesh = new THREE.InstancedMesh(
       geo,

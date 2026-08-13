@@ -156,13 +156,43 @@ export class GoatArrival {
     this.onRustle?.(new THREE.Vector3(TREELINE.x, groundHeight(TREELINE.x, TREELINE.y), TREELINE.y))
   }
 
-  /** Camera focus while the sequence runs (W-INT drives the shot from this). */
+  /**
+   * Camera focus while the sequence runs (W-INT drives the shot from this).
+   *
+   * From the sniff onward this is the goat's HEAD in world space, not its
+   * root: the beat's payoff is a face, and a camera aimed at the middle of the
+   * animal frames a barrel with a head poking out of the top of shot. Framing
+   * the head also means a push-in on the look beat crops to eyes rather than
+   * to torso, which is the whole ask of "it must feel like being seen".
+   */
   focusPoint(): THREE.Vector3 | null {
     if (this.phase_ === 'idle' || this.phase_ === 'done') return null
     if (this.phase_ === 'rustle') {
       return new THREE.Vector3(TREELINE.x, groundHeight(TREELINE.x, TREELINE.y) + 0.6, TREELINE.y)
     }
+    if (this.phase_ === 'sniff' || this.phase_ === 'eat' || this.phase_ === 'look' || this.phase_ === 'bleat') {
+      return this.headPoint()
+    }
     return this.rig.root.position.clone().add(new THREE.Vector3(0, 0.5, 0))
+  }
+
+  /**
+   * World position of the goat's head, for the close shot on the look beat.
+   *
+   * Public because the camera owner needs a point to push in on that is not
+   * the animal's centre of mass, and because the 1-second hold is the only
+   * shot in the opening where the subject is smaller than the frame it has to
+   * fill.
+   */
+  headPoint(): THREE.Vector3 {
+    this.rig.head.updateWorldMatrix(true, false)
+    return this.rig.head.getWorldPosition(new THREE.Vector3())
+  }
+
+  /** Facing of the goat's body, radians (0 = +z). Lets the camera place itself
+   *  in front of the animal for the look beat instead of behind its shoulder. */
+  get facing(): number {
+    return this.heading
   }
 
   /** Session-2 coat tuft, tap-collect within reach. */

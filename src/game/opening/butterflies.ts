@@ -21,21 +21,97 @@ import { MINOR_LAYER } from '../../assets/style'
  * lilac-blue, both authored desaturated for the 1.2-saturation grade.
  */
 
-/** Wing span (x, hinge to tip) and chord (z) of one wing quad. */
-const WING_SPAN = 0.2
-const WING_CHORD = 0.14
+/**
+ * Wing span (x, hinge to tip) and chord (z) of one wing quad.
+ *
+ * Deliberately oversized for the animal — a real butterfly at this scale would
+ * be about 6cm across and the first pass authored it honestly, which is why the
+ * review found no butterflies in beats 4 through 7: at forty metres and 984
+ * pixels wide, an honest butterfly is one pixel that flickers. These are hand
+ * sized. They are the opening's only wayfinding, so they have to be *visible*
+ * before they get to be accurate.
+ */
+const WING_SPAN = 0.34
+const WING_CHORD = 0.26
 
-/** Cruise height above the ground, before bobs and flap lift. */
-const FLY_HEIGHT = 1.25
+/** Cruise height above the ground, before bobs and flap lift. Around head
+ *  height on the avatar, which keeps them inside the camera's framing of the
+ *  treeline rather than down in the sand. */
+const FLY_HEIGHT = 1.45
 
 /**
  * Per-butterfly character. Different loop periods keep the pair from ever
  * phase-locking — two insects, not a formation.
+ *
+ * Both colours are chosen for VALUE contrast against the two backgrounds this
+ * route crosses: near-white reads against the dark jungle wall, and the warm
+ * shadow tone reads against the bright sand. Neither is anywhere near lotto
+ * gold, and neither is the magenta reserved for the bougainvillea they are
+ * flying toward — the flowers are the destination, not the guide.
  */
 const FLIERS = [
-  { period: 9.5, offset: 0.0, sweep: 2.4, flapHz: 11, bobHz: 1.9, color: 0xf2ead8 },
-  { period: 11.5, offset: 0.45, sweep: -3.1, flapHz: 13, bobHz: 1.6, color: 0xbcc8e2 },
+  { period: 9.5, offset: 0.0, sweep: 2.4, flapHz: 11, bobHz: 1.9, color: 0xfaf4e6 },
+  { period: 11.5, offset: 0.45, sweep: -3.1, flapHz: 13, bobHz: 1.6, color: 0xc7bcd8 },
 ] as const
+
+/** Instances per butterfly: two wings and a body. */
+const PARTS = 3
+/** The body quad, in fractions of a wing. Dark, small, and unflapped — it is
+ *  the pivot the wings visibly hinge on, and without it the pair reads as four
+ *  loose petals blowing along a line. */
+const BODY_COLOR = 0x3b352c
+
+/**
+ * One wing, as a wing-shaped fan rather than a rectangle.
+ *
+ * The previous build used `PlaneGeometry`, and once the wings were scaled up
+ * to hand size — which they had to be, or there is nothing on screen to follow
+ * — the honest result was two opaque parallelograms drifting through the
+ * canopy. A zoom of the beat-3 capture showed exactly that: a dusty-pink
+ * rectangle and a cream one, no forewing/hindwing split, no taper, no
+ * silhouette. At this size the shape *is* the read, and the spec's wayfinding
+ * actor has to say "butterfly" from the first glance or it says "litter".
+ *
+ * Built as a triangle fan over an outline in wing-local units (x from hinge to
+ * tip, y across the chord), so it stays one small non-indexed BufferGeometry
+ * for the same single InstancedMesh — no textures, no second draw call, no
+ * per-butterfly meshes. The outline is a forewing lobe that reaches forward and
+ * out, a notch at the trailing edge, and a smaller rounded hindwing near the
+ * body, which is the minimum that reads as lepidoptera in silhouette.
+ */
+function wingGeometry(): THREE.BufferGeometry {
+  // x: 0 at the hinge, 1 at the tip. y: +forward (leading), −back (trailing).
+  const outline: [number, number][] = [
+    [0.0, -0.12],
+    [0.16, 0.34],
+    [0.52, 0.5],
+    [0.86, 0.34],
+    [1.0, 0.02],
+    [0.82, -0.16],
+    // The notch between forewing and hindwing — the one concavity that stops
+    // the shape reading as a leaf.
+    [0.62, -0.1],
+    [0.5, -0.44],
+    [0.24, -0.52],
+    [0.06, -0.34],
+  ]
+  const verts: number[] = []
+  // Fan from the hinge. The outline is convex enough at the hinge for a fan to
+  // tile it without inverted triangles, and concave only at the notch, which
+  // sits between two fan spokes rather than across one.
+  for (let i = 1; i < outline.length - 1; i++) {
+    const a = outline[0]
+    const b = outline[i]
+    const c = outline[i + 1]
+    verts.push(a[0] * WING_SPAN, a[1] * WING_CHORD, 0)
+    verts.push(b[0] * WING_SPAN, b[1] * WING_CHORD, 0)
+    verts.push(c[0] * WING_SPAN, c[1] * WING_CHORD, 0)
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
+  geo.computeVertexNormals()
+  return geo
+}
 
 export class Butterflies {
   private readonly mesh: THREE.InstancedMesh
@@ -44,29 +120,32 @@ export class Butterflies {
   private readonly to = new THREE.Vector3()
   private readonly perp = new THREE.Vector2()
   private readonly prev = [new THREE.Vector3(), new THREE.Vector3()]
+  /** Scratch: the body instance's own heading vector. */
+  private readonly axis = new THREE.Vector3()
   private readonly headings = [0, 0]
   private active = false
   private t = 0
 
   constructor(scene: THREE.Group) {
-    const geo = new THREE.PlaneGeometry(WING_SPAN, WING_CHORD)
-    // Lay the wing flat (XZ plane) and move the hinge to the origin so a
-    // roll about the body axis flaps the tip, not the middle.
+    const geo = wingGeometry()
+    // Lay the wing flat (XZ plane); `wingGeometry` already hinges at the
+    // origin so a roll about the body axis flaps the tip, not the middle.
     geo.rotateX(-Math.PI / 2)
-    geo.translate(WING_SPAN / 2, 0, 0)
 
     const material = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide })
-    this.mesh = new THREE.InstancedMesh(geo, material, FLIERS.length * 2)
+    this.mesh = new THREE.InstancedMesh(geo, material, FLIERS.length * PARTS)
     // Instances wander far from the geometry's tiny bounds — cull by hand
     // (they are hidden whenever inactive anyway).
     this.mesh.frustumCulled = false
     this.mesh.visible = false
     // Detail layer: the water's reflection buffers can live without them.
     this.mesh.layers.set(MINOR_LAYER)
+    const bodyColor = new THREE.Color(BODY_COLOR)
     for (let b = 0; b < FLIERS.length; b++) {
       const c = new THREE.Color(FLIERS[b].color)
-      this.mesh.setColorAt(b * 2, c)
-      this.mesh.setColorAt(b * 2 + 1, c)
+      this.mesh.setColorAt(b * PARTS, c)
+      this.mesh.setColorAt(b * PARTS + 1, c)
+      this.mesh.setColorAt(b * PARTS + 2, bodyColor)
     }
     scene.add(this.mesh)
   }
@@ -123,8 +202,24 @@ export class Butterflies {
         this.dummy.rotation.order = 'YZX'
         this.dummy.rotation.set(0, this.headings[b], side * flap)
         this.dummy.updateMatrix()
-        this.mesh.setMatrixAt(b * 2 + (side < 0 ? 0 : 1), this.dummy.matrix)
+        this.mesh.setMatrixAt(b * PARTS + (side < 0 ? 0 : 1), this.dummy.matrix)
       }
+
+      /*
+       * The body: a narrow dark sliver lying along the flight direction.
+       *
+       * The wing geometry is hinged at its own origin (see the constructor), so
+       * an instance grows out to ONE side of wherever it is placed. The body
+       * therefore has to be pushed back half its own length along its heading,
+       * or the butterfly flies with its abdomen sticking out in front of it.
+       */
+      this.dummy.rotation.order = 'YZX'
+      this.dummy.rotation.set(0, this.headings[b] + Math.PI / 2, 0)
+      this.dummy.scale.set(0.4, 1, 0.3)
+      this.axis.set(1, 0, 0).applyEuler(this.dummy.rotation)
+      this.dummy.position.copy(pos).addScaledVector(this.axis, -WING_SPAN * 0.4 * 0.5)
+      this.dummy.updateMatrix()
+      this.mesh.setMatrixAt(b * PARTS + 2, this.dummy.matrix)
     }
     this.mesh.instanceMatrix.needsUpdate = true
   }

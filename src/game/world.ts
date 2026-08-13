@@ -169,6 +169,17 @@ export interface World {
    *  gold and no arrows before the first lotto tell (contract rule 4). */
   homeMarker: { update(elapsed: number, camera: THREE.Camera): void; setVisible(on: boolean): void }
   /**
+   * The village furniture that stands on the player's own ground — currently
+   * the lane signpost beside their gate.
+   *
+   * It has to be switchable for the same reason the fence and the mailbox do:
+   * the Isle opening happens on this ground *before* it is anybody's, and a
+   * two-armed wooden signpost planted in the middle of a castaway's first
+   * clearing says somebody already built a road here. The jungle wall hides
+   * the rest of the valley; this stands inside the horseshoe with the beds.
+   */
+  setVillageFurnitureVisible(on: boolean): void
+  /**
    * Shop/barn "!" markers, shown when the player is close enough to interact —
    * or from anywhere while `setUrgent` says that spot is where they need to go.
    */
@@ -943,7 +954,8 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
   sign.position.set(playerGate.x + PLAYER_SLOT.inward * 0.5, 0, PLAYER_SLOT.z + GATE_WIDTH / 2 + 0.7)
   sign.rotation.y = PLAYER_SLOT.inward * (Math.PI / 2)
   group.add(sign)
-  obstacles.push({ x: sign.position.x, z: sign.position.z, r: 0.3 })
+  const signObstacle: Obstacle = { x: sign.position.x, z: sign.position.z, r: 0.3 }
+  obstacles.push(signObstacle)
 
   /*
    * The store crate, washed up on the sand behind the farm.
@@ -1441,6 +1453,10 @@ export function createWorld(renderer: THREE.WebGLRenderer): World {
     setStoreCrateVisible(on: boolean) {
       storeCrate.visible = on
       crateObstacle.off = !on
+    },
+    setVillageFurnitureVisible(on: boolean) {
+      sign.visible = on
+      signObstacle.off = !on
     },
     setGardenLevel(level: number) {
       const index = level > 0 ? Math.min(gardenFences.length, level) - 1 : -1

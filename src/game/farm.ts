@@ -286,6 +286,8 @@ let trayMatWet: THREE.Material | null = null
  * however the model happens to be shaded.
  */
 function trayMaterial(wet: boolean) {
+  if (openingLoam) return openingLoamMaterial(wet)
+
   const authored = getModels().plotTray.material
   if (!wet) return authored
 
@@ -295,6 +297,43 @@ function trayMaterial(wet: boolean) {
     trayMatWet = damp
   }
   return trayMatWet
+}
+
+/* --- the opening's beds ---------------------------------------------------
+ *
+ * The valley's plot tray is a warm terracotta bed with a raised lip, authored
+ * to read as a *cultivated* thing against green grass — which is exactly right
+ * for a farm and exactly wrong for the Isle opening, where the spec's beat 6
+ * is "open earth, dark volcanic loam" dug by a castaway with a rusted shovel
+ * into ground they cleared ten minutes ago. In the beat-6 and beat-8 captures
+ * six of them read as a garden-centre seedling tray parked in a jungle, and
+ * at that saturation they were the loudest colour in the frame, competing with
+ * the reserved terracotta of the amphora shard.
+ *
+ * A tint rather than a second model: the beds must stay ordinary farm tiles so
+ * growth, harvest and save/restore keep working (see the opening scripted API
+ * below), and `color` multiplies the authored baseColour map, so the turned-
+ * earth texture survives — it just stops being orange. The flag is module-level
+ * and set by the opening's staging; the valley never sees it, and clearing it
+ * puts the authored tray straight back.
+ */
+let openingLoam = false
+let loamMat: THREE.Material | null = null
+let loamMatWet: THREE.Material | null = null
+
+/** Dark volcanic loam, one step up from the basalt near-black `#2A2622` so a
+ *  bed still separates from the duff floor the jungle wall lays around it. */
+const C_LOAM_DRY = 0x6d5236
+const C_LOAM_WET = 0x4c3a28
+
+function openingLoamMaterial(wet: boolean) {
+  const slot = wet ? loamMatWet : loamMat
+  if (slot) return slot
+  const m = (getModels().plotTray.material.clone() as THREE.MeshStandardMaterial)
+  m.color.setHex(wet ? C_LOAM_WET : C_LOAM_DRY)
+  if (wet) loamMatWet = m
+  else loamMat = m
+  return m
 }
 
 /**
@@ -707,6 +746,24 @@ export class Farm {
   openBare(): void {
     if (this.exists) return
     this.level = 1
+  }
+
+  /**
+   * Swap every bed between the valley's terracotta tray and the opening's dark
+   * volcanic loam. Idempotent, and safe to call before any bed exists — see
+   * the note on `openingLoamMaterial` for why the opening cannot simply use
+   * the authored tray.
+   *
+   * Called on both edges: on by the opening's staging, off at the handover, so
+   * a player who walks out of the opening into their own farm sees the beds
+   * they dug become the farm's beds rather than staying castaway dirt.
+   */
+  setOpeningLoam(on: boolean): void {
+    if (openingLoam === on) return
+    openingLoam = on
+    for (const tile of this.tiles) {
+      if (tile.soil) tile.soil.material = trayMaterial(tile.water > 0)
+    }
   }
 
   /**
