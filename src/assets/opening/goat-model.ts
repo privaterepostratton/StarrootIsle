@@ -76,8 +76,21 @@ export interface GoatRig {
   legs: THREE.Group[]
   ears: THREE.Group[]
   tail: THREE.Group
-  /** Head + ears track the point; null releases back to rest. Call per frame. */
-  lookAt(worldPos: THREE.Vector3 | null): void
+  /**
+   * Head + ears track the point; null releases back to rest. Call per frame.
+   *
+   * `dt` is the caller's own frame time. It is optional only so the dev
+   * galleries can settle a pose without inventing one; the game passes the same
+   * dt it poses with, because a rig that reads its own clock silently disagrees
+   * with a caller that has been paused, throttled or stepped, and the
+   * disagreement shows up as the walk cycle running at the wrong speed.
+   *
+   * `engage` (0..1, default 1) is how much the EARS commit to the target. The
+   * head tracks whatever it is given regardless, but a goat reading the ground
+   * for its next step is not listening to it, and pricking the ears for every
+   * look target spends the one gesture that has to sell the look beat.
+   */
+  lookAt(worldPos: THREE.Vector3 | null, dt?: number, engage?: number): void
 }
 
 /**
@@ -116,9 +129,9 @@ const TRACK_BLEND = 0.18
  * out of the resting droop. Together they are the difference between a goat
  * whose head happens to be pointing your way and a goat that is listening.
  */
-const EAR_FORWARD = 0.5
-const EAR_TURN = 0.3
-const EAR_LIFT = 0.22
+const EAR_FORWARD = 0.26
+const EAR_TURN = 0.15
+const EAR_LIFT = 0.12
 
 /** Leg roots in the caller's [FL, FR, RL, RR] order. The unprefixed bones sit
  *  on +x and the R_ ones on -x, whatever their names suggest. */
@@ -192,6 +205,8 @@ interface Attached {
   ears: Joint[]
   legs: Joint[]
   tail: Joint[]
+  /** Every joint the script writes, flattened — reset in one pass each frame. */
+  driven: Joint[]
   mixer: THREE.AnimationMixer | null
   action: THREE.AnimationAction | null
 }
@@ -305,14 +320,17 @@ export function createGoatModel(): GoatRig {
       mixer.update(0)
     }
 
-    rig = {
+    const attached: Attached = {
       head: makeJoint(headBone, mount),
       ears: joints(EAR_BONES),
       legs: joints(LEG_BONES),
       tail: joints(TAIL_BONES),
+      driven: [],
       mixer,
       action,
     }
+    attached.driven = [attached.head, ...attached.ears, ...attached.legs, ...attached.tail]
+    rig = attached
   }
 
   const ready = peekGoatModel()
@@ -337,10 +355,15 @@ export function createGoatModel(): GoatRig {
     j.bone.quaternion.premultiply(spin)
   }
 
-  function lookAt(worldPos: THREE.Vector3 | null): void {
-    const now = performance.now()
-    const dt = lastMs === 0 ? 0 : THREE.MathUtils.clamp((now - lastMs) / 1000, 0, 0.1)
-    lastMs = now
+  function lookAt(worldPos: THREE.Vector3 | null, dtIn?: number, engage = 1): void {
+    let dt: number
+    if (dtIn === undefined) {
+      const now = performance.now()
+      dt = lastMs === 0 ? 0 : THREE.MathUtils.clamp((now - lastMs) / 1000, 0, 0.1)
+      lastMs = now
+    } else {
+      dt = THREE.MathUtils.clamp(dtIn, 0, 0.1)
+    }
 
     // --- how hard the goat is travelling, read off the root the caller moves.
     // A teleport (the first frame of the sequence, when the goat is placed at
@@ -364,13 +387,29 @@ export function createGoatModel(): GoatRig {
       const flat = Math.hypot(tmp.x, tmp.z)
       tYaw = THREE.MathUtils.clamp(Math.atan2(tmp.x, tmp.z), -YAW_LIMIT, YAW_LIMIT)
       tPitch = THREE.MathUtils.clamp(Math.atan2(tmp.y, flat), -PITCH_DOWN_LIMIT, PITCH_UP_LIMIT)
-      tEngage = 1
+      tEngage = THREE.MathUtils.clamp(engage, 0, 1)
     }
     curYaw += (tYaw - curYaw) * TRACK_BLEND
     curPitch += (tPitch - curPitch) * TRACK_BLEND
     curEngage += (tEngage - curEngage) * TRACK_BLEND
 
     if (!rig) return
+
+    /*
+     * Back to rest, every driven bone, every frame — BEFORE anything writes.
+     *
+     * The twists below are relative (`premultiply`), so they are only ever
+     * correct on top of a known pose. It is tempting to let the mixer supply
+     * that pose, since a zero-weight action is documented to blend back to the
+     * value it captured at bind time. It does not: three's PropertyMixer skips
+     * `binding.setValue` entirely once its two accumulators agree, so a clip
+     * held at weight 0 stops writing the skeleton altogether after one frame
+     * and leaves whatever was there. That turned every relative twist into an
+     * integrator — a tenth of a radian per frame, six radians a second — and it
+     * bit hardest exactly where the animation matters, because the weight is
+     * zero precisely when the goat stands still to sniff, eat and look at you.
+     */
+    for (const j of rig.driven) j.bone.quaternion.copy(j.rest)
 
     /*
      * The baked walk, weighted by travel.
@@ -387,9 +426,6 @@ export function createGoatModel(): GoatRig {
       rig.action.setEffectiveWeight(clip)
       rig.action.timeScale = THREE.MathUtils.clamp(speed / CLIP_REF_SPEED, 0.7, 1.5)
       rig.mixer.update(dt)
-    } else {
-      rig.head.bone.quaternion.copy(rig.head.rest)
-      for (const j of [...rig.ears, ...rig.legs, ...rig.tail]) j.bone.quaternion.copy(j.rest)
     }
 
     /*

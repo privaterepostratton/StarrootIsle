@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { Engine } from '../../core/engine'
-import { OPENING_STRINGS, PULSE_IVORY, type OpeningStringKey } from '../../game/opening/types'
+import { OPENING_STRINGS, type OpeningStringKey } from '../../game/opening/types'
 import { isHandheld } from '../fullscreen'
 
 /**
@@ -38,8 +38,11 @@ import { isHandheld } from '../fullscreen'
 
 /* ---------- palette (strings, because this file writes CSS) ---------- */
 
-/** Guidance ivory — pulse rings, verbs, sundial fill. Never gold. */
-const IVORY = '#' + PULSE_IVORY.toString(16).padStart(6, '0')
+/* Guidance ivory (PULSE_IVORY) had its last string consumer in the sundial
+ * face; the rings and verbs that also carry it are written in the stylesheet
+ * below. The constant itself still governs the world-space markers in main.ts —
+ * this file simply no longer needs it as a CSS string. */
+
 /** Linen — paper, pouch, chips. The Mediterranean cloth tone. */
 const LINEN = '#e8decc'
 /** Charcoal — the journal's sketch and caption. A warm near-black. */
@@ -69,8 +72,6 @@ const REBIRTH_STAGGER = 0.09
  * a ring that hugs one bed's footprint and cannot reach its neighbour, which
  * is the whole difference between a sundial and a clock shop. */
 const SUNDIAL_WORLD_R = 0.46
-const DIAL_PX_MIN = 11
-const DIAL_PX_MAX = 62
 /** World radius the prompt's pulse ring hugs, in world units. */
 const PULSE_WORLD_R = 0.48
 const PULSE_PX_MIN = 19
@@ -80,12 +81,27 @@ const MARK_PX_MIN = 16
 const MARK_PX_MAX = 50
 /** How flat a ground ring may go before it stops reading as a ring at all. */
 const SQUASH_MIN = 0.34
-/** Circumference of the sundial's progress circle (r=48 in a 120 viewBox). */
-const DIAL_C = 2 * Math.PI * 48
-/** Growth fraction past which a sundial starts retiring itself. */
-const DIAL_FADE_FROM = 0.62
-/** What is left of it at full growth — present, but almost gone. */
-const DIAL_FADE_TO = 0.1
+/**
+ * Growth fraction past which the bar starts *insisting* rather than retiring.
+ *
+ * The sundial this replaced dimmed toward nothing as the crop filled, on the
+ * theory that a ripe bed is told by its fruit. In practice the last stretch is
+ * exactly what the player is standing there waiting for, so the bar brightens
+ * into it instead and only leaves once the crop is actually ripe.
+ */
+const DIAL_FADE_FROM = 0.72
+
+/**
+ * How far above the bed the bar floats, in world units, and its pixel rails.
+ *
+ * The old dial lay in the loam and was squashed by the camera's foreshortening,
+ * which at the opening's low over-the-shoulder framing left six near-edge-on
+ * ellipses among the leaves. A bar lifted clear of the plant reads at any camera
+ * pitch and never fights the crop it is describing.
+ */
+const GROW_BAR_LIFT = 0.72
+const GROW_BAR_PX_MIN = 34
+const GROW_BAR_PX_MAX = 104
 
 /* --- gesture bubble ------------------------------------------------------
  * The prompt's richer form: the same verb, plus a picture of the gesture that
@@ -142,14 +158,11 @@ export type GestureKind = 'hold' | 'tap'
  */
 const GESTURE_KEYS = new Set<OpeningStringKey>(['pull', 'clear', 'dig', 'plant', 'pick'])
 
-/** One live sundial ring: DOM plus the world anchor it is glued to. */
+/** One live growth bar: DOM plus the world anchor it is glued to. */
 interface Dial {
   el: HTMLDivElement
-  /** The inner face, whose opacity carries the grown-away fade. The wrapper's
-   *  own opacity is reserved for the born/retire transitions. */
-  face: SVGSVGElement
-  arc: SVGCircleElement
-  gnomon: SVGGElement
+  /** The filling element. Width is the whole read-out. */
+  fill: HTMLDivElement
   pos: THREE.Vector3
   t: number
 }
@@ -597,14 +610,13 @@ export class OpeningUi {
     let dial = this.dials.get(bedKey)
     if (!dial) {
       const el = document.createElement('div')
-      el.className = 'isle-el isle-sundial'
-      el.innerHTML = sundialSvg()
+      el.className = 'isle-el isle-growbar'
+      el.innerHTML =
+        `<div class="isle-growbar-track"><div class="isle-growbar-fill"></div></div>`
       this.root.appendChild(el)
       dial = {
         el,
-        face: el.querySelector<SVGSVGElement>('svg')!,
-        arc: el.querySelector<SVGCircleElement>('.isle-dial-arc')!,
-        gnomon: el.querySelector<SVGGElement>('.isle-dial-gnomon')!,
+        fill: el.querySelector<HTMLDivElement>('.isle-growbar-fill')!,
         pos: worldPos.clone(),
         t: 0,
       }
@@ -861,30 +873,35 @@ export class OpeningUi {
       this.markEl.style.visibility = 'hidden'
     }
 
-    // Sundials.
+    // Growth bars.
     for (const dial of this.dials.values()) {
-      const p = this.project(dial.pos, 0.04)
+      // Lifted clear of the plant rather than lying in the bed: this reads as
+      // an instrument the game is showing you, not a mark scratched in the loam,
+      // and at the opening's low camera a ground-plane ring is nearly edge-on.
+      const p = this.project(dial.pos, GROW_BAR_LIFT)
       if (!p) {
         dial.el.style.visibility = 'hidden'
         continue
       }
       dial.el.style.visibility = ''
-      const r = THREE.MathUtils.clamp(
-        this.pxRadius(dial.pos, SUNDIAL_WORLD_R),
-        DIAL_PX_MIN,
-        DIAL_PX_MAX,
+      // Width tracks the bed's own footprint so a near bar is not a billboard
+      // and a far one does not vanish — but never squashed to the ground plane.
+      const w = THREE.MathUtils.clamp(
+        this.pxRadius(dial.pos, SUNDIAL_WORLD_R) * 2,
+        GROW_BAR_PX_MIN,
+        GROW_BAR_PX_MAX,
       )
-      const k = this.squash(dial.pos, SUNDIAL_WORLD_R)
-      dial.el.style.transform =
-        `translate(${p.x}px, ${p.y}px) translate(-50%, -50%) scaleY(${k.toFixed(3)})`
-      dial.el.style.width = dial.el.style.height = `${r * 2}px`
+      dial.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`
+      dial.el.style.width = `${w.toFixed(1)}px`
 
       const t = dial.t
-      dial.arc.setAttribute('stroke-dashoffset', String(DIAL_C * (1 - t)))
-      dial.gnomon.setAttribute('transform', `rotate(${(t * 360).toFixed(2)} 60 60)`)
-      // Nearly grown → nearly gone. The fruit takes over the telling.
-      const grown = t <= DIAL_FADE_FROM ? 0 : (t - DIAL_FADE_FROM) / (1 - DIAL_FADE_FROM)
-      dial.face.style.opacity = (1 - grown * (1 - DIAL_FADE_TO)).toFixed(3)
+      dial.fill.style.width = `${(t * 100).toFixed(1)}%`
+      // Ripe is a state change, not a full bar: the bar goes, the fruit tells.
+      dial.el.classList.toggle('ripe', t >= 1)
+      // The last stretch brightens rather than fades — "nearly" is the moment
+      // the player is actually waiting for, and it should draw the eye to the
+      // bed rather than politely retire before the payoff.
+      dial.el.classList.toggle('soon', t >= DIAL_FADE_FROM && t < 1)
     }
   }
 
@@ -1053,44 +1070,18 @@ function fingerGlyph(): string {
   )
 }
 
-/**
- * The sundial face — four marks in total, and that is the whole design.
+/*
+ * The sundial face lived here.
  *
- * Radius 48 in a 120 viewBox. A hairline plate ring; one notch sitting just
- * outside it at noon (a dial needs somewhere its day begins, and one notch
- * says so where twelve would say *clock*); the gnomon, a slim tapered line
- * from the centre pin; and the ivory trail the gnomon has already swept,
- * drawn as a dashed-offset arc rotated -90 so growth starts at that notch.
- *
- * Weights are deliberately under the eye's threshold at rest — 1.0–1.9 px in
- * a 96 px face, none of them opaque. Six of these lying in the loam should
- * register as *the beds are busy*, not as six instruments.
+ * It was a hairline plate ring lying in the bed with a gnomon sweeping round
+ * it, and it was the spec's own timer iconography — Mediterranean, diegetic-
+ * adjacent, quiet. It failed for a reason worth recording: the opening's camera
+ * is low and over the shoulder, so a ground-plane ring is nearly edge-on, and
+ * six of them among the leaves read as scratches rather than as clocks. Made
+ * legible enough to fix that, they became a clock shop instead. The bar that
+ * replaced it is neither, and it also matches the hold bar the player has
+ * already learned to read by this point in the session.
  */
-function sundialSvg(): string {
-  return (
-    `<svg viewBox="0 0 120 120" width="100%" height="100%" aria-hidden="true">` +
-    // The plate: one hairline ring at the bed's own edge.
-    `<circle cx="60" cy="60" r="48" fill="none" stroke="${LINEN}"` +
-    ` stroke-width="1" opacity="0.3"/>` +
-    // Noon. The only mark on the plate.
-    `<line x1="60" y1="5.5" x2="60" y2="11" stroke="${LINEN}"` +
-    ` stroke-width="1.4" stroke-linecap="round" opacity="0.36"/>` +
-    // The swept trail, laid down before the gnomon so the line reads on top.
-    `<circle class="isle-dial-arc" cx="60" cy="60" r="48" fill="none" stroke="${IVORY}"` +
-    ` stroke-width="1.9" stroke-linecap="round" opacity="0.55"` +
-    ` stroke-dasharray="${DIAL_C.toFixed(1)}"` +
-    ` stroke-dashoffset="${DIAL_C.toFixed(1)}" transform="rotate(-90 60 60)"/>` +
-    // The gnomon: centre pin to the plate edge, tapering as a real style does.
-    `<g class="isle-dial-gnomon">` +
-    `<line x1="60" y1="58" x2="60" y2="13" stroke="${IVORY}" stroke-width="1.2"` +
-    ` stroke-linecap="round" opacity="0.42"/>` +
-    `<line x1="60" y1="60" x2="60" y2="40" stroke="${IVORY}" stroke-width="1.9"` +
-    ` stroke-linecap="round" opacity="0.34"/>` +
-    `</g>` +
-    `<circle cx="60" cy="60" r="1.6" fill="${IVORY}" opacity="0.45"/>` +
-    `</svg>`
-  )
-}
 
 /**
  * The goat, sketched in charcoal.
@@ -1575,28 +1566,56 @@ body.isle-opening #ui #menuBtn .nav-ico {
 }
 .isle-mark.born { opacity: 0.7; }
 
-/* ---------- sundial ----------
- * Wrapper opacity is the born/retire transition; the inner <svg>'s opacity is
- * written per frame as the crop grows, so the two never fight. */
-.isle-sundial {
+/* ---------- growth bar ----------
+ * One bar per planted bed, floating above the crop. It speaks the same language
+ * as the gesture card's hold bar — dark inset track, rounded caps, a fill with
+ * a crisp leading edge — because a player who has learned to read one should
+ * not have to learn a second. The accent differs on purpose: the hold bar is
+ * warm (an act you are performing), this is green (a thing growing). Neither is
+ * ever gold; that colour is spoken for.
+ *
+ * Wrapper opacity carries the born/retire transition. Nothing here is written
+ * per frame except the fill's width, which is the whole read-out. */
+.isle-growbar {
   position: absolute;
   left: 0;
   top: 0;
   opacity: 0;
   transition: opacity 0.9s ease;
   will-change: transform;
+  filter: drop-shadow(0 1px 2px rgba(42, 30, 14, 0.4));
 }
-.isle-sundial.born { opacity: 0.85; }
-.isle-sundial svg {
-  position: absolute;
-  inset: 0;
+.isle-growbar.born { opacity: 0.92; }
+.isle-growbar-track {
   width: 100%;
+  height: 7px;
+  border-radius: 4px;
+  background: rgba(38, 30, 20, 0.5);
+  box-shadow: inset 0 1px 1.5px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+.isle-growbar-fill {
   height: 100%;
-  overflow: visible;
-  /* A soft shadow, never an outline: it holds the hairlines together over
-     pale sand without ever drawing a dark edge around them. No transition —
-     update() writes this element's opacity every frame already. */
-  filter: drop-shadow(0 1px 1.5px rgba(42, 30, 14, 0.35));
+  width: 0%;
+  border-radius: 4px;
+  /* Two greens rather than one: the leading edge is the lighter of them, so
+     the bar has a visible head travelling along it instead of a flat block
+     that only differs from the track by length. */
+  background: linear-gradient(90deg, #6f9c58 0%, #8fcf6b 100%);
+  transition: width 0.25s linear;
+}
+/* The last stretch: brighter, and a slow breath so a bed about to fruit pulls
+   the eye back to it. */
+.isle-growbar.soon { opacity: 1; }
+.isle-growbar.soon .isle-growbar-fill {
+  background: linear-gradient(90deg, #8fcf6b 0%, #c3e79b 100%);
+  animation: isle-growbar-breathe 1.6s ease-in-out infinite;
+}
+/* Ripe: the bar has nothing left to say, and the fruit says it. */
+.isle-growbar.ripe { opacity: 0; }
+@keyframes isle-growbar-breathe {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.22); }
 }
 
 /* ---------- satchel ----------

@@ -112,6 +112,15 @@ export class GoatArrival {
 
   constructor(private readonly scene: THREE.Group) {
     this.rig = createGoatModel()
+    /*
+     * Yaw first, then pitch — in that order, which the default XYZ does not do.
+     * `pose` writes heading into rotation.y and the bound's nose-up/nose-down
+     * arc into rotation.x, and under XYZ the x rotation is composed OUTSIDE the
+     * y one, i.e. about the world's across-axis rather than the goat's. The
+     * goat leaves the beat heading roughly north-west, so 0.4 rad of "pitch"
+     * came out almost entirely as ROLL and the animal keeled over mid-hop.
+     */
+    this.rig.root.rotation.order = 'YXZ'
     this.rig.root.visible = false
     scene.add(this.rig.root)
   }
@@ -221,6 +230,15 @@ export class GoatArrival {
     let targetPitch = 0
     let breathe = false
     let tailWag = 0.12
+    /*
+     * How much the ears commit to whatever the head is looking at.
+     *
+     * Held low for everything the goat does on its own business — the ground
+     * ahead, the plant it is eating — so that the look beat has somewhere to go.
+     * "Ears forward" is the tell that makes being seen land, and a goat that
+     * walks in with its ears already pricked has spent it before the moment.
+     */
+    let ears = 0.2
 
     switch (this.phase_) {
       case 'rustle': {
@@ -241,8 +259,11 @@ export class GoatArrival {
         amp = 0.35
         // First act on open ground: check the coast — a glance at the player,
         // then eyes on the path. Caution, established before a single step.
-        if (this.t < 1.2 && this.player) look = this.player()
-        else look = this.aheadPoint(1.6)
+        if (this.t < 1.2 && this.player) {
+          // The coast-check: a wary glance, ears half up.
+          look = this.player()
+          ears = 0.55
+        } else look = this.aheadPoint(1.6)
         if (this.t >= EMERGE_S) {
           this.planWalk()
           this.setPhase('walk')
@@ -266,6 +287,7 @@ export class GoatArrival {
         if (paused && this.player) {
           // Freeze-and-glance: head snaps up to the player mid-approach.
           look = this.player()
+          ears = 0.6
         } else {
           // Head carried low, reading the ground just ahead — a browse walk.
           look = this.aheadPoint(1.4)
@@ -295,6 +317,7 @@ export class GoatArrival {
         )
         look = this.lookTmp
         tailWag = 0.35 // the happy-tail tell
+        ears = 0.15    // busy eating, not listening
         if (!this.eatFired && this.t >= EAT_FIRE_AT) {
           this.eatFired = true
           this.onEat?.(bed.clone())
@@ -318,6 +341,7 @@ export class GoatArrival {
         amp = 0
         breathe = true
         tailWag = 0.02
+        ears = 1 // THE ears-forward beat
         if (this.t >= LOOK_S) this.setPhase('bleat')
         break
       }
@@ -332,6 +356,7 @@ export class GoatArrival {
         )
         look = this.lookTmp
         this.rig.body.rotation.x = -k * 0.07
+        ears = 0.8
         amp = 0
         if (this.t >= BLEAT_S) {
           this.planBound()
@@ -365,7 +390,7 @@ export class GoatArrival {
       }
     }
 
-    this.pose(dt, elapsed, { look, moving, gaitHz, amp, hopY, targetPitch, breathe, tailWag })
+    this.pose(dt, elapsed, { look, moving, gaitHz, amp, hopY, targetPitch, breathe, tailWag, ears })
   }
 
   // --- internals -------------------------------------------------------------
@@ -537,6 +562,7 @@ export class GoatArrival {
       targetPitch: number
       breathe: boolean
       tailWag: number
+      ears: number
     },
   ): void {
     const rig = this.rig
@@ -575,6 +601,6 @@ export class GoatArrival {
     rig.root.rotation.x = this.pitch
 
     // Head + ears, every frame, so tracking blends stay smooth.
-    rig.lookAt(o.look)
+    rig.lookAt(o.look, dt, o.ears)
   }
 }
