@@ -28,7 +28,7 @@ export interface LoadedModel {
   material: THREE.Material
 }
 
-interface ModelCache {
+export interface ModelCache {
   plotTray: LoadedModel
   plotFence: LoadedModel
   lantern: LoadedModel
@@ -108,6 +108,23 @@ interface ModelCache {
   potato: LoadedModel
   /** The ripe moonbloom. See the 'bloom' factory in assets/crops.ts. */
   moonbloom: LoadedModel
+  /** Beat-7 tide-line washup, and the surprise in the beat-5 basket. See
+   *  createWashupProp in assets/opening/beach-models.ts. */
+  spiralShell: LoadedModel
+  /** Beat-7 tide-line washup. Its geometry is reused, with a different
+   *  material, for the session-two impossible-colour shard. */
+  seaGlass: LoadedModel
+  /** Beat-7 tide-line washup. Not the pocket's breakable branch — that is a
+   *  different prop with a different job, still procedural in chaos-props.ts. */
+  driftwoodStick: LoadedModel
+  /** The beat-2 seed pouch, which lifts out of the crate and becomes the
+   *  satchel. See createSeedPouch in assets/opening/beach-models.ts. */
+  seedPouch: LoadedModel
+  /** The beat-2 crate, body only — its lid is a second file so beat 2 can
+   *  hinge it. See createOpeningCrate in assets/opening/beach-models.ts. */
+  openingCrate: LoadedModel
+  /** The crate's lid, authored separately from the body it closes over. */
+  openingCrateLid: LoadedModel
 }
 
 let cache: ModelCache | null = null
@@ -240,7 +257,7 @@ export async function loadModels(): Promise<ModelCache> {
   if (cache) return cache
 
   const gltf = new GLTFLoader()
-  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, coconutPalm, sprinklerBasic, beehive, crab, workbench] =
+  const [tray, fence, lantern, bench, cottage, tree, scarecrow, mailbox, signpost, barn, pine, palm, shop, flowerBed, rock, log, coin, strawberry, blueberry, tomato, grapes, corn, carrot, apple, melon, pepper, starfruit, dragonfruit, coconut, sunflower, pumpkin, potato, moonbloom, rockCluster, stump, bush, barrel, haybale, haypile, storeCrate, turnip, strawberryPlant, blueberryBush, coconutPalm, sprinklerBasic, beehive, crab, workbench, spiralShell, seaGlass, driftwoodStick, seedPouch, openingCrate, openingCrateLid] =
     await Promise.all([
       gltf.loadAsync(asset('models/plot-tray.glb')),
       gltf.loadAsync(asset('models/plot-fence.glb')),
@@ -290,6 +307,12 @@ export async function loadModels(): Promise<ModelCache> {
       gltf.loadAsync(asset('models/beehive.glb')),
       gltf.loadAsync(asset('models/crab.glb')),
       gltf.loadAsync(asset('models/workbench.glb')),
+      gltf.loadAsync(asset('models/spiral-shell.glb')),
+      gltf.loadAsync(asset('models/sea-glass.glb')),
+      gltf.loadAsync(asset('models/driftwood-stick.glb')),
+      gltf.loadAsync(asset('models/seed-pouch.glb')),
+      gltf.loadAsync(asset('models/opening-crate.glb')),
+      gltf.loadAsync(asset('models/opening-crate-lid.glb')),
     ])
 
   cache = {
@@ -341,6 +364,12 @@ export async function loadModels(): Promise<ModelCache> {
     turnip: extractMesh(turnip.scene),
     haybale: extractMesh(haybale.scene),
     haypile: extractMesh(haypile.scene),
+    spiralShell: extractMesh(spiralShell.scene),
+    seaGlass: extractMesh(seaGlass.scene),
+    driftwoodStick: extractMesh(driftwoodStick.scene),
+    seedPouch: extractMesh(seedPouch.scene),
+    openingCrate: extractMesh(openingCrate.scene),
+    openingCrateLid: extractMesh(openingCrateLid.scene),
   }
   return cache
 }
@@ -821,6 +850,82 @@ export function cloneCreature(id: string): CreatureModel | null {
     mesh.receiveShadow = true
   })
   return { root, idle: src.idle, walk: src.walk }
+}
+
+/**
+ * The hero goat of the opening: one skinned mesh and the single take its
+ * exporter baked.
+ *
+ * Registered here rather than beside its rig for the same reason every other
+ * authored body is — one loader, one cache, one place where the exporter's
+ * self-lit material gets beaten back into something the sun can touch. It is
+ * its own entry rather than a `loadCreatureModel` call because that helper
+ * takes two files (body + stripped walk) and sizes the result off the bone
+ * span with a quadruped allowance, and this rig's topmost joint is an EAR: the
+ * allowance would make the goat two-thirds the size it should be. Sizing is
+ * left to assets/opening/goat-model.ts, which measures the mesh.
+ *
+ * No `targetHeight` here, and deliberately no transform written to the loaded
+ * root: a glTF skin's inverse bind matrices are baked against the joints'
+ * bind-pose world transforms, so the file's own node transforms are not this
+ * loader's to edit. The rig scales the *group it puts the clone in* instead.
+ */
+export interface GoatSourceModel {
+  root: THREE.Object3D
+  /** The one baked take, whatever the exporter chose to call it. */
+  clip?: THREE.AnimationClip
+}
+
+let goatSource: GoatSourceModel | null = null
+let goatPending: Promise<GoatSourceModel> | null = null
+
+/** Fetch the goat body. Safe to call repeatedly — one fetch, shared promise. */
+export function loadGoatModel(): Promise<GoatSourceModel> {
+  goatPending ??= new GLTFLoader().loadAsync(asset('models/goat.glb')).then((gltf) => {
+    const root = gltf.scene
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh
+      if (!mesh.isMesh) return
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      /*
+       * A skinned mesh's culling sphere is derived from its *bind pose* vertex
+       * buffer, which for this rig is a four-millimetre blob at the origin —
+       * two orders of magnitude smaller than the animal that actually gets
+       * drawn, and centred on the wrong point once the rig is scaled up. The
+       * goat would blink out whenever its origin left the frustum. One animal
+       * at 4.3k triangles is not worth a cull test.
+       */
+      mesh.frustumCulled = false
+      for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        makeLit(m as THREE.MeshStandardMaterial)
+      }
+    })
+    goatSource = { root, clip: gltf.animations[0] }
+    return goatSource
+  })
+  return goatPending
+}
+
+/** The loaded source if it is here, or null. The rig builds either way. */
+export function peekGoatModel(): GoatSourceModel | null {
+  return goatSource
+}
+
+/**
+ * An independent skinned copy. The opening gallery puts three goats on one
+ * page, so this cannot hand back the shared graph — see cloneFarmer.
+ */
+export function cloneGoatModel(src: GoatSourceModel): GoatSourceModel {
+  const root = cloneSkinned(src.root)
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh) return
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    mesh.frustumCulled = false
+  })
+  return { root, clip: src.clip }
 }
 
 export function getFarmgirlModel(): ShopkeeperModel {

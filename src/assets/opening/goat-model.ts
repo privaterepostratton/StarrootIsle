@@ -1,46 +1,72 @@
 import * as THREE from 'three'
-import { mat, ball, cyl } from '../style'
+import { cloneGoatModel, loadGoatModel, peekGoatModel, type GoatSourceModel } from '../models'
 
 /**
  * The island goat — the hero asset of the whole opening.
  *
- * Built in the procedural box-rig school (animal.ts livestock, critters.ts
- * crabs): chunky Animal Crossing proportions, cached lambert materials, no
- * GLB, no mixer. Every part that acts is a Group with its pivot at the joint,
- * so goat.ts can swing legs, dip the head and flick the tail with plain
- * transform writes.
+ * This used to be a procedural box rig in the school of animal.ts and
+ * critters.ts: twelve fleece lumps, four tapering tubes and a spiral of discs
+ * for the marking. It is now an authored, skinned GLB (public/models/goat.glb,
+ * 4.3k triangles, 27 joints), and everything below exists to make that model
+ * answer to the same six-field `GoatRig` the scripted arrival in
+ * game/opening/goat.ts has always driven.
  *
- * Design intent, per the spec's fauna manifest: a SMALL island goat — cream
- * coat, ONE sea-foam swirl marking on the flank (the generative-texture
- * teaser; exactly one, always the same flank), back-swept horns, big
- * expressive ears. The single most important thing this rig does is
- * `lookAt`: the beat-9 "being seen" moment is one second of the goat's head
- * and ears locked on the player, so head tracking + ear engagement live here
- * in the rig where they can be smoothed consistently no matter which phase
- * is driving.
+ * The shape of the problem
+ * -----------------------
+ * goat.ts choreographs beat 9 by writing transforms directly — `legs[i]
+ * .rotation.x` for the gait, `tail.rotation.z` for the wag, `body.position.y`
+ * for the bob, and `lookAt(point)` for the beat's payoff. An authored rig
+ * cannot receive those writes literally: its bones have their own rest
+ * orientations (the head bone's local +Y points along the goat's nose, the
+ * hind-leg bone's local X is 60° off the body's), so `rotation.x = 0.5` on a
+ * bone means something different on every limb, and on most of them it means
+ * "dislocate".
  *
- * What the first pass got wrong, and what fixed it
- * ------------------------------------------------
- * It photographed as a capsule on four white tubes. Three things did that, and
- * all three are structural rather than a matter of tuning:
+ * So the rig hands back *control groups* — detached Object3Ds that carry no
+ * geometry and live outside the scene graph. goat.ts writes them exactly as it
+ * always did; `lookAt` — which the caller already invokes once per frame, last,
+ * at the end of every pose — reads them back and converts each one into a
+ * rotation about the goat's BODY axes, re-expressed in the bone's own parent
+ * space. That conversion is the whole trick: it means the arrival's
+ * choreography is written in one honest frame (x = across, y = up, z = the way
+ * the goat is pointing) no matter how the animator happened to orient a joint.
  *
- *   1. **The torso was smooth.** A goat is bony — hips, withers, ribs, a
- *      shaggy skirt hanging off the belly line. A single ellipsoid has no
- *      landmarks, so the eye reads "pill" and stops. The coat here is a shell
- *      of overlapping fleece lumps at two tones, which breaks the outline
- *      everywhere it matters and gives the low dawn key something to rake
- *      across.
- *   2. **The legs did not taper.** Untapered cylinders of the body colour are
- *      furniture legs. A real goat's leg is a wide woolly thigh over a thin
- *      dark cannon over a black hoof — three values in a hand's width, and
- *      that value ladder is most of what makes the animal read at fifteen
- *      metres.
- *   3. **The marking was a cluster of circles**, which contradicted the goat
- *      sketch the player is handed in the same session. It is now a proper
- *      spiral: radius and disc size both grow along the arc, so it curls.
+ * Two fields are real scene objects rather than controls, because the caller
+ * needs more from them than a number:
  *
- * Colour discipline: everything desaturated-warm (the postfx grade multiplies
- * saturation 1.2). Nothing here approaches lotto gold 0xf2c14e.
+ *   - `body` is the group the model actually hangs in, holding the model down
+ *     by GOAT_BODY_Y so that the caller's `body.position.y = GOAT_BODY_Y + bob`
+ *     lands the hooves at y=0 with the bob on top. Its rotation and its breath
+ *     scale then apply to the whole animal, legs included — which is what the
+ *     box rig did too, since its legs were children of the body.
+ *   - `head` is an empty marker parented to the head BONE, sitting on the face
+ *     between skull and muzzle. The camera pushes in on `headPoint()` for the
+ *     look beat, so this has to track the real head every frame, and being a
+ *     child of the bone is the only way it does that for free.
+ *
+ * The baked take
+ * --------------
+ * The export ships one clip, "Armature|Unreal Take|baselayer": 30 frames over
+ * one second, in place, with the legs cycling through a full stride and the
+ * spine and tail carrying a little follow-through. It is a walk, and it is a
+ * better walk than four rigid rotations at the hips will ever be — it has
+ * knees. So it plays *under* the scripted pose, at a weight taken from how
+ * fast the caller is actually moving the root, and the scripted leg swing
+ * fades out by the same amount so the two never fight. Standing still (sniff,
+ * eat, look, bleat) the weight is zero and the goat is posed entirely by the
+ * script; bounding away at 3.4 u/s it is zero again, because a walk cycle
+ * underneath a leap reads as a glitch. The look-at is never blended: it is
+ * applied on top of whatever the clip did, always, at full strength.
+ *
+ * Grounding and scale
+ * -------------------
+ * The mesh is measured, not guessed. A skinned mesh's vertex buffer is in bind
+ * space, and for this asset bind space happens to *be* the file's own scene
+ * space (three binds glTF skins with an identity bind matrix and rebuilds the
+ * inverse each frame), so the geometry's bounding box is a true measurement of
+ * the animal at rest — 0.00683 units tall, which is then scaled to GOAT_HEIGHT
+ * and lifted by its own `min.y` so the hooves sit on the ground rather than
+ * near it.
  */
 
 export interface GoatRig {
@@ -54,33 +80,24 @@ export interface GoatRig {
   lookAt(worldPos: THREE.Vector3 | null): void
 }
 
-/** Cream coat — the spec's colour, slightly warm, never white. */
-const COAT = 0xf1e9d8
-/** Muzzle / beard / underside shade — a step darker so the face reads. */
-const COAT_SHADE = 0xdccfb4
-/** The deepest coat value: belly, throat, the shadow side of the fleece. It is
- *  only ~12% down from COAT, but on a cream animal that is the whole of the
- *  modelling — go further and the goat looks dirty rather than furry. */
-const COAT_DEEP = 0xc4b79c
-/** THE sea-foam swirl. One marking, one flank, nowhere else on the animal. */
-const SWIRL = 0x9fd8cf
-/** The swirl's own shadow tone, so the spiral has depth rather than reading
- *  as a sticker. */
-const SWIRL_DEEP = 0x7cbdb4
-/** Horns: dry bone, not gold, not shiny. */
-const HORN = 0xc9bca2
-const HORN_DARK = 0xa4967c
-/** Hooves and nose lean dark-brown, matching the volcanic-soil palette. */
-const HOOF = 0x3b332c
-/** The cannon bone between woolly thigh and hoof — the middle value. */
-const SHIN = 0x9b8f7c
-const NOSE = 0x5a4a40
-const INNER_EAR = 0xd8b6a4
-const EYE = 0x241f1a
-const EYE_WHITE = 0xf6f1e6
-
-/** Body group rest height — legs are tuned so hooves land at y≈0. */
+/**
+ * Body group rest height. Not a measurement any more — it is the contract the
+ * caller writes against (`body.position.y = GOAT_BODY_Y + bob`), so the model
+ * hangs GOAT_BODY_Y *below* the body group to cancel it out. It also sets where
+ * the body's lean and its breath scale pivot: mid-back, which is where a lean
+ * looks like a lean rather than like a topple.
+ */
 export const GOAT_BODY_Y = 0.52
+
+/**
+ * Overall standing height, ear tips included, in world units.
+ *
+ * A small island goat, measured against the 1.6-unit farmer and the 1.55-unit
+ * wild cow: chest-high on a person, well under half the cow. Bigger than this
+ * and the animal that is supposed to feel like a wild visitor starts reading as
+ * livestock the player owns.
+ */
+const GOAT_HEIGHT = 0.95
 
 /** How far the head will turn to track (radians). Past this the goat would
  *  need to move its body, which is the animator's job, not the rig's. */
@@ -92,336 +109,258 @@ const PITCH_DOWN_LIMIT = 0.95
 const TRACK_BLEND = 0.18
 
 /**
- * One leg: woolly thigh → thin dark cannon → hoof, all under a hip pivot.
+ * Ear engagement, the second half of "it looks at you".
  *
- * The taper is deliberate and steep (0.075 at the top, 0.028 at the ankle).
- * Anything gentler and the leg is a dowel; this profile is what makes the
- * animal look like it is standing on bone rather than propped on posts.
+ * Three rotations rather than one, all about body axes: forward swings the tip
+ * toward the nose, turn brings the cup round to face the player, lift takes it
+ * out of the resting droop. Together they are the difference between a goat
+ * whose head happens to be pointing your way and a goat that is listening.
  */
-function goatLeg(front: boolean): THREE.Group {
-  const joint = new THREE.Group()
+const EAR_FORWARD = 0.5
+const EAR_TURN = 0.3
+const EAR_LIFT = 0.22
 
-  // Woolly upper: shoulder or haunch mass carried down onto the leg, so the
-  // limb grows out of the body instead of being plugged into it.
-  const thigh = cyl(0.055, 0.078, 0.16, COAT, 7)
-  thigh.position.y = -0.06
-  joint.add(thigh)
-  const fluff = ball(0.075, front ? COAT : COAT_SHADE, 1)
-  fluff.scale.set(1, 0.9, 1.1)
-  fluff.position.y = -0.02
-  joint.add(fluff)
+/** Leg roots in the caller's [FL, FR, RL, RR] order. The unprefixed bones sit
+ *  on +x and the R_ ones on -x, whatever their names suggest. */
+const LEG_BONES = ['R_frontleg', 'frontleg', 'R_backleg', 'backleg']
+/** Ears, in the caller's [-x, +x] order — matching how the box rig indexed. */
+const EAR_BONES = ['R_earend', 'earend']
+/** The wag is spread down the chain so the tail whips instead of hinging. */
+const TAIL_BONES = ['tail', 'tailstart', 'tail1', 'tail2', 'tail3']
+const TAIL_SHARE = [0.5, 0.35, 0.35, 0.35, 0.35]
 
-  // Knee, then the thin cannon bone. The knee bump is one mesh and it is what
-  // stops the two segments reading as one broken cylinder.
-  const knee = ball(0.042, COAT_SHADE, 1)
-  knee.position.y = -0.16
-  joint.add(knee)
+/** Root speed (u/s) at which the baked walk reaches full weight, and where it
+ *  gives up because the caller has started bounding rather than walking. */
+const CLIP_IN = 0.25
+const CLIP_FULL = 0.85
+const CLIP_OUT = 2.0
+const CLIP_GONE = 3.0
+/** The speed the take was authored at, near enough — sets its playback rate so
+ *  the hooves do not skate. */
+const CLIP_REF_SPEED = 1.1
 
-  const cannon = cyl(0.028, 0.036, 0.19, SHIN, 6)
-  cannon.position.y = -0.255
-  joint.add(cannon)
+function smoothstep(a: number, b: number, x: number): number {
+  const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1)
+  return t * t * (3 - 2 * t)
+}
 
-  // Hoof: dark, and slightly flared at the base so it plants.
-  const hoof = cyl(0.043, 0.036, 0.06, HOOF, 6)
-  hoof.position.y = -0.375
-  joint.add(hoof)
-  const cleft = ball(0.03, 0x2a251f, 0)
-  cleft.scale.set(0.8, 0.5, 1.1)
-  cleft.position.set(0, -0.4, 0.012)
-  joint.add(cleft)
+/**
+ * One bone the script drives, with the goat's body axes pre-rotated into that
+ * bone's parent space.
+ *
+ * Computed once, from the rest pose. The clip does move the parents a little,
+ * so these axes drift by a degree or two mid-stride — far below the threshold
+ * where anyone could see it, and worth it for not doing three quaternion
+ * inversions per bone per frame.
+ */
+interface Joint {
+  bone: THREE.Object3D
+  rest: THREE.Quaternion
+  /** Body +x (across, toward +x), +y (up) and +z (forward), in parent space. */
+  x: THREE.Vector3
+  y: THREE.Vector3
+  z: THREE.Vector3
+}
 
-  return joint
+/** Rotation of `obj` relative to `ancestor`, by walking up local quaternions. */
+function rotationWithin(obj: THREE.Object3D, ancestor: THREE.Object3D): THREE.Quaternion {
+  const out = new THREE.Quaternion()
+  const step = new THREE.Quaternion()
+  for (let o: THREE.Object3D | null = obj; o && o !== ancestor; o = o.parent) {
+    step.copy(o.quaternion).multiply(out)
+    out.copy(step)
+  }
+  return out
+}
+
+function makeJoint(bone: THREE.Object3D, frame: THREE.Object3D): Joint {
+  // The bone is rotated *within* its parent, so the axes it must be given are
+  // the body axes seen from the parent — hence the inverse.
+  const inv = rotationWithin(bone.parent ?? bone, frame).invert()
+  return {
+    bone,
+    rest: bone.quaternion.clone(),
+    x: new THREE.Vector3(1, 0, 0).applyQuaternion(inv),
+    y: new THREE.Vector3(0, 1, 0).applyQuaternion(inv),
+    z: new THREE.Vector3(0, 0, 1).applyQuaternion(inv),
+  }
+}
+
+/** Everything the rig needs from the loaded model, resolved once on attach. */
+interface Attached {
+  head: Joint
+  ears: Joint[]
+  legs: Joint[]
+  tail: Joint[]
+  mixer: THREE.AnimationMixer | null
+  action: THREE.AnimationAction | null
 }
 
 export function createGoatModel(): GoatRig {
   const root = new THREE.Group()
 
+  // The model hangs in here, pushed down by GOAT_BODY_Y so the caller's
+  // `body.position.y = GOAT_BODY_Y + bob` puts the hooves back on the ground.
   const body = new THREE.Group()
   body.position.y = GOAT_BODY_Y
   root.add(body)
+  const mount = new THREE.Group()
+  mount.position.y = -GOAT_BODY_Y
+  body.add(mount)
 
-  // --- torso mass: overlapping lumps, the sheep lesson — one smooth ball
-  // reads as a pill; a cluster reads as an animal.
-  const torso = ball(0.27, COAT, 1)
-  torso.scale.set(0.94, 0.88, 1.5)
-  body.add(torso)
-
-  const chest = ball(0.17, COAT, 1)
-  chest.scale.set(0.92, 0.98, 0.88)
-  chest.position.set(0, -0.03, 0.31)
-  body.add(chest)
-
-  // Withers and rump: the two bony landmarks along the topline. Raising them
-  // above the barrel is what gives the back its dip — the single most
-  // goat-shaped line on the animal.
-  const withers = ball(0.135, COAT, 1)
-  withers.scale.set(0.95, 0.85, 1.05)
-  withers.position.set(0, 0.135, 0.14)
-  body.add(withers)
-
-  const rump = ball(0.15, COAT, 1)
-  rump.scale.set(1, 0.95, 1)
-  rump.position.set(0, 0.115, -0.26)
-  body.add(rump)
-
-  for (const sx of [-1, 1]) {
-    const haunch = ball(0.155, COAT_SHADE, 1)
-    haunch.scale.set(0.9, 1, 1.05)
-    haunch.position.set(sx * 0.1, 0.0, -0.27)
-    body.add(haunch)
-  }
-
-  /*
-   * The fleece shell.
-   *
-   * Twelve lumps hung round the barrel at two tones, weighted low along the
-   * belly line where a goat's coat actually hangs in a skirt. They are not
-   * detail — they are the silhouette: this ring of overlapping bumps is what
-   * turns the ellipsoid underneath into something with a coat on it, and it is
-   * the difference the reviewer was asking for when they said "no fur".
-   */
-  const fleece: { a: number; z: number; y: number; s: number; deep: boolean }[] = [
-    { a: 0.5, z: 0.16, y: -0.06, s: 0.1, deep: false },
-    { a: 1.1, z: -0.02, y: -0.11, s: 0.11, deep: true },
-    { a: 1.9, z: -0.2, y: -0.05, s: 0.09, deep: false },
-    { a: 2.7, z: 0.05, y: -0.13, s: 0.1, deep: true },
-    { a: 3.5, z: 0.2, y: -0.04, s: 0.09, deep: false },
-    { a: 4.2, z: -0.14, y: -0.12, s: 0.11, deep: true },
-    { a: 5.0, z: 0.02, y: -0.06, s: 0.1, deep: false },
-    { a: 5.7, z: -0.24, y: -0.1, s: 0.09, deep: true },
-  ]
-  for (const f of fleece) {
-    const lump = ball(f.s, f.deep ? COAT_DEEP : COAT, 1)
-    lump.scale.set(1, 0.8, 1.25)
-    lump.position.set(Math.cos(f.a) * 0.21, f.y + Math.sin(f.a) * 0.07, f.z)
-    body.add(lump)
-  }
-
-  // Belly: one long deep-tone mass under the barrel. Undersides in shadow are
-  // how a stylised animal gets weight without a single extra light.
-  const belly = ball(0.2, COAT_DEEP, 1)
-  belly.scale.set(0.95, 0.62, 1.5)
-  belly.position.set(0, -0.16, 0.02)
-  body.add(belly)
-
-  /*
-   * THE swirl — one sea-foam curl on the right flank.
-   *
-   * A true spiral: both the arc radius and the disc size grow along it, so it
-   * reads as something coiling outward rather than as a cluster of dots. This
-   * has to match the goat sketched on the journal page in the same session —
-   * the player is being told these two are the same animal, and a marking that
-   * disagrees with its own drawing quietly breaks that.
-   *
-   * Built from half-buried discs squashed flat against the flank (the cow-patch
-   * precedent), with the outer half in the deeper foam tone so the curl has a
-   * light and a shadow side.
-   */
-  const swirl = new THREE.Group()
-  for (let i = 0; i < 9; i++) {
-    const t = i / 8
-    const a = -0.5 + t * 4.6
-    const rad = 0.02 + t * 0.135
-    const size = 0.062 - t * 0.026
-    const fleck = ball(size, i > 4 ? SWIRL_DEEP : SWIRL, 1)
-    // Squashed hard along the flank normal so it lies ON the coat, and pushed
-    // just proud of the torso surface so nothing z-fights the fleece.
-    fleck.scale.set(0.32, 1, 1)
-    fleck.position.set(0, Math.sin(a) * rad, Math.cos(a) * rad)
-    swirl.add(fleck)
-  }
-  swirl.position.set(0.235, 0.02, -0.04)
-  body.add(swirl)
-
-  // --- neck + head
-  const neck = cyl(0.09, 0.125, 0.32, COAT, 8)
-  neck.position.set(0, 0.24, 0.34)
-  neck.rotation.x = 0.5
-  body.add(neck)
-  // Throat ruff — the coat breaking over the neck join.
-  const ruff = ball(0.11, COAT_SHADE, 1)
-  ruff.scale.set(0.95, 0.8, 0.9)
-  ruff.position.set(0, 0.15, 0.36)
-  body.add(ruff)
-
+  // Face marker. Parented to `mount` until the model arrives and it can be
+  // hung off the real head bone; the camera asks for its world position from
+  // the first frame of the sequence, so it must never not exist.
   const head = new THREE.Group()
-  head.position.set(0, 0.43, 0.48)
-  body.add(head)
+  head.position.set(0, GOAT_HEIGHT * 0.66, GOAT_HEIGHT * 0.42)
+  mount.add(head)
 
-  const skull = ball(0.14, COAT, 1)
-  skull.scale.set(0.88, 0.95, 1.05)
-  head.add(skull)
+  // Pure control groups: never added to the scene, never drawn. The caller
+  // writes rotations on them and `lookAt` converts them onto bones.
+  const legs = [new THREE.Group(), new THREE.Group(), new THREE.Group(), new THREE.Group()]
+  const ears = [new THREE.Group(), new THREE.Group()]
+  const tail = new THREE.Group()
 
-  // Brow ridge: the flat forehead plate a goat has between the horns, and the
-  // shelf the eyes sit under.
-  const brow = ball(0.085, COAT, 1)
-  brow.scale.set(1.15, 0.55, 0.85)
-  brow.position.set(0, 0.085, 0.045)
-  head.add(brow)
+  let rig: Attached | null = null
 
-  const muzzle = ball(0.088, COAT_SHADE, 1)
-  muzzle.scale.set(0.84, 0.74, 1.1)
-  muzzle.position.set(0, -0.05, 0.125)
-  head.add(muzzle)
+  function attach(source: GoatSourceModel): void {
+    const inst = cloneGoatModel(source)
+    const model = inst.root
 
-  const nose = ball(0.028, NOSE, 1)
-  nose.scale.set(1.2, 0.8, 0.9)
-  nose.position.set(0, -0.025, 0.208)
-  head.add(nose)
-
-  // Goat beard: the one silhouette cue nothing else in the pasture has.
-  const beard = ball(0.038, COAT_SHADE, 1)
-  beard.scale.set(0.7, 1.8, 0.7)
-  beard.position.set(0, -0.135, 0.075)
-  head.add(beard)
-
-  /*
-   * Eyes.
-   *
-   * Big, and built in three layers — cream white, dark pupil, catchlight —
-   * because the whole beat-9 payoff is one second of eye contact, and an eye
-   * that is a single dark dot cannot make contact: it has no direction. The
-   * white is what tells the player which way the goat is looking, and the
-   * glint is what makes it alive rather than glass.
-   */
-  for (const sx of [-1, 1]) {
-    const white = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), mat(EYE_WHITE))
-    white.scale.set(0.06, 0.062, 0.03)
-    white.position.set(sx * 0.088, 0.025, 0.09)
-    white.rotation.y = sx * 0.35
-    head.add(white)
-
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6), mat(EYE))
-    // Horizontal, the way a goat's pupil actually is — and it happens to read
-    // as a decisive, forward stare at any size.
-    pupil.scale.set(0.042, 0.026, 0.03)
-    pupil.position.set(sx * 0.093, 0.023, 0.104)
-    pupil.rotation.y = sx * 0.35
-    head.add(pupil)
-
-    const glint = ball(0.012, 0xfffdf6, 1)
-    glint.position.set(sx * 0.096, 0.04, 0.112)
-    head.add(glint)
-  }
-
-  /*
-   * Horns: back-swept, four tapering segments each, following an arc.
-   *
-   * The first pass used two stubby cylinders and they vanished into the skull
-   * at any distance. A horn is a silhouette organ — it exists to be seen
-   * against the sky above the head — so these are longer, thicker at the base,
-   * and they curve, which is the only way a horn reads as horn rather than as
-   * a spike.
-   */
-  for (const sx of [-1, 1]) {
-    const hornG = new THREE.Group()
-    hornG.position.set(sx * 0.058, 0.115, -0.01)
-    hornG.rotation.z = sx * 0.22
-    head.add(hornG)
+    const skins: THREE.SkinnedMesh[] = []
+    model.traverse((o) => {
+      const m = o as THREE.SkinnedMesh
+      if (m.isSkinnedMesh) skins.push(m)
+    })
+    const skin = skins[0]
+    if (!skin) {
+      console.warn('goat.glb contained no skinned mesh')
+      return
+    }
 
     /*
-     * Segments advance by only 78% of their own length, so consecutive pieces
-     * overlap and the horn is one continuous tapering curve. Advancing by the
-     * full length leaves a hairline gap at every bend, and three gaps turn a
-     * horn into three sticks hovering over the goat's head.
+     * Measure, then scale and lift.
+     *
+     * The bounding box of the bind-pose vertex buffer is a real measurement of
+     * this animal because three binds glTF skins with an identity bind matrix:
+     * at rest every bone matrix is the identity and the drawn vertex is the
+     * stored one. `min.y` is the sole of the hoof, so lifting by it is what
+     * plants the goat instead of floating or sinking it.
      */
-    let y = 0
-    let z = 0
-    let pitch = -0.24
-    for (let i = 0; i < 4; i++) {
-      const len = 0.085 - i * 0.008
-      const seg = cyl(0.023 - i * 0.005, 0.032 - i * 0.005, len, i > 1 ? HORN_DARK : HORN, 6)
-      seg.position.set(0, y + Math.cos(pitch) * len * 0.5, z + Math.sin(pitch) * len * 0.5)
-      seg.rotation.x = -pitch
-      hornG.add(seg)
-      // One growth collar at each bend, flattened along the horn's axis.
-      const ring = ball(0.03 - i * 0.005, HORN_DARK, 0)
-      ring.scale.set(1, 0.3, 1)
-      ring.position.set(0, y, z)
-      ring.rotation.x = -pitch
-      hornG.add(ring)
+    const geo = skin.geometry
+    if (!geo.boundingBox) geo.computeBoundingBox()
+    const box = geo.boundingBox!
+    const span = box.max.y - box.min.y
+    const scale = span > 1e-6 ? GOAT_HEIGHT / span : 1
+    model.position.y = -box.min.y
+    mount.scale.setScalar(scale)
+    mount.add(model)
 
-      y += Math.cos(pitch) * len * 0.78
-      z += Math.sin(pitch) * len * 0.78
-      pitch -= 0.3
+    const bone = (name: string): THREE.Object3D | null => model.getObjectByName(name) ?? null
+    const headBone = bone('head')
+    const headEnd = bone('headend')
+    if (!headBone) {
+      console.warn('goat.glb has no "head" bone; the look beat will not read')
+      return
+    }
+
+    /*
+     * Move the face marker onto the head bone.
+     *
+     * Between the skull joint and the muzzle joint, biased toward the muzzle:
+     * the look beat's push-in wants eyes and nose in frame, and the head bone
+     * itself sits back inside the skull where a camera aimed at it frames the
+     * goat's forehead and the sky above it.
+     */
+    root.updateMatrixWorld(true)
+    const face = headBone.getWorldPosition(new THREE.Vector3())
+    if (headEnd) face.lerp(headEnd.getWorldPosition(new THREE.Vector3()), 0.55)
+    head.position.copy(face)
+    headBone.worldToLocal(head.position)
+    headBone.add(head)
+
+    /*
+     * Index alignment matters more than it looks: the caller addresses legs by
+     * position ([FL, FR, RL, RR]) and a silently dropped bone would slide every
+     * limb after it one place along, which photographs as a goat walking with
+     * the wrong feet. A missing bone is a loud failure, not a short array.
+     */
+    const joints = (names: string[]): Joint[] => {
+      const found = names.map((n) => bone(n)).filter((b): b is THREE.Object3D => b !== null)
+      if (found.length !== names.length) {
+        console.warn(`goat.glb is missing bones: expected ${names.join(', ')}`)
+      }
+      return found.map((b) => makeJoint(b, mount))
+    }
+
+    let mixer: THREE.AnimationMixer | null = null
+    let action: THREE.AnimationAction | null = null
+    if (inst.clip) {
+      mixer = new THREE.AnimationMixer(model)
+      action = mixer.clipAction(inst.clip)
+      action.play()
+      // Weight zero *before* the first update, so the mixer records the rest
+      // pose as the value it blends back toward when the goat stands still.
+      action.setEffectiveWeight(0)
+      mixer.update(0)
+    }
+
+    rig = {
+      head: makeJoint(headBone, mount),
+      ears: joints(EAR_BONES),
+      legs: joints(LEG_BONES),
+      tail: joints(TAIL_BONES),
+      mixer,
+      action,
     }
   }
 
-  /*
-   * Ears: big, and held out sideways where they break the head's outline.
-   *
-   * Pivot at the skull so engagement (droop → perked-forward) is a rotation
-   * write. Rest pose is the sleepy sideways droop; lookAt raises them, and the
-   * spec's "ears forward" is entirely this rotation reaching its target.
-   */
-  const ears: THREE.Group[] = []
-  for (const sx of [-1, 1]) {
-    const earG = new THREE.Group()
-    earG.position.set(sx * 0.11, 0.06, -0.01)
+  const ready = peekGoatModel()
+  if (ready) attach(ready)
+  else void loadGoatModel().then(attach).catch((e) => console.warn('goat.glb failed to load', e))
 
-    const outer = ball(0.062, COAT, 1)
-    outer.scale.set(2.1, 0.5, 0.95)
-    outer.position.set(sx * 0.115, 0, 0)
-    earG.add(outer)
-
-    // A second, smaller lump at the tip keeps the ear from ending in a blunt
-    // ellipse — goat ears taper and flick down at the end.
-    const tip = ball(0.04, COAT_SHADE, 1)
-    tip.scale.set(1.5, 0.45, 0.8)
-    tip.position.set(sx * 0.215, -0.012, -0.005)
-    earG.add(tip)
-
-    const inner = ball(0.036, INNER_EAR, 1)
-    inner.scale.set(1.7, 0.36, 0.62)
-    inner.position.set(sx * 0.108, 0.014, 0.018)
-    earG.add(inner)
-
-    earG.rotation.z = -sx * 0.5
-    head.add(earG)
-    ears.push(earG)
-  }
-
-  // --- legs: [FL, FR, RL, RR], pivots at the hips.
-  const legs: THREE.Group[] = []
-  for (const sz of [1, -1]) {
-    for (const sx of [-1, 1]) {
-      const l = goatLeg(sz > 0)
-      l.position.set(sx * 0.13, -0.14, sz * 0.26)
-      body.add(l)
-      legs.push(l)
-    }
-  }
-
-  // --- tail: a perky up-flick tuft, pivot at the rump.
-  const tail = new THREE.Group()
-  tail.position.set(0, 0.15, -0.39)
-  tail.rotation.x = -0.4
-  const tuft = ball(0.055, COAT, 1)
-  tuft.scale.set(0.75, 1.3, 0.7)
-  tuft.position.set(0, 0.055, -0.015)
-  tail.add(tuft)
-  const tailTip = ball(0.032, COAT_DEEP, 1)
-  tailTip.position.set(0, 0.115, -0.03)
-  tail.add(tailTip)
-  body.add(tail)
-
-  // --- head/ear tracking -----------------------------------------------------
+  // --- per-frame state -------------------------------------------------------
   let curYaw = 0
   let curPitch = 0
   let curEngage = 0
+  let lastMs = 0
+  let speed = 0
+  const prevPos = new THREE.Vector3()
   const tmp = new THREE.Vector3()
+  const facePos = new THREE.Vector3()
+  const spin = new THREE.Quaternion()
+
+  /** Rotate a joint by `angle` about one of the goat's body axes. */
+  function twist(j: Joint, axis: THREE.Vector3, angle: number): void {
+    if (angle === 0) return
+    spin.setFromAxisAngle(axis, angle)
+    j.bone.quaternion.premultiply(spin)
+  }
 
   function lookAt(worldPos: THREE.Vector3 | null): void {
+    const now = performance.now()
+    const dt = lastMs === 0 ? 0 : THREE.MathUtils.clamp((now - lastMs) / 1000, 0, 0.1)
+    lastMs = now
+
+    // --- how hard the goat is travelling, read off the root the caller moves.
+    // A teleport (the first frame of the sequence, when the goat is placed at
+    // the treeline) is not motion and must not spin the walk cycle up.
+    const step = prevPos.distanceTo(root.position)
+    prevPos.copy(root.position)
+    const instant = dt > 1e-4 && step < 1 ? step / dt : 0
+    speed += (instant - speed) * Math.min(1, dt * 6)
+
+    // --- look target, resolved in the body's own frame.
     let tYaw = 0
     let tPitch = 0
     let tEngage = 0
-    if (worldPos) {
-      // Matrices may be a frame stale mid-update; refresh the chain so the
-      // look lands where the goat IS, not where it was.
-      body.updateWorldMatrix(true, false)
+    if (worldPos && rig) {
+      head.updateWorldMatrix(true, false)
+      head.getWorldPosition(facePos)
+      body.worldToLocal(facePos)
       tmp.copy(worldPos)
       body.worldToLocal(tmp)
-      tmp.sub(head.position)
+      tmp.sub(facePos)
       const flat = Math.hypot(tmp.x, tmp.z)
       tYaw = THREE.MathUtils.clamp(Math.atan2(tmp.x, tmp.z), -YAW_LIMIT, YAW_LIMIT)
       tPitch = THREE.MathUtils.clamp(Math.atan2(tmp.y, flat), -PITCH_DOWN_LIMIT, PITCH_UP_LIMIT)
@@ -430,13 +369,56 @@ export function createGoatModel(): GoatRig {
     curYaw += (tYaw - curYaw) * TRACK_BLEND
     curPitch += (tPitch - curPitch) * TRACK_BLEND
     curEngage += (tEngage - curEngage) * TRACK_BLEND
-    head.rotation.set(curPitch, curYaw, 0)
-    // Engagement pulls the ears from sideways droop to perked-forward — the
-    // spec's "ears forward" is this number reaching 1 during the look beat.
-    for (let i = 0; i < ears.length; i++) {
+
+    if (!rig) return
+
+    /*
+     * The baked walk, weighted by travel.
+     *
+     * In between CLIP_IN and CLIP_FULL it fades up; past CLIP_OUT it fades back
+     * out, because above walking pace the caller is bounding and owns the legs
+     * outright. The scripted swing is scaled by the complement, so at full clip
+     * weight the hips are left almost entirely to the animator's stride and the
+     * script contributes only a tenth — enough to keep the diagonal pairing of
+     * the gait readable, not enough to fight it.
+     */
+    const clip = smoothstep(CLIP_IN, CLIP_FULL, speed) * (1 - smoothstep(CLIP_OUT, CLIP_GONE, speed))
+    if (rig.mixer && rig.action) {
+      rig.action.setEffectiveWeight(clip)
+      rig.action.timeScale = THREE.MathUtils.clamp(speed / CLIP_REF_SPEED, 0.7, 1.5)
+      rig.mixer.update(dt)
+    } else {
+      rig.head.bone.quaternion.copy(rig.head.rest)
+      for (const j of [...rig.ears, ...rig.legs, ...rig.tail]) j.bone.quaternion.copy(j.rest)
+    }
+
+    /*
+     * Head tracking. Pitch first, about the body's across-axis, then yaw about
+     * the body's up-axis — nod, then turn, which is the order a neck does it in.
+     *
+     * The pitch is negated because a positive rotation about +x tips the nose
+     * DOWN, while a positive `tPitch` means the target is above: the box rig
+     * this replaced had that sign the other way round, so it looked at the sky
+     * to eat and at the ground to be seen.
+     */
+    twist(rig.head, rig.head.x, -curPitch)
+    twist(rig.head, rig.head.y, curYaw)
+
+    for (let i = 0; i < rig.ears.length; i++) {
       const sx = i === 0 ? -1 : 1
-      ears[i].rotation.z = -sx * (0.5 - 0.42 * curEngage)
-      ears[i].rotation.y = sx * -0.5 * curEngage
+      const ear = rig.ears[i]
+      twist(ear, ear.x, EAR_FORWARD * curEngage)
+      twist(ear, ear.y, -sx * EAR_TURN * curEngage)
+      twist(ear, ear.z, sx * EAR_LIFT * curEngage)
+    }
+
+    const swing = 1 - 0.9 * clip
+    for (let i = 0; i < rig.legs.length; i++) {
+      twist(rig.legs[i], rig.legs[i].x, legs[i].rotation.x * swing)
+    }
+
+    for (let i = 0; i < rig.tail.length; i++) {
+      twist(rig.tail[i], rig.tail[i].z, tail.rotation.z * (TAIL_SHARE[i] ?? 0.3))
     }
   }
 

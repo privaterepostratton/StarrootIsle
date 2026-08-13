@@ -184,8 +184,20 @@ const SKETCH_HAND_L = new THREE.Vector3(0.13, 0.5, 0.33)
  * `rootX` tips the whole rig about its own X after yaw (order YXZ, so the tip
  * always follows facing), `lift` raises or sinks the root against the ground,
  * `spine` is an additive chest-bone delta on top of the clip, the swing/pour
- * precedent. 'lie' is the wake pose — face down, head along facing, the small
- * lift keeping the body out of the sand's bumps. 'situp' and 'sketch' settle
+ * precedent.
+ *
+ * `yaw` swings the *lying direction* in the sand — with the rig already tipped,
+ * the third Euler term turns the body about the ground normal without touching
+ * `rotation.y`, which the opening's staging owns and rewrites every frame. It
+ * exists purely for the shot: beat 1 frames the wake from behind the feet, and
+ * a body pointing straight away from that camera projects as a vertical
+ * huddle — legs filling the frame, torso hidden behind them, and only the top
+ * of a skull where the face should be. Laid across the lens instead, the same
+ * pose reads as a person at a glance and the turned cheek faces the player.
+ * Zero for the kneeling poses, so it unwinds as the farmer sits up.
+ *
+ * 'lie' is the wake pose — see LIE_JOINTS, which does the actual
+ * posing; what lives here is only the rig-level staging under it. 'situp' and 'sketch' settle
  * the rig into a low kneel: mostly upright, sunk so the folded legs read as
  * tucked in the sand, hunched forward — 'sketch' additionally solves both
  * hands onto the journal (see SKETCH_HAND_*). All values ease at POSE_EASE,
@@ -194,12 +206,24 @@ const SKETCH_HAND_L = new THREE.Vector3(0.13, 0.5, 0.33)
  * which is also how the opening stands the farmer back up without an API.
  */
 const OPENING_POSES = {
-  lie: { rootX: 1.55, lift: 0.21, spine: 0 },
-  situp: { rootX: 0.35, lift: -0.3, spine: 0.3 },
-  sketch: { rootX: 0.32, lift: -0.3, spine: 0.42 },
+  lie: { rootX: 1.55, lift: 0.21, spine: 0, yaw: 0.62 },
+  situp: { rootX: 0.35, lift: -0.3, spine: 0.3, yaw: 0 },
+  sketch: { rootX: 0.32, lift: -0.3, spine: 0.42, yaw: 0 },
 } as const
 /** How fast pose parameters chase their targets, per second. */
 const POSE_EASE = 6
+/**
+ * And how fast they chase them either side of the wake — deliberately slower.
+ *
+ * At POSE_EASE the lie → situp handover is forty per cent done in five frames,
+ * which is not a person sitting up, it is a person being deleted and replaced.
+ * This rate spends most of the sit-up timer on the rise, so the authored pose
+ * unwinds *through* the motion: the arm comes down off the sand, the turned
+ * head squares up, and the body untwists out of the sand as it lifts. It also
+ * governs the way in, where it costs nothing — beat 1 lies the farmer down
+ * behind a white fade.
+ */
+const POSE_EASE_WAKE = 2.4
 
 /**
  * One joint of an authored pose: a rotation in **character space**, applied
@@ -266,22 +290,27 @@ const LIE_JOINTS: Record<string, JointPose> = {
   // Raised arm: elbow out, forearm folded back toward the face. Flexion here is
   // a rotation about character +Z, which is the elbow's own hinge axis on this
   // rig — the forearms' local X runs along the world's forward axis at rest.
-  RightArm: { y: -0.15, z: -0.55 },
-  RightForeArm: { z: -1.25, twitch: 0.4 },
+  // Both shoulders are pinned at rest as well. They carry a fair amount of the
+  // idle's breathing sway, and an arm authored below a shoulder still drifting
+  // on the clip is an arm that will not hold still for twenty seconds.
+  RightShoulder: {},
+  RightArm: { y: 0.5, z: -0.45 },
+  RightForeArm: { x: 0.35, z: -1.08, twitch: 0.35 },
   RightHand: { x: 0.15, z: -0.25, twitch: 1 },
   // Down-side arm: along the body, swung slightly behind the flank it is lying
   // on so it rests on top of the sand rather than inside it.
-  LeftArm: { x: 0.3, z: -1.2 },
-  LeftForeArm: { z: 0.45 },
+  LeftShoulder: {},
+  LeftArm: { x: 0.35, z: -1.4 },
+  LeftForeArm: { z: 0.18 },
   LeftHand: { x: -0.1 },
   // Legs. `x` on a hip is flexion — the leg swinging toward the belly, which
   // when the belly is downward means *toward the sand*.
-  LeftUpLeg: { x: -0.16, z: -0.04 },
-  LeftLeg: { x: 0.12 },
-  LeftFoot: { x: 0.78 },
-  RightUpLeg: { x: -0.14, z: 0.05 },
-  RightLeg: { x: 0.4 },
-  RightFoot: { x: 0.7 },
+  LeftUpLeg: { x: -0.22, z: -0.04 },
+  LeftLeg: { x: 0.05 },
+  LeftFoot: { x: 0.85 },
+  RightUpLeg: { x: -0.24, z: 0.05 },
+  RightLeg: { x: 0.18 },
+  RightFoot: { x: 0.8 },
 }
 
 /**
@@ -298,11 +327,11 @@ const LIE_JOINTS: Record<string, JointPose> = {
  * detached prop rotating.
  */
 const BREATH_RATE = 0.62
-const BREATH_AMOUNT = 0.03
-const TWITCH_PERIOD = 5.5
+const BREATH_AMOUNT = 0.075
+const TWITCH_PERIOD = 4.5
 const TWITCH_DECAY = 7
 const TWITCH_RATE = 30
-const TWITCH_AMOUNT = 0.26
+const TWITCH_AMOUNT = 0.5
 
 /** Scratch for the authored pose, so a posed frame allocates nothing. */
 const poseEuler = new THREE.Euler()
@@ -488,6 +517,7 @@ export class Player {
   private poseSpine = 0
   private poseArms = 0
   private poseClock = 0
+  private poseYaw = 0
   /** How much of the authored wake pose is showing. Eases like the rest. */
   private poseLie = 0
 
@@ -997,18 +1027,22 @@ export class Player {
      * block is two float compares.
      */
     const pose = this.openingPose ? OPENING_POSES[this.openingPose] : null
-    const poseEase = Math.min(1, dt * POSE_EASE)
+    const waking = this.openingPose === 'lie' || this.poseLie > 0.01
+    const poseEase = Math.min(1, dt * (waking ? POSE_EASE_WAKE : POSE_EASE))
     this.poseRootX += ((pose?.rootX ?? 0) - this.poseRootX) * poseEase
     this.poseLift += ((pose?.lift ?? 0) - this.poseLift) * poseEase
     this.poseSpine += ((pose?.spine ?? 0) - this.poseSpine) * poseEase
     this.poseArms += ((this.openingPose === 'sketch' ? 1 : 0) - this.poseArms) * poseEase
     this.poseLie += ((this.openingPose === 'lie' ? 1 : 0) - this.poseLie) * poseEase
+    this.poseYaw += ((pose?.yaw ?? 0) - this.poseYaw) * poseEase
     if (Math.abs(this.poseRootX) > 0.002) {
       this.object.rotation.order = 'YXZ'
       this.object.rotation.x = this.poseRootX
+      this.object.rotation.z = this.poseYaw
       this.object.position.y += this.poseLift
     } else if (this.object.rotation.x !== 0) {
       this.object.rotation.x = 0
+      this.object.rotation.z = 0
       this.object.rotation.order = 'XYZ'
     }
 
@@ -1106,6 +1140,17 @@ export class Player {
     // its deltas on top of whatever the clip decided this frame.
     this.mixer.update(dt)
 
+    /*
+     * The wake pose goes on straight after, before anything additive, because
+     * it *replaces* the clip rather than layering on it — the whole point is
+     * that no part of a standing idle survives into a body lying in the sand.
+     * Weight-faded, so switching to 'situp' hands the skeleton back to the
+     * clip over the same ramp the root tip un-tips on and the rise reads as
+     * one motion.
+     */
+    this.poseClock += dt
+    if (this.poseLie > 0.002) this.applyLiePose(this.poseLie)
+
     // Ease the grips in and out. Snapping either on the frame a tool appears
     // throws an arm across the body in one step.
     this.grip1 += ((this.tool === 'none' ? 0 : 1) - this.grip1) * Math.min(1, dt * 9)
@@ -1180,7 +1225,6 @@ export class Player {
      * lean, mirrored — a pull, not a push) with a tremble that reads as
      * effort; the pose fold hunches it forward for the kneel and the sketch.
      */
-    this.poseClock += dt
     this.strainCur += (this.strainGoal - this.strainCur) * Math.min(1, dt * 12)
     if (this.spine) {
       if (this.strainCur > 0.002) {
@@ -1213,6 +1257,44 @@ export class Player {
       this.solveArm(this.armR, this.foreArmR, this.hand, this.poseAnchor(SKETCH_HAND_R), ELBOW_POLE_R, this.poseArms)
       this.solveArm(this.armL, this.foreArmL, this.handL, this.poseAnchor(SKETCH_HAND_L), ELBOW_POLE_L, this.poseArms)
     }
+  }
+
+  /**
+   * Write the authored wake pose over the skeleton, `w` of the way.
+   *
+   * Absolute, not additive: each joint's local quaternion is built from its own
+   * bind orientation and the table's character-space rotation, then slerped
+   * from wherever the clip left it. At w = 1 the clip is gone entirely, which
+   * is what makes the pose hold still for twenty seconds; on the way in or out
+   * the slerp is the cross-fade.
+   *
+   * The two idle signals ride on the same table so they cannot drift out of it
+   * — breathing opens the ribcage joints (negative x is an arch, and with the
+   * belly downward an arch is the back rising), and the twitch is a decaying
+   * flick that fires once a TWITCH_PERIOD on the raised hand.
+   */
+  private applyLiePose(w: number) {
+    const breath = Math.sin(this.poseClock * BREATH_RATE) * BREATH_AMOUNT
+    const since = this.poseClock % TWITCH_PERIOD
+    const twitch =
+      since < 0.6 ? Math.exp(-since * TWITCH_DECAY) * Math.sin(since * TWITCH_RATE) * TWITCH_AMOUNT : 0
+
+    for (const j of this.liePose) {
+      const p = j.pose
+      let x = p.x ?? 0
+      let z = p.z ?? 0
+      if (p.breath) x -= breath * p.breath
+      if (p.twitch) {
+        x += twitch * p.twitch
+        z -= twitch * p.twitch * 0.7
+      }
+      poseEuler.set(x, p.y ?? 0, z)
+      qPose.setFromEuler(poseEuler)
+      qJoint.copy(j.parentInv).multiply(qPose).multiply(j.rest)
+      j.bone.quaternion.slerp(qJoint, w)
+    }
+    // The clips travel the hips; a body asleep in the sand does not.
+    if (this.hips) this.hips.position.lerp(this.hipsRest, w)
   }
 
   /**

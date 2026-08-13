@@ -1,11 +1,22 @@
 import * as THREE from 'three'
 import { mat, ball, cyl, block } from '../style'
+import { loadModels, peekModels, type LoadedModel, type ModelCache } from '../models'
 import { LOTTO_GOLD } from '../../game/opening/types'
 import type { TideDrop } from '../../game/opening/types'
 
 /**
- * Procedural models for the opening beach — the crate, the pouch, the shovel,
- * the tide-line washups and the journal.
+ * Models for the opening beach — the crate, the pouch, the shovel, the
+ * tide-line washups and the journal.
+ *
+ * Mixed provenance, as of the authored-asset pass. The crate (body and lid),
+ * the seed pouch, and the three session-one washups are glTF models loaded
+ * through the shared cache in assets/models.ts; the shovel, the journal and
+ * the session-two washups are still built in code here. The two schools are
+ * kept apart on purpose — an authored prop wears its own texture and is only
+ * sized, tilted and grounded by this file, and nothing here reaches into an
+ * authored material to repaint it. The single exception is documented where it
+ * happens: the impossible sea-glass borrows the ordinary shard's geometry and
+ * supplies its own material, because the reserved gold has to arrive pure.
  *
  * The art thesis these serve: *nature is Maui, culture is Mediterranean*.
  * Everything here is a human artifact that washed in from somewhere else, so
@@ -17,51 +28,20 @@ import type { TideDrop } from '../../game/opening/types'
  * All colours are authored slightly desaturated: the postfx grade multiplies
  * saturation by 1.2, so anything loud here turns lurid on screen.
  *
- * Style school: style.ts helpers only (mat/ball/cyl/block), Lambert flat-ish,
- * rounded silhouettes, no GLBs, no textures. Every factory returns a group
- * whose ground contact sits at local y = 0 so callers place with groundHeight.
+ * Style school for what remains procedural: style.ts helpers only
+ * (mat/ball/cyl/block), Lambert flat-ish, rounded silhouettes. Authored or not,
+ * every factory returns a group whose ground contact sits at local y = 0, so
+ * callers place with groundHeight and nothing floats or sinks.
  */
 
 // --- palette (culture set, pre-desaturated for the grade) --------------------
 
-/**
- * Sun-bleached crate planks — driftwood.
- *
- * Three passes bracket this value. Authored grey-cream, the crate read as a
- * stone box — lighter and cooler than the ground it stands on, it had no
- * silhouette. Authored warm tan, it read as a *new* box from a farm game.
- * Authored a desaturated putty (`0xc2b498`) it photographed, under the dawn
- * key, as **grey**: a taupe machine crate with markings stencilled on it, which
- * is the exact read the whole art thesis exists to avoid.
- *
- * The lesson is that grey is not a colour driftwood can afford to be *authored*
- * as, because the shaded half of every plank supplies all the grey the eye
- * needs. So this is the spec's own weathered-wood value: warm at full light,
- * grey where the light leaves it.
+/*
+ * The crate is an authored model now — body and lid, both textured with their
+ * own flaking cobalt over weathered plank. The long list of hand-mixed wood and
+ * paint values that used to live here went with it; what remains below is the
+ * palette of the props that are still built in code.
  */
-const BLEACHED_WOOD = 0xc9b79a
-/**
- * Corner posts, battens and shadowed plank edges — the silhouette holders.
- * Warm brown rather than the old warm-grey: two greys stacked is a stone,
- * two woods stacked is a plank and the seam between them.
- */
-const BLEACHED_WOOD_DARK = 0xa08a68
-/** Grain slivers scored along the plank faces; barely darker, but it kills the
- *  "moulded plastic" read a flat rounded box has at ten steps. */
-const WOOD_GRAIN = 0xb5a082
-/** The shadow line in a plank gap — a crate is legible because you can see
- *  daylight (or the lack of it) between its boards. */
-const PLANK_GAP = 0x4a3d2e
-/** The pale, dried-out edge where paint has flaked away and left raw wood
- *  bleaching in the sun. Painted around each surviving patch of cobalt, it is
- *  what turns a blue rectangle into a blue rectangle that is *coming off*. */
-const FLAKE_EDGE = 0xdcd0b6
-/** Flaking paint — the contract's culture blue, faded cobalt. */
-const COBALT = 0x4a6fa5
-/** Sun-cooked cobalt: the same coat, one more summer on. */
-const COBALT_SUN = 0x6b87ae
-/** Where the cobalt has weathered nearly away to a stain in the grain. */
-const COBALT_FADED = 0x8b9bb0
 /**
  * Rope handles, drawstrings, coils — dry hemp.
  *
@@ -73,15 +53,17 @@ const COBALT_FADED = 0x8b9bb0
  * so hemp is neither.
  */
 const ROPE = 0x9d8a6b
-/** Knots and the shadow side of a coil: hemp that has been wet a lot. */
-const ROPE_DARK = 0x7c6a4f
-/** Pouch and journal-page linen (contract §5.1). */
-const LINEN = 0xe8decc
-/** Linen in shadow / the pouch's cinched neck. */
-const LINEN_SHADE = 0xcfc3ac
 /** The hand-stamped tomato mark — ink red, muted so it reads as a stamp. */
 const STAMP_RED = 0xc05a48
 const STAMP_GREEN = 0x6f9c58
+/**
+ * Longest axis of the seed pouch, in world units.
+ *
+ * Sized against the crate it comes out of rather than against the player: it
+ * has to be a thing that was plausibly inside, and it has to clear the rim on
+ * the way up without filling the shot.
+ */
+const POUCH_SIZE = 0.42
 /**
  * Olive-wood shovel grip: pale wood with dark figure, pushed a step green and
  * a step down in saturation from `0xa8925e`. Olive is a *greenish* tan, and
@@ -103,13 +85,11 @@ const IRON_DARK = 0x3c3e44
 const IRON_EDGE = 0xc3c8cf
 /** Active rust blooming on the iron. */
 const RUST = 0x9a5f3f
-const RUST_DEEP = 0x7a4229
-/** Washup materials. */
-const SHELL_CREAM = 0xe6d9c4
-const SHELL_BLUSH = 0xd9ad97
-const SEA_GLASS_BLUE = 0x5f9eb0
-const DRIFTWOOD = 0xb3a68e
-const DRIFTWOOD_DARK = 0x8f846d
+/*
+ * The session-one washups — spiral shell, sea glass, driftwood stick — are
+ * authored models now, so their palette lives in their own textures rather
+ * than here. What is left of the washup set below is procedural.
+ */
 /** The odd fruit — dusky, wrong, deliberately NOT gold. */
 const ODD_PLUM = 0x8b5c86
 const ODD_SPECKLE = 0xd8cfc0
@@ -120,83 +100,47 @@ const CHARCOAL = 0x2e2a26
 
 // --- the crate ---------------------------------------------------------------
 
-/**
- * Deterministic value noise, 0..1 — the pattern the crate's paint has broken
- * into.
- *
- * Scattering paint with a plain per-cell random gives a *checkerboard*, which
- * is what the previous pass photographed as: blue confetti stencilled on a
- * grey box. Paint does not come off one square at a time; it comes off in
- * connected areas, because a flake takes its neighbours with it. Smoothly
- * interpolated lattice noise is the cheapest thing that produces connected
- * areas with ragged borders, and being a pure function of the cell index it
- * costs no rng state and looks the same on every boot.
- */
-function paintNoise(x: number, y: number, seed: number): number {
-  const hash = (ix: number, iy: number) => {
-    const s = Math.sin(ix * 127.1 + iy * 311.7 + seed * 74.7) * 43758.5453
-    return s - Math.floor(s)
-  }
-  const ix = Math.floor(x)
-  const iy = Math.floor(y)
-  const fx = x - ix
-  const fy = y - iy
-  const u = fx * fx * (3 - 2 * fx)
-  const v = fy * fy * (3 - 2 * fy)
-  const a = hash(ix, iy)
-  const b = hash(ix + 1, iy)
-  const c = hash(ix, iy + 1)
-  const d = hash(ix + 1, iy + 1)
-  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v
-}
-
-/**
- * A length of hemp rope as *rope*, not as a drawn arc.
- *
- * The first pass hung a `TorusGeometry` off the crate's end, and from the wake
- * camera it photographed as a smooth bright semicircle painted onto the wood —
- * a smile. What makes rope read as rope at ten steps is not its curve, it is
- * the **lay**: the regular light/dark banding of the twist running along it.
- * So the loop is built from short tangent segments in alternating hemp tones,
- * each nudged off the centreline, which gives the banding for the price of a
- * dozen tiny cylinders and survives being small on screen.
- *
- * Built in the local XY plane (centre at the origin, arc opening downward),
- * so callers orient the whole group exactly as they would have oriented a
- * torus.
- */
-function ropeArc(radius: number, thickness: number, arc: number, segments: number): THREE.Group {
-  const g = new THREE.Group()
-  const step = arc / segments
-  const start = -arc / 2 - Math.PI / 2
-  for (let i = 0; i < segments; i++) {
-    const a = start + (i + 0.5) * step
-    // The loop is slack: it hangs a little wider at the bottom than a circle.
-    const droop = 1 + 0.12 * Math.max(0, -Math.sin(a))
-    const strand = cyl(thickness, thickness, radius * step * 1.55, i % 2 ? ROPE_DARK : ROPE, 5)
-    strand.position.set(Math.cos(a) * radius * droop, Math.sin(a) * radius * droop, (i % 2 ? 1 : -1) * thickness * 0.3)
-    // A cylinder's axis is +y; rotating it by `a` about z lands it on the
-    // tangent (−sin a, cos a), which is the direction the rope runs.
-    strand.rotation.z = a
-    strand.rotation.x = (i % 2 ? 1 : -1) * 0.22
-    g.add(strand)
-  }
-  return g
-}
-
 /** Seconds for the lid to swing fully open once creaked. */
 const LID_OPEN_TIME = 0.55
 /** Open lid angle — past vertical so the interior reads from the game camera. */
 const LID_OPEN_ANGLE = -2.05
 
 /**
- * The weathered crate the seeds arrive in — the first human artifact the
- * player touches. Sun-bleached planks, flaking cobalt paint, rope handles,
- * a hinged lid, and a shadowed interior deep enough to hide the pouch in.
+ * Overall width of the crate, in world units, and the height it stands to.
  *
- * The lid is animated by the caller pumping `update(dt)` every frame (the
- * factory owns no clock); `openLid()` arms the swing with a slight ease-out
- * overshoot so the creak lands with a bit of weight.
+ * Both are held from the procedural crate this replaced, because both are load
+ * bearing outside this file: beach-props.ts sinks the root a hand's width into
+ * the sand, banks drift mounds against known corners, and registers a
+ * one-metre collider around it. A crate that changed size would leave the sand
+ * banked against nothing and the player walking through a corner.
+ *
+ * The authored body arrives normalised into a unit box that is markedly
+ * flatter than the crate it replaces (1 : 0.33 : 0.61 against 1 : 0.57 : 0.68),
+ * so height is set separately rather than falling out of the width. That is a
+ * ~1.35x vertical stretch, which on mottled plank texture at the wake camera's
+ * distance is invisible, and the alternative — scaling uniformly to the right
+ * height — gives a crate 2.3 units wide: wider than the avatar is tall, and
+ * wider than its own collider.
+ */
+const CRATE_W = 1.62
+const CRATE_H = 0.74
+/** How far in front of the rear rim the hinge sits. */
+const HINGE_INSET = 0.06
+
+/**
+ * The weathered crate the seeds arrive in — the first human artifact the
+ * player touches.
+ *
+ * Two authored models, assembled here: an open-topped body and a separate lid.
+ * They have to be two files because beat 2 is *the lid opening*, and one fused
+ * mesh could not do it.
+ *
+ * The lid hangs off a hinge group parked on the body's rear rim rather than
+ * being rotated on its own origin — the mesh is centred on itself, so rotating
+ * it directly would spin the lid about its middle like a propeller instead of
+ * swinging it off the back. Same contract as before for the caller: the
+ * factory owns no clock, `openLid()` arms the swing, and `update(dt)` pumps it
+ * with a small ease-out overshoot so the creak lands with some weight.
  */
 export function createOpeningCrate(): {
   root: THREE.Group
@@ -204,472 +148,52 @@ export function createOpeningCrate(): {
   update: (dt: number) => void
 } {
   const root = new THREE.Group()
-
-  /*
-   * Scale first, because scale was the bug.
-   *
-   * The crate is the second thing the player is asked to look at and it is
-   * read from the wake camera, over the avatar's shoulder, at ten-ish steps.
-   * At the old 1.15 × 0.8 × 0.64 it occupied a thumbnail's worth of screen and
-   * whatever detail it carried was invisible; it read as "small grey thing".
-   * A little over waist-high on the avatar and half again as wide is the size
-   * at which a box says *crate* before any of its materials get a vote.
-   */
-  const W = 1.52
-  const D = 1.04
-  /** Wall height — three plank courses instead of two, so the sides stripe. */
-  const H = 0.86
-  /** Plank thickness; heavier boards, heavier crate. */
-  const T = 0.085
-
-  const floor = block(W - 0.1, 0.1, D - 0.1, BLEACHED_WOOD_DARK, 0.025)
-  floor.position.y = 0.07
-  root.add(floor)
-
-  // The interior shadow — a dark false floor so the open crate reads deep.
-  const hollow = block(W - 0.26, 0.03, D - 0.26, 0x2c2721, 0.01)
-  hollow.position.y = 0.14
-  root.add(hollow)
-
-  /*
-   * Walls as three courses of separate planks, alternating light/dark, sitting
-   * a few millimetres proud of a dark carcass box.
-   *
-   * The carcass is the fix for the previous pass. Planks butted straight
-   * against each other differ only in tone, and two tones of the same wood
-   * flatten into one slab from ten steps — a suitcase. A dark box *behind* the
-   * courses turns every gap between them into a visible shadow line, and those
-   * lines are what say "made of boards" before any material gets a vote.
-   */
-  const carcass = block(W - 0.02, H, D - 0.02, PLANK_GAP, 0.02)
-  carcass.position.y = H / 2
-  root.add(carcass)
-
-  const courses: { y: number; c: number }[] = [
-    { y: 0.155, c: BLEACHED_WOOD },
-    { y: 0.44, c: BLEACHED_WOOD_DARK },
-    { y: 0.725, c: BLEACHED_WOOD },
-  ]
-  for (const side of [1, -1]) {
-    for (const course of courses) {
-      const plank = block(W, 0.245, T, course.c, 0.022)
-      plank.position.set(0, course.y, side * (D / 2))
-      root.add(plank)
-    }
-  }
-  for (const side of [1, -1]) {
-    for (const course of courses) {
-      const plank = block(T, 0.245, D - 0.1, course.c === BLEACHED_WOOD ? BLEACHED_WOOD_DARK : BLEACHED_WOOD, 0.022)
-      plank.position.set(side * (W / 2), course.y, 0)
-      root.add(plank)
-    }
-  }
-
-  // Corner posts hold the silhouette together at a glance.
-  for (const sx of [1, -1]) {
-    for (const sz of [1, -1]) {
-      const post = block(0.13, H + 0.04, 0.13, BLEACHED_WOOD_DARK, 0.025)
-      post.position.set(sx * (W / 2 - 0.04), H / 2, sz * (D / 2 - 0.04))
-      root.add(post)
-    }
-  }
-
-  /*
-   * Iron corner banding, rusting.
-   *
-   * Manifest item: "iron corner banding with rust". It does two jobs beyond
-   * the obvious one. It is the only *cold* value on a warm object, which is
-   * what stops the crate reading as one lump of tan; and a band wrapping a
-   * corner is a shape you only ever see on a shipping box, so it says CRATE
-   * from further away than any amount of paint does.
-   */
-  for (const sx of [1, -1]) {
-    for (const sz of [1, -1]) {
-      for (const [k, y] of [0.16, H - 0.13].entries()) {
-        const alongX = block(0.3, 0.08, 0.022, k ? IRON : IRON_DARK, 0.006)
-        alongX.position.set(sx * (W / 2 - 0.14), y, sz * (D / 2 + T / 2 + 0.008))
-        root.add(alongX)
-        const alongZ = block(0.022, 0.08, 0.26, k ? IRON : IRON_DARK, 0.006)
-        alongZ.position.set(sx * (W / 2 + T / 2 + 0.008), y, sz * (D / 2 - 0.13))
-        root.add(alongZ)
-        // Rust bleeding down off the band onto the wood below it.
-        if ((sx + sz + k) % 2 === 0) {
-          const bleed = block(0.11, 0.09, 0.012, k ? RUST : RUST_DEEP, 0.006)
-          bleed.position.set(sx * (W / 2 - 0.2), y - 0.08, sz * (D / 2 + T / 2 + 0.012))
-          bleed.rotation.z = sx * 0.1
-          root.add(bleed)
-        }
-      }
-    }
-  }
-
-  /*
-   * Visible grain: thin darker slivers scored along the long faces. They cost
-   * six meshes and they are the difference between "wooden" and "a smooth
-   * pale surface that could be anything", which is exactly the read the first
-   * pass got.
-   */
-  for (const side of [1, -1]) {
-    for (const [i, y] of [0.12, 0.2, 0.47, 0.69, 0.78].entries()) {
-      const grain = block(W * (0.4 + (i % 3) * 0.14), 0.014, 0.012, WOOD_GRAIN, 0.005)
-      grain.position.set((i % 2 ? 0.18 : -0.22) * W * 0.4, y, side * (D / 2 + T / 2))
-      root.add(grain)
-    }
-  }
-
-  /**
-   * Flaking cobalt paint — broken *areas*, covering about half the box.
-   *
-   * Four failed passes bracket this. Six scattered chips gave a grey box with
-   * blue dots. Big clean rectangles covering half of every face gave a
-   * *painted* box, solid and manufactured, which is the farm-game read the art
-   * thesis exists to avoid. A single band around the middle photographed as
-   * **stripes**, two flat blue bars on a grey machine crate. Dealing that band
-   * over a coarse 6 × 3 grid was the fourth: at a quarter of a metre a tile is
-   * a *plank* of paint, three rows of them fill the wall top to bottom, and
-   * the review read the result as what it was — blue trim round a wooden box.
-   *
-   * The lesson is that the grid has to be finer than the thing it is breaking
-   * up. Paint fails at a scale of a few centimetres; tiles at a fifth of that
-   * again (eight or nine across a face, five up it) let `paintNoise` draw
-   * connected blobs two or three tiles wide with genuinely ragged borders,
-   * which is the read the spec asks for and no arrangement of quarter-metre
-   * rectangles can give.
-   *
-   * Three further rules put the breaks where a weathered crate actually breaks
-   * rather than wherever the noise happened to dip:
-   *  - **Hostility.** The corners, the seams between plank courses, the top the
-   *    weather stands on and the bottom the sand scours all demand a higher
-   *    noise value before the coat survives there.
-   *  - **Wear ramp.** Cobalt only deep inside a surviving area; sun-cooked blue
-   *    towards its rim; a faded stain where the pigment has nearly gone.
-   *  - **Failure from inside out.** A tile with paint on all four sides is not
-   *    safe: a second, finer noise punches bare sun-bleached wood through the
-   *    middle of it. Tiles on a border get the pale bite taken out of that
-   *    border instead.
-   */
-  const faces: {
-    ry: number
-    span: number
-    /** Face-local (u along the face, y up, lift off the surface) → local xyz. */
-    at: (u: number, y: number, lift: number) => [number, number, number]
-  }[] = [
-    { ry: 0, span: W, at: (u, y, lift) => [u, y, D / 2 + T / 2 + lift] },
-    { ry: Math.PI, span: W, at: (u, y, lift) => [-u, y, -(D / 2 + T / 2 + lift)] },
-    { ry: Math.PI / 2, span: D, at: (u, y, lift) => [W / 2 + T / 2 + lift, y, -u] },
-    { ry: -Math.PI / 2, span: D, at: (u, y, lift) => [-(W / 2 + T / 2 + lift), y, u] },
-  ]
-  /**
-   * Fraction of each face the coat still covers.
-   *
-   * Taken as a *quantile* of the noise rather than as a fixed threshold on it.
-   * A fixed threshold makes coverage a lottery — the four faces came out at
-   * 15%, 50%, 48% and 36%, so the face the wake camera happens to look at was
-   * either nearly bare or nearly painted depending on which seed offset it drew.
-   * Ranking the cells and keeping the top half means every face gets the
-   * half-painted read the spec asks for, and the noise still decides *which*
-   * half.
-   */
-  const PAINT_COVER = 0.55
-  /** How far hostility can push a cell down that ranking. */
-  const CHIP_BIAS = 0.14
-  const ROWS = 5
-  for (const [fi, face] of faces.entries()) {
-    const cols = Math.max(5, Math.round(face.span / 0.19))
-    const cellW = face.span / cols
-    const cellH = (H - 0.1) / ROWS
-    /** The coat, at roughly three tiles per noise cell so areas stay connected. */
-    const coat = (i: number, j: number) => paintNoise(i * 0.3 + fi * 5.3, j * 0.38 + fi * 2.1, fi + 1)
-    /** Where a surviving area has worn through to the wood anyway — finer, so
-     *  it punches holes rather than shaving whole blobs off. */
-    const bare = (i: number, j: number) => paintNoise(i * 0.95 + fi * 3.7, j * 1.13 + fi * 8.3, fi + 11)
-    /**
-     * How hostile a cell is to paint, 0..1.
-     *
-     * Rows 1 and 3 of five land on the gaps between the three plank courses —
-     * the seams a coat splits along first — and rows 0 and 4 are the sand line
-     * and the weather line. Columns at either end of a face are the box's
-     * corners, which is where a crate loses paint before anywhere else.
-     */
-    const hostility = (i: number, j: number) => {
-      const corner = i === 0 || i === cols - 1 ? 1 : i === 1 || i === cols - 2 ? 0.4 : 0
-      const seam = j === 1 || j === 3 ? 0.75 : 0
-      const weather = j === 0 ? 0.9 : j === ROWS - 1 ? 0.5 : 0
-      return Math.max(corner, Math.max(seam, weather))
-    }
-    const scores: number[] = []
-    for (let i = 0; i < cols; i++) {
-      for (let j = 0; j < ROWS; j++) scores.push(coat(i, j) - CHIP_BIAS * hostility(i, j))
-    }
-    const ranked = scores.slice().sort((a, b) => a - b)
-    const cut = ranked[Math.floor(ranked.length * (1 - PAINT_COVER))]
-    const scoreAt = (i: number, j: number) =>
-      i < 0 || j < 0 || i >= cols || j >= ROWS ? -1 : scores[i * ROWS + j]
-    const painted = (i: number, j: number) => scoreAt(i, j) >= cut
-    for (let i = 0; i < cols; i++) {
-      for (let j = 0; j < ROWS; j++) {
-        if (!painted(i, j)) continue
-
-        const openTop = !painted(i, j + 1)
-        const openBottom = !painted(i, j - 1)
-        const openLeft = !painted(i - 1, j)
-        const openRight = !painted(i + 1, j)
-        const open = (openTop ? 1 : 0) + (openBottom ? 1 : 0) + (openLeft ? 1 : 0) + (openRight ? 1 : 0)
-
-        /**
-         * Which of the three blues a tile takes — decided by *topology*, not by
-         * its own noise value.
-         *
-         * Per-tile tone was the mistake that survived the move to a fine grid.
-         * Ranking each tile independently means neighbours inside one patch
-         * come out as different blues, which shatters the patch into
-         * confetti — the frames came back reading as digital camouflage, which
-         * is not much better than the stripes it replaced. Paint does not fade
-         * cell by cell; a coat fades from its *edges* in. So a tile with paint
-         * all round it is cobalt, a tile on the rim is sun-cooked, and a nub
-         * hanging on by one or two sides is the faded stain. The patches then
-         * read as areas with worn borders, which is the thing being drawn.
-         *
-         * Counted over all eight neighbours rather than the four the bites use.
-         * On a grid this fine, four-way "fully enclosed" is a rare cell, so the
-         * pale COBALT_FADED took two thirds of the coat and the crate came back
-         * grey-blue — the very read the culture colour exists to avoid.
-         */
-        let buried = 0
-        for (let di = -1; di <= 1; di++) {
-          for (let dj = -1; dj <= 1; dj++) {
-            if ((di || dj) && painted(i + di, j + dj)) buried++
-          }
-        }
-        const colour = buried >= 6 ? COBALT : buried >= 4 ? COBALT_SUN : COBALT_FADED
-        /*
-         * Tiles overlap and wander a little off their cell. The overlap fuses
-         * neighbours in one area into a single shape; the wander is what stops
-         * the shape's border being a staircase of identical squares.
-         */
-        const jx = (((i * 13 + j * 7) % 7) - 3) / 3
-        const jy = (((i * 5 + j * 11) % 7) - 3) / 3
-        const u = (i + 0.5) * cellW - face.span / 2 + jx * cellW * 0.12
-        const y = 0.08 + (j + 0.5) * cellH + jy * cellH * 0.12
-        const tile = block(cellW * (1.16 + jy * 0.1), cellH * (1.14 + jx * 0.1), 0.016, colour, 0.014)
-        const [px, py, pz] = face.at(u, y, 0.012)
-        tile.position.set(px, py, pz)
-        tile.rotation.y = face.ry
-        tile.rotation.z = (((i * 7 + j * 3) % 5) - 2) * 0.024
-        root.add(tile)
-
-        /*
-         * Bare wood through the middle of the coat.
-         *
-         * This is the part the "blue trim" read was missing. A coat that only
-         * ever fails at its edges keeps a solid painted interior, and a solid
-         * painted interior of any shape reads as a panel someone painted on
-         * purpose. Real paint on real wood also lets go from the inside — a
-         * flake lifts in the middle of a good patch and takes a coin of
-         * bleached grain with it — so a tile well inside an area gets a wood
-         * chip laid a hair proud of it wherever the finer noise says so.
-         */
-        if (open <= 1 && bare(i, j) > 0.62) {
-          const hole = block(cellW * (0.4 + (i % 3) * 0.14), cellH * 0.46, 0.02, BLEACHED_WOOD, 0.01)
-          const [hx, hy, hz] = face.at(
-            u + cellW * (i % 2 ? 0.16 : -0.18),
-            y + cellH * (j % 2 ? 0.1 : -0.12),
-            0.02,
-          )
-          hole.position.set(hx, hy, hz)
-          hole.rotation.y = face.ry
-          hole.rotation.z = i % 3 ? 0.22 : -0.28
-          root.add(hole)
-        }
-        if (open === 0) continue
-
-        /*
-         * Flaking, done as bites out of the coat rather than a frame around
-         * it. A pale plate behind the whole patch — the obvious way to draw
-         * "worn edge" — photographs as a paper label stuck to the crate. What
-         * reads as flaking is the paint's EDGE being eaten into: a short
-         * sliver of bare wood pushed in over the tile's rim, a hair proud of
-         * the paint so it wins the depth test. Vertical bites as well as
-         * horizontal ones, or every break on the box runs the same way and the
-         * courses turn back into stripes.
-         *
-         * Two things keep them from photographing as white confetti stuck to
-         * the box, which is how the first fine-grid pass came back. Most of
-         * them are BLEACHED_WOOD, the plank tone itself, so a bite that
-         * overhangs onto bare wood disappears into it and only the part lying
-         * across the paint reads; FLAKE_EDGE — the dried-out rim, the lightest
-         * value on the crate — is reserved for one in three. And the offsets
-         * are inside the tile's own rim rather than past it, so a bite eats the
-         * coat instead of sitting beside it.
-         */
-        // Not every rim tile gets one: a bite on all of them draws a dotted
-        // pale outline round each patch, which is a *frame* again.
-        if ((i * 5 + j * 3) % 2 !== 0) continue
-        const sideways = (openLeft || openRight) && (i * 3 + j) % 3 === 0
-        const biteTone = (i + j) % 3 === 0 ? FLAKE_EDGE : BLEACHED_WOOD
-        let bite: THREE.Mesh
-        let bu: number
-        let bv: number
-        if (sideways) {
-          const left = openLeft && (!openRight || j % 2 === 0)
-          bite = block(cellW * 0.28, cellH * (0.44 + (j % 2) * 0.22), 0.02, biteTone, 0.01)
-          bu = u + (left ? -1 : 1) * cellW * 0.38
-          bv = y + cellH * (j % 2 ? 0.12 : -0.1)
-        } else {
-          const top = openTop && (!openBottom || (i + j) % 2 === 0)
-          bite = block(cellW * (0.38 + (i % 2) * 0.2), cellH * 0.3, 0.02, biteTone, 0.01)
-          bu = u + cellW * (i % 3 ? 0.14 : -0.16)
-          bv = y + (top ? 1 : -1) * cellH * 0.38
-        }
-        const [bx, by, bz] = face.at(bu, bv, 0.02)
-        bite.position.set(bx, by, bz)
-        bite.rotation.y = face.ry
-        bite.rotation.z = (i % 2 ? 0.15 : -0.11) + (j % 2 ? 0.06 : -0.05)
-        root.add(bite)
-      }
-    }
-  }
-
-  /*
-   * Rope handles — real rope, not a painted arc.
-   *
-   * Two failed passes. A thin half-torus standing off the end photographed as
-   * a grey semicircle *drawn on* the crate; a fat one in bright hemp
-   * photographed as a gold smile, which is worse, because gold is spoken for.
-   * Rope reads as rope when it (a) shows the light/dark banding of its twist,
-   * (b) hangs — a slack loop, not a rigid arch — and (c) is visibly tied to
-   * something. So: a segmented, slack, two-tone loop through two lashing
-   * knots, with a short tail from each knot lying against the wood.
-   */
-  for (const side of [1, -1]) {
-    const handle = ropeArc(0.155, 0.027, Math.PI * 0.95, 11)
-    handle.position.set(side * (W / 2 + 0.06), 0.47, 0)
-    // Rolled so the loop's mouth faces the crate and its belly hangs down and
-    // out, rather than standing up like a handle moulded into a suitcase.
-    handle.rotation.set(0, Math.PI / 2, Math.PI * 0.06)
-    root.add(handle)
-
-    for (const sz of [1, -1]) {
-      // The lashing knot where the rope passes through the plank.
-      const knot = ball(0.05, ROPE_DARK, 0)
-      knot.scale.set(1, 0.9, 1.15)
-      knot.position.set(side * (W / 2 + 0.03), 0.48, sz * 0.15)
-      root.add(knot)
-
-      // A short frayed tail hanging off each knot.
-      const tail = cyl(0.016, 0.023, 0.13, ROPE_DARK, 5)
-      tail.position.set(side * (W / 2 + 0.035), 0.41, sz * 0.17)
-      tail.rotation.set(0.2 * sz, 0, side * 0.22)
-      root.add(tail)
-    }
-  }
-
-  /*
-   * Lid: planks over a dark under-slab, on a pivot group hinged at the back
-   * edge, with iron hinge straps and its own surviving coat of paint.
-   *
-   * The under-slab and the overhanging lip are what make it read as a *lid*
-   * rather than as the top of the box: a lid is a separate object resting on a
-   * rim, and the shadow it throws into its own overhang is the only thing that
-   * says so while the crate is still shut.
-   */
+  // Built up front, empty, so `openLid`/`update` are valid from the first frame
+  // whether or not the glTF has landed yet.
   const lidPivot = new THREE.Group()
-  lidPivot.position.set(0, H, -(D / 2) + 0.04)
   root.add(lidPivot)
-  const lidUnder = block(W + 0.04, 0.05, D - 0.02, PLANK_GAP, 0.015)
-  lidUnder.position.set(0, 0.0, 0.52)
-  lidPivot.add(lidUnder)
-  for (const [i, z] of [0.14, 0.4, 0.66, 0.92].entries()) {
-    const plank = block(W + 0.1, 0.07, 0.24, i % 2 ? BLEACHED_WOOD_DARK : BLEACHED_WOOD, 0.022)
-    plank.position.set(0, 0.045, z)
-    lidPivot.add(plank)
+
+  const attach = (models: ModelCache) => {
+    const body = models.openingCrate
+    const bb = body.geometry.boundingBox!
+    const bSize = bb.getSize(new THREE.Vector3())
+    const sx = CRATE_W / bSize.x
+    const sy = CRATE_H / bSize.y
+    const shell = new THREE.Mesh(body.geometry, body.material)
+    shell.castShadow = true
+    // The interior is the inside of this same mesh, and the pouch is revealed
+    // out of it — so it has to take light and take shadow like everything else.
+    shell.receiveShadow = true
+    shell.scale.set(sx, sy, sx)
+    // Underside at local y = 0: beach-props sinks the root from there.
+    shell.position.y = -bb.min.y * sy
+    root.add(shell)
+
+    const depth = bSize.z * sx
+
+    /*
+     * The lid is scaled uniformly off the shared width, not stretched with the
+     * body. It is a thin panel — nobody reads its thickness — and letting it
+     * keep its own proportions is what stops it looking like a different
+     * object bolted on. Its authored depth is ~11% greater than the body's,
+     * which lands as a lip overhanging the rim front and back: exactly what a
+     * crate lid does, and free.
+     */
+    const lid = models.openingCrateLid
+    const lb = lid.geometry.boundingBox!
+    const ls = CRATE_W / (lb.max.x - lb.min.x)
+    const panel = new THREE.Mesh(lid.geometry, lid.material)
+    panel.castShadow = true
+    panel.receiveShadow = true
+    panel.scale.setScalar(ls)
+    panel.position.set(0, -lb.min.y * ls, depth / 2 - HINGE_INSET)
+    lidPivot.position.set(0, CRATE_H, -depth / 2 + HINGE_INSET)
+    lidPivot.add(panel)
   }
-  for (const sx of [1, -1]) {
-    const batten = block(0.13, 0.06, 0.96, BLEACHED_WOOD_DARK, 0.022)
-    batten.position.set(sx * 0.5, 0.105, 0.52)
-    lidPivot.add(batten)
-  }
-  // Hinge straps: iron, at the pivot, so the lid is visibly *hung* on the back.
-  for (const sx of [1, -1]) {
-    const strap = block(0.09, 0.03, 0.3, IRON_DARK, 0.008)
-    strap.position.set(sx * 0.34, 0.085, 0.14)
-    lidPivot.add(strap)
-    const pin = cyl(0.028, 0.028, 0.13, IRON, 6)
-    pin.position.set(sx * 0.34, 0.055, 0.01)
-    pin.rotation.z = Math.PI / 2
-    lidPivot.add(pin)
-  }
-  /*
-   * The lid's coat: the same dealt paint as the walls, one summer further on.
-   *
-   * Weather works hardest on the surface it can stand on. The lid takes the
-   * rain, the salt spray and the sun square instead of edge-on, so the bar the
-   * coat has to clear is higher here and the ramp is shifted — most of what
-   * survives is sun-cooked or faded, and true cobalt only holds in the deepest
-   * pockets. Four hand-placed rectangles (what this replaces) read as a
-   * painted panel with a few chips knocked out of it; a thin dealt coat reads
-   * as a lid that *used to be* blue, which is the difference the whole thesis
-   * turns on.
-   */
-  /** Fraction of the lid still blue — a third, against the walls' half. */
-  const LID_COVER = 0.34
-  const LID_COLS = 9
-  const LID_ROWS = 5
-  const lidSpanX = W + 0.1
-  const lidCellW = lidSpanX / LID_COLS
-  /** Plank run on the lid: four 0.24-deep boards from z = 0.02 to z = 1.04. */
-  const lidCellD = 1.02 / LID_ROWS
-  const lidX = (i: number) => -lidSpanX / 2 + (i + 0.5) * lidCellW
-  /** True where a column lands on one of the two battens, which stand proud. */
-  const onBatten = (i: number) => Math.abs(Math.abs(lidX(i)) - 0.5) < 0.075
-  const lidScores: number[] = []
-  for (let i = 0; i < LID_COLS; i++) {
-    for (let j = 0; j < LID_ROWS; j++) {
-      // The lid's rim is where hands, rain and the lifting go; the coat gives
-      // way there first whatever the noise says.
-      const rim = i === 0 || i === LID_COLS - 1 || j === LID_ROWS - 1 || j === 0 ? 0.16 : 0
-      lidScores.push(paintNoise(i * 0.38 + 11.2, j * 0.47 + 4.4, 7) - rim)
-    }
-  }
-  const lidRanked = lidScores.slice().sort((a, b) => a - b)
-  const lidCut = lidRanked[Math.floor(lidRanked.length * (1 - LID_COVER))]
-  const lidPainted = (i: number, j: number) =>
-    i >= 0 && j >= 0 && i < LID_COLS && j < LID_ROWS && lidScores[i * LID_ROWS + j] >= lidCut
-  for (let i = 0; i < LID_COLS; i++) {
-    for (let j = 0; j < LID_ROWS; j++) {
-      if (!lidPainted(i, j)) continue
-      const open =
-        (lidPainted(i, j + 1) ? 0 : 1) +
-        (lidPainted(i, j - 1) ? 0 : 1) +
-        (lidPainted(i - 1, j) ? 0 : 1) +
-        (lidPainted(i + 1, j) ? 0 : 1)
-      // Topology decides the tone here too (see the walls), shifted one stop
-      // worn: on the surface the weather stands on, even a patch's middle has
-      // been cooked, and only what is buried two deep is still true cobalt.
-      const colour = open >= 2 ? COBALT_FADED : open === 1 ? COBALT_SUN : COBALT
-      const x = lidX(i)
-      const z = 0.02 + (j + 0.5) * lidCellD
-      // A batten stands 0.03 above the planks and is 0.13 wide, so its share of
-      // the coat is a narrower sliver laid on top of it rather than inside it.
-      const batten = onBatten(i)
-      const tile = block(
-        batten ? 0.115 : lidCellW * 1.1,
-        0.016,
-        lidCellD * (batten ? 0.92 : 1.08),
-        colour,
-        0.014,
-      )
-      tile.position.set(batten ? Math.sign(x) * 0.5 : x, batten ? 0.142 : 0.088, z)
-      tile.rotation.y = batten ? 0 : (((i * 5 + j) % 5) - 2) * 0.02
-      lidPivot.add(tile)
-      // Bare wood through the coat, on the same inside-out rule as the walls.
-      if (batten || paintNoise(i * 1.07 + 3.1, j * 1.21 + 9.6, 13) < 0.5) continue
-      const chip = block(lidCellW * 0.44, 0.018, lidCellD * 0.4, BLEACHED_WOOD, 0.01)
-      chip.position.set(x + lidCellW * (i % 2 ? 0.18 : -0.2), 0.092, z + lidCellD * (j % 2 ? 0.16 : -0.18))
-      chip.rotation.y = i % 3 ? 0.24 : -0.3
-      lidPivot.add(chip)
-    }
-  }
+
+  const ready = peekModels()
+  if (ready) attach(ready)
+  else void loadModels().then(attach).catch((e) => console.warn('opening crate never loaded', e))
 
   // --- lid animation ---------------------------------------------------------
   let opening = false
@@ -694,63 +218,75 @@ export function createOpeningCrate(): {
 // --- the seed pouch ----------------------------------------------------------
 
 /**
- * The linen seed pouch — rough cloth, cinched drawstring, and the hand-stamped
- * tomato mark that tells the player what's inside without a word of text.
- * Lifted out of the crate by BeachProps, then handed to the DOM fly-to.
+ * The seed pouch — the one prop in this file that is also a *beat*.
+ *
+ * At beat 2 it lifts out of the crate, spins once, and hands its world position
+ * to the DOM fly-to that gives birth to the satchel slot (BeachProps drives the
+ * rise; OpeningUi.bornSatchel takes it from there). Two things follow from that
+ * and both are load-bearing:
+ *
+ *  - **The origin is the pouch's base, not its middle.** BeachProps parks it at
+ *    a height inside the crate, raises that height by POUCH_RISE_HEIGHT, and
+ *    spins it on `rotation.y`. A model centred on its own middle would sit half
+ *    through the crate floor and wobble about its waist on the way up. So the
+ *    authored mesh is lifted by its own bounding box, exactly like the washups.
+ *  - **The tomato stamp is not decoration.** The spec's whole reason for a
+ *    stamped mark is that it says "tomato seeds" with no text, at the one moment
+ *    the game has no UI to say it with.
+ *
+ * The authored model supplies the sack; the stamp is still built here, in the
+ * mesh's own local space so it rides the model's resting tilt. It has to be:
+ * the authored baseColour is a mottled brown-olive sacking with no mark of any
+ * kind on it (and no red anywhere in the atlas), so swapping the model in
+ * wholesale would have quietly deleted the beat's only piece of information.
  */
 export function createSeedPouch(): THREE.Group {
   const g = new THREE.Group()
 
-  // Sagging linen body, wider than tall below the cinch.
-  const body = ball(0.19, LINEN, 1)
-  body.scale.set(1, 1.05, 0.85)
-  body.position.y = 0.16
-  g.add(body)
+  const attach = (model: LoadedModel) => {
+    const pouch = authoredProp(model, POUCH_SIZE, new THREE.Euler(0.1, 0.5, 0.06), undefined, false)
+    /*
+     * The stamp, pressed onto the front of the sack.
+     *
+     * Parented to the mesh and positioned in the *model's* unit space, so it
+     * follows the resting tilt and the sizing without a second set of numbers
+     * to keep in sync. Relief rather than texture: at this size a pressed
+     * decal and a raised patch read identically, and a raised patch needs no
+     * second material and no UV work on someone else's atlas.
+     */
+    const mesh = pouch.children[0] as THREE.Mesh
+    const stamp = new THREE.Group()
+    const fruit = ball(0.098, STAMP_RED, 1)
+    fruit.scale.set(1, 0.92, 0.3)
+    stamp.add(fruit)
+    for (const a of [-0.7, 0, 0.7]) {
+      const leaf = block(0.072, 0.026, 0.024, STAMP_GREEN, 0.01)
+      leaf.position.set(Math.sin(a) * 0.042, 0.094 - Math.abs(a) * 0.018, 0.008)
+      leaf.rotation.z = a * 0.9
+      stamp.add(leaf)
+    }
+    /*
+     * Onto the label the model already carries.
+     *
+     * The authored pouch turned out to have a stitched cream patch on its
+     * front with a two-leaf sprout printed on it — which says "seeds" but not
+     * *which* seeds, and the spec's whole point is that this mark identifies
+     * the crop with no text anywhere on screen. So the tomato is pressed onto
+     * that patch, sized to sit inside it rather than spill over its stitching —
+     * and low on it, so the sprout the label already carries runs up into the
+     * fruit and the two read as one plant rather than as a sticker over a
+     * drawing. The calyx is still built here; the stalk is not, because the
+     * label's own stem is already doing that job.
+     */
+    stamp.position.set(0, -0.1, 0.3)
+    mesh.add(stamp)
 
-  // Cinched neck and the puff of gathered cloth above it.
-  const neck = cyl(0.055, 0.08, 0.07, LINEN_SHADE, 8)
-  neck.position.y = 0.31
-  g.add(neck)
-  const puff = ball(0.062, LINEN, 1)
-  puff.scale.set(1, 0.75, 1)
-  puff.position.y = 0.365
-  g.add(puff)
-
-  // Drawstring: a hemp loop at the cinch and two dangling knotted ends.
-  const loop = new THREE.Mesh(new THREE.TorusGeometry(0.062, 0.012, 5, 10), mat(ROPE))
-  loop.castShadow = true
-  loop.position.y = 0.315
-  loop.rotation.x = Math.PI / 2
-  g.add(loop)
-  for (const side of [1, -1]) {
-    const end = cyl(0.008, 0.01, 0.09, ROPE, 5)
-    end.position.set(side * 0.055, 0.27, 0.045)
-    end.rotation.z = side * 0.5
-    g.add(end)
-    const knot = ball(0.016, ROPE, 0)
-    knot.position.set(side * 0.075, 0.235, 0.055)
-    g.add(knot)
+    g.add(pouch)
   }
 
-  /*
-   * The stamp: a tomato in two inks pressed onto the front face. Meshes sit a
-   * hair proud of the linen — at this scale a printed decal and a relief patch
-   * read the same, and the relief needs no texture.
-   */
-  const stampFruit = ball(0.072, STAMP_RED, 1)
-  stampFruit.scale.set(1, 0.9, 0.28)
-  stampFruit.position.set(0, 0.15, 0.152)
-  g.add(stampFruit)
-  // Calyx: three short leaves, because a red disc alone reads as a dot.
-  for (const a of [-0.7, 0, 0.7]) {
-    const leaf = block(0.05, 0.016, 0.012, STAMP_GREEN, 0.006)
-    leaf.position.set(Math.sin(a) * 0.03, 0.213 - Math.abs(a) * 0.012, 0.15)
-    leaf.rotation.z = a * 0.9
-    g.add(leaf)
-  }
-  const stampStalk = block(0.014, 0.03, 0.012, STAMP_GREEN, 0.005)
-  stampStalk.position.set(0, 0.234, 0.15)
-  g.add(stampStalk)
+  const ready = peekModels()
+  if (ready) attach(ready.seedPouch)
+  else void loadModels().then((m) => attach(m.seedPouch)).catch((e) => console.warn('seed pouch never loaded', e))
 
   return g
 }
@@ -855,28 +391,6 @@ export function createOpeningShovel(): THREE.Group {
 // --- tide-line washups -------------------------------------------------------
 
 /**
- * Translucent flat-shaded lump for the sea-glass pieces. The one bespoke
- * material in this file: `mat()` has no opacity, and sea-glass without a
- * little light through it is just a painted rock.
- */
-function glassLump(color: number, emissive: number, scale: number): THREE.Mesh {
-  const m = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(0.2 * scale, 0),
-    new THREE.MeshLambertMaterial({
-      color,
-      emissive,
-      flatShading: true,
-      transparent: true,
-      opacity: 0.85,
-    }),
-  )
-  m.castShadow = true
-  m.scale.set(1.2, 0.55, 1)
-  m.position.y = 0.1 * scale
-  return m
-}
-
-/**
  * The washup glint.
  *
  * Manifest VFX 7 asks for a glint on the tide-line items, and the tideline's
@@ -897,74 +411,139 @@ function glint(r = 0.045): THREE.Mesh {
 }
 
 /**
+ * Set an authored beach prop down on the sand.
+ *
+ * Three things every one of these needs and none of them ships with (the tide
+ * line's glint is a fourth, wanted by the washups and not by the pouch):
+ *
+ *  - **A size.** Meshy normalises its exports into a unit box, so the shell,
+ *    the shard and the branch all arrive exactly as big as each other, which is
+ *    the one thing three objects from the same sea must not be. `longest` is
+ *    the real-world size of the object's own longest axis, in world units,
+ *    against a 1.6-unit castaway.
+ *  - **A resting angle.** A washup sitting square to the world axes reads as
+ *    *placed*; the sea does not place things. `tilt` is the lie of the object
+ *    where the last wave dropped it.
+ *  - **A ground contact.** Every factory in this file returns a group whose
+ *    contact is at local y = 0, because that is the contract tideline.ts places
+ *    against. The lift is measured from the bounding box *after* the tilt, or a
+ *    rotated prop buries one end and floats the other.
+ */
+function authoredProp(
+  model: LoadedModel,
+  longest: number,
+  tilt: THREE.Euler,
+  material?: THREE.Material,
+  sheened = true,
+): THREE.Group {
+  const g = new THREE.Group()
+  const mesh = new THREE.Mesh(model.geometry, material ?? model.material)
+  mesh.castShadow = true
+  mesh.receiveShadow = true
+
+  const box = model.geometry.boundingBox!
+  const size = box.getSize(new THREE.Vector3())
+  mesh.scale.setScalar(longest / Math.max(size.x, size.y, size.z))
+  mesh.rotation.copy(tilt)
+  mesh.updateMatrix()
+  const rested = box.clone().applyMatrix4(mesh.matrix)
+  mesh.position.y = -rested.min.y
+  g.add(mesh)
+
+  /*
+   * The glint comes with it. Swapping a procedural washup for an authored one
+   * changes what the object *is*, not the problem it has: on a broad ivory
+   * beach at dawn, a small pale object against pale sand is invisible until
+   * you are standing on it. Sized off the prop so the branch does not wear the
+   * shard's spark, and parked on the high shoulder of the resting pose.
+   */
+  if (sheened) {
+    /*
+     * Dropped onto the prop's actual surface, not onto the top of its bounding
+     * box. A tilted, rounded object's box corner is empty air — placed there,
+     * the spark hangs above the shell with daylight under it and reads as a
+     * second, floating object. One downward ray at build time costs nothing
+     * and lands it on the shoulder of whatever shape the file happened to be.
+     */
+    const sheen = glint(THREE.MathUtils.clamp(longest * 0.12, 0.024, 0.045))
+    const x = (rested.min.x + rested.max.x) * 0.22
+    const z = (rested.min.z + rested.max.z) * 0.22
+    const top = rested.max.y - rested.min.y
+    const ray = new THREE.Raycaster(new THREE.Vector3(x, top + 1, z), new THREE.Vector3(0, -1, 0))
+    mesh.updateMatrixWorld(true)
+    const hit = ray.intersectObject(mesh, false)[0]
+    sheen.position.set(x, hit ? hit.point.y : top * 0.8, z)
+    sheen.rotation.z = 0.4
+    g.add(sheen)
+  }
+
+  return g
+}
+
+/**
  * One tide-line washup by id. Session-one set: spiral shell, blue sea-glass,
- * driftwood stick. Session-two set: rope coil, odd fruit, and the
- * impossible-colour sea-glass — the ONLY model here allowed LOTTO_GOLD,
- * because finding it *is* a lotto roll.
+ * driftwood stick — all three authored models now. Session-two set: rope coil,
+ * odd fruit, and the impossible-colour sea-glass — the ONLY model here allowed
+ * LOTTO_GOLD, because finding it *is* a lotto roll.
+ *
+ * The three authored ones resolve out of the shared model cache, which the boot
+ * sequence has always finished long before beat 7 stages the tide line. When
+ * they are not there yet — the dev gallery, which loads no glTF — the group
+ * comes back empty and fills itself in when the fetch lands, rather than
+ * carrying a second, divergent procedural copy of a model that has been
+ * replaced.
  */
 export function createWashupProp(id: TideDrop['id']): THREE.Group {
   const g = new THREE.Group()
 
+  /** Build from the cache now, or as soon as there is a cache. */
+  const authored = (pick: (m: ModelCache) => LoadedModel, longest: number, tilt: THREE.Euler) => {
+    const ready = peekModels()
+    if (ready) {
+      g.add(authoredProp(pick(ready), longest, tilt))
+      return
+    }
+    void loadModels()
+      .then((models) => g.add(authoredProp(pick(models), longest, tilt)))
+      .catch((e) => console.warn(`washup "${id}" never loaded`, e))
+  }
+
   switch (id) {
     case 'spiral-shell': {
-      // Whorls: shrinking flat-shaded balls curling to a blushed tip.
-      let r = 0.19
-      let angle = 0
-      let x = 0
-      let z = 0
-      for (let i = 0; i < 5; i++) {
-        const whorl = ball(r, i >= 3 ? SHELL_BLUSH : SHELL_CREAM, i < 2 ? 1 : 0)
-        whorl.scale.set(1.1, 0.75, 1)
-        whorl.position.set(x, r * 0.7, z)
-        g.add(whorl)
-        angle += 1.9
-        x += Math.cos(angle) * r * 0.85
-        z += Math.sin(angle) * r * 0.85
-        r *= 0.68
-      }
-      // The opening's lip, a flattened blush disc at the mouth of the shell.
-      const lip = ball(0.11, SHELL_BLUSH, 1)
-      lip.scale.set(1, 0.4, 0.8)
-      lip.position.set(-0.14, 0.065, 0.07)
-      lip.rotation.z = 0.5
-      g.add(lip)
-      const sheen = glint(0.05)
-      sheen.position.set(0.02, 0.21, -0.02)
-      sheen.rotation.z = 0.4
-      g.add(sheen)
+      /*
+       * Palm-sized, and left close to the lie the file was authored in: this
+       * one already models a shell resting on its lip, so the tilt is a nudge
+       * off square rather than a pose. Tipping it up onto its edge (which the
+       * first pass did) made it look balanced there by hand, which is the one
+       * thing a washup must not look like.
+       */
+      authored((m) => m.spiralShell, 0.3, new THREE.Euler(0.12, 0.7, 0.09))
       break
     }
 
     case 'sea-glass': {
-      g.add(glassLump(SEA_GLASS_BLUE, 0x0a1418, 1))
-      const sheen = glint(0.042)
-      sheen.position.set(0.02, 0.13, 0.02)
-      sheen.rotation.y = 0.6
-      g.add(sheen)
+      /*
+       * The smallest of the three, but not a pill — at 0.16 it read as a bead
+       * beside a conch and a branch, and the set stopped looking like three
+       * things the same sea left. Tipped so one face catches the low key
+       * rather than presenting a flat plate to it.
+       *
+       * Its texture is retinted from the authored royal blue (#1d76ce), which
+       * is a long way from this game's coastal palette and would have gone
+       * further with postfx multiplying saturation by 1.2 on top. Frosted and
+       * desaturated is also the fiction: this is glass the surf has been
+       * tumbling for years.
+       */
+      authored((m) => m.seaGlass, 0.23, new THREE.Euler(1.42, 0.5, 0.35))
       break
     }
 
     case 'driftwood-stick': {
-      // Two worn segments meeting at a knot — a bend reads as found wood.
-      const a = cyl(0.048, 0.062, 0.64, DRIFTWOOD, 6)
-      a.rotation.z = Math.PI / 2 - 0.12
-      a.position.set(-0.14, 0.07, 0)
-      g.add(a)
-      const b = cyl(0.036, 0.046, 0.42, DRIFTWOOD, 6)
-      b.rotation.set(0.3, 0, Math.PI / 2 - 0.55)
-      b.position.set(0.31, 0.13, 0.06)
-      g.add(b)
-      const knot = ball(0.07, DRIFTWOOD_DARK, 0)
-      knot.position.set(0.17, 0.08, 0.015)
-      g.add(knot)
-      // A split along the top where the sea has opened the grain.
-      const split = block(0.34, 0.014, 0.016, DRIFTWOOD_DARK, 0.006)
-      split.position.set(-0.16, 0.12, 0.012)
-      split.rotation.z = 0.06
-      g.add(split)
-      const sheen = glint(0.038)
-      sheen.position.set(-0.2, 0.125, -0.02)
-      g.add(sheen)
+      // The longest of the set by a clear margin — the one that reads at a
+      // distance and tells the player there is something on the wet band. It
+      // is authored already lying down, so this is a roll off flat, no more,
+      // to stop it reading like a dropped ruler.
+      authored((m) => m.driftwoodStick, 0.52, new THREE.Euler(0.05, 0.9, 0.08))
       break
     }
 
@@ -1010,12 +589,36 @@ export function createWashupProp(id: TideDrop['id']): THREE.Group {
     }
 
     case 'impossible-glass': {
-      // Sea-glass in a colour the sea does not make. Small lotto, session two.
-      g.add(glassLump(LOTTO_GOLD, 0x403208, 1.1))
-      const shard = glassLump(LOTTO_GOLD, 0x403208, 0.45)
-      shard.position.set(0.17, 0.035, 0.09)
-      shard.rotation.y = 1.1
-      g.add(shard)
+      /*
+       * Sea-glass in a colour the sea does not make. Small lotto, session two.
+       *
+       * Same authored shard as the ordinary sea-glass, and deliberately so —
+       * the joke only lands if the player recognises the *object* and not the
+       * colour. What is swapped is the material, not the mesh: the authored
+       * royal-blue texture is dropped for flat lotto gold, because the reserved
+       * colour has to arrive pure. Multiplying gold over that blue would give a
+       * murky olive, which is neither sea glass nor a lotto tell.
+       *
+       * A hair larger than the ordinary shard, with a chip beside it, so the
+       * find reads as *more* than the thing it echoes.
+       */
+      const goldGlass = new THREE.MeshLambertMaterial({
+        color: LOTTO_GOLD,
+        emissive: 0x403208,
+        flatShading: true,
+        transparent: true,
+        opacity: 0.85,
+      })
+      const impossible = (longest: number, tilt: THREE.Euler) => {
+        const ready = peekModels()
+        if (ready) return Promise.resolve(authoredProp(ready.seaGlass, longest, tilt, goldGlass))
+        return loadModels().then((m) => authoredProp(m.seaGlass, longest, tilt, goldGlass))
+      }
+      void impossible(0.27, new THREE.Euler(1.42, 0.5, 0.35)).then((o) => g.add(o))
+      void impossible(0.13, new THREE.Euler(1.3, 1.6, 0.5)).then((o) => {
+        o.position.set(0.18, 0, 0.1)
+        g.add(o)
+      })
       break
     }
   }

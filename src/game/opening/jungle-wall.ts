@@ -1,5 +1,4 @@
 import * as THREE from 'three'
-import { bakeGroup, makeInstancedChunks, type Placement } from '../../assets/bake'
 import { MINOR_LAYER, rng } from '../../assets/style'
 import { groundHeight, isSand } from '../terrain'
 import type { Obstacle } from '../world'
@@ -9,21 +8,7 @@ import {
   type LoamPatch,
   type LoamRamp,
 } from '../../assets/opening/loam'
-import {
-  createBasaltOutcrop,
-  createBroadleafClump,
-  createCanopyOverhang,
-  createFernTuft,
-  createFrondFan,
-  createJungleCanopyA,
-  createJungleCanopyB,
-  createJungleTrunk,
-  createLightShaft,
-  createMonsteraStand,
-  createUnderThicket,
-  createVineCurtain,
-  FROND_MAX_HEIGHT,
-} from '../../assets/opening/jungle-props'
+import { fitToHeight, getModels, type LoadedModel } from '../../assets/models'
 
 /**
  * The jungle wall (spec asset manifest, environment 5–8).
@@ -37,28 +22,39 @@ import {
  * the sea at a single gap. Three things it has to achieve, in order:
  *
  *  1. **Impassable.** No sky and no sea through the treeline from the beach
- *     camera. That is a density problem, not a height problem: three ranks of
- *     canopy still left a knee-height band of lit grass showing between the
- *     trunks, and it took a dedicated understory *plug* rank to close it. The
- *     ranks behind that exist to fill each other's holes — the rear rank is set
- *     back and tall so its crowns show through the gaps in front of it. A chain
- *     of overlapping colliders backs the visual read up, because a wall you can
+ *     camera. That is a density problem, not a height problem: ranks of canopy
+ *     alone leave a knee-height band of lit sand showing between the trunks,
+ *     and it takes a dedicated understory *plug* rank to close it. The ranks
+ *     behind exist to fill each other's holes — the rear ranks are set back and
+ *     tall so their crowns show through the gaps in front of them. A chain of
+ *     overlapping colliders backs the visual read up, because a wall you can
  *     stroll through is not a wall.
- *  2. **Looming.** The wall runs 8–11 units with emergents past 13, against a
+ *  2. **Looming.** The wall runs 8–15 units with emergents past 20, against a
  *     valley whose own trees are 5.6 and a camera that sits around six.
  *     Portrait framing puts the avatar low and the world above, and this is the
  *     world above.
  *  3. **One doorway.** The gap is the only way through — a three-unit walkable
- *     slot at z ≈ 0 — arched by two overhang modules, lit by shafts, and
- *     dressed with the opening's single splash of magenta (that dressing ships
- *     from chaos-pocket.ts). Wayfinding by architecture instead of by an arrow.
+ *     slot at z ≈ 0 — arched by two leaning trees and dressed with the
+ *     opening's single splash of magenta (that dressing ships from
+ *     chaos-pocket.ts). Wayfinding by architecture instead of by an arrow.
  *
- * Density is bought with instancing, the same bargain the valley's forest
- * makes: every module is baked once to a vertex-coloured geometry and drawn
- * with `makeInstancedChunks`, so ~470 pieces of jungle cost around 60 draw
- * calls and ~118k triangles. Only the front rank moves, and it moves in a
- * vertex shader (grass's trick), which is the only way sway and instancing can
- * coexist.
+ * **Everything green here is an authored glTF.** The wall used to be built from
+ * a procedural parts kit — lobed canopy masses, leaf cards, frond fans — and at
+ * wall density those flat faceted slabs read as paper cut-outs stacked into a
+ * curtain rather than as jungle. The kit is gone. The ranks below are the same
+ * models the valley's forest is planted with (`assets/models.ts`): the
+ * broadleaf, the conifer, the palm, the coconut palm and the bush, plus the
+ * rock pair, the stump and the log at the foot. Nothing in this file generates
+ * foliage geometry any more; it decides *where the authored models stand*, and
+ * that is the whole design surface.
+ *
+ * Density is bought the same way the valley's forest buys it: geometry and
+ * material come straight off the shared `LoadedModel`, every rank is drawn with
+ * instanced meshes split into spatial chunks, and the value ladder that used to
+ * be baked into vertex colours is now a per-instance tint. ~280 authored trees
+ * and bushes cost roughly fifty draw calls. Only the front bush rank moves, and
+ * it moves in a vertex shader (grass's trick), which is the only way sway and
+ * instancing can coexist.
  *
  * Lifetime: this is an **opening-only** prop. `setVisible(false)` hides it and
  * releases every collider; `dispose()` removes it from the scene for good. The
@@ -124,7 +120,10 @@ const GAP_X = -40.6
  * meadow at the other.
  *
  * Wings carry no colliders. They are scenery closing a sightline, not a fence,
- * and the player has no business up there in the first eight minutes.
+ * and the player has no business up there in the first eight minutes. They are
+ * also planted at a fraction of the horseshoe's density (`wingSpacing`): an
+ * authored tree costs about 2,300 triangles wherever it stands, and thirty
+ * units away nobody is counting the trunks.
  */
 const WING_Z_START = 12.5
 const WING_Z_END = 34
@@ -179,64 +178,33 @@ function buildWingSpines(): Spine[] {
 }
 
 /**
- * Basalt at the jungle foot, hand-placed in world coordinates.
+ * Rock at the jungle foot, hand-placed in world coordinates.
+ *
+ * These were procedural basalt outcrops with a salt crust — the only non-green
+ * module in the old parts kit, and the one place the kit was doing something
+ * the authored set could not. It turns out the authored set can: `rock` and
+ * `rockCluster` are the valley's own boulders, they are the darkest, least
+ * saturated things in the model library, and tinted down they anchor the value
+ * range exactly the way the basalt was there to. So the kit went and these
+ * stayed, at the same coordinates.
  *
  * Scattered by rule they end up evenly spaced, which is the one thing rocks
  * never are. These sit where the wall turns — the inside of a bend is where
  * loose rock actually collects — plus one at the threshold of the gap, well
  * clear of the walking corridor, to give the doorway a step.
  */
-const BASALT: { x: number; z: number; variant: number; scale: number }[] = [
-  { x: -40.0, z: -5.2, variant: 0, scale: 1.15 },
-  { x: -37.4, z: -8.8, variant: 1, scale: 0.9 },
-  { x: -30.6, z: -9.6, variant: 2, scale: 1.3 },
-  { x: -24.2, z: -7.6, variant: 0, scale: 0.85 },
-  { x: -22.6, z: -0.8, variant: 1, scale: 1.05 },
-  { x: -23.0, z: 5.8, variant: 2, scale: 0.95 },
-  { x: -29.0, z: 9.2, variant: 0, scale: 1.2 },
-  { x: -37.8, z: 8.6, variant: 2, scale: 0.9 },
-  { x: -40.2, z: 4.8, variant: 1, scale: 1.1 },
-  { x: -41.4, z: -2.4, variant: 2, scale: 0.7 },
+const ROCKS: { x: number; z: number; cluster: boolean; height: number }[] = [
+  { x: -40.0, z: -5.2, cluster: false, height: 1.15 },
+  { x: -37.4, z: -8.8, cluster: true, height: 0.8 },
+  { x: -30.6, z: -9.6, cluster: false, height: 1.35 },
+  { x: -24.2, z: -7.6, cluster: true, height: 0.7 },
+  { x: -22.6, z: -0.8, cluster: false, height: 1.0 },
+  { x: -23.0, z: 5.8, cluster: true, height: 0.85 },
+  { x: -29.0, z: 9.2, cluster: false, height: 1.25 },
+  { x: -37.8, z: 8.6, cluster: true, height: 0.75 },
+  { x: -40.2, z: 4.8, cluster: false, height: 1.05 },
+  { x: -41.4, z: -2.4, cluster: true, height: 0.6 },
 ]
-
-/**
- * The gap's light shafts, and the two rules that took three passes to learn.
- *
- * **They live on the shoulders of the doorway, never in it.** The last layout
- * ran a beam down the middle of the corridor on the theory that walking through
- * a shaft would feel good. What actually happens is that the gameplay camera
- * walks through it too, from the inside, at two metres — and the far side of a
- * beam seen from within is a full-screen veil. Beats 6 and 8 were both lost to
- * that. `WALK_CORRIDOR` below is the exclusion zone, asserted at build time so
- * a future edit to this table cannot quietly re-create the bug.
- *
- * **They hang, they do not stand.** `HANG` is the height of the canopy hole the
- * beam falls from and `height` is how far it falls; the card's own gradient
- * (see `createLightShaft`) has faded it to nothing well before the bottom, so
- * the visible beam is a streak up among the crowns rather than a column resting
- * on the floor. That is what dawn light through a canopy looks like, and it
- * also puts the whole effect above anywhere the camera can reach.
- *
- * `top`/`bot` are half-widths: hand's width at the mouth, under a metre where
- * it dies. Dawn sun is low in the east, so the beams lean *west* — negative
- * tilt, which walks the foot toward -x, toward the sea.
- */
-const SHAFTS: { x: number; z: number; height: number; top: number; bot: number; tilt: number }[] = [
-  { x: -40.2, z: -3.1, height: 7.4, top: 0.14, bot: 0.62, tilt: -0.30 },
-  { x: -40.9, z: 3.4, height: 7.8, top: 0.16, bot: 0.7, tilt: -0.34 },
-]
-
-/** Where the beam's mouth hangs, above the ground under it. */
-const SHAFT_HANG = 9.2
-
-/**
- * The slot the player and the camera actually travel through, in world x/z.
- *
- * Any shaft whose axis lands inside it is dropped at build time rather than
- * shipped: the corridor is the one place in the scene where a translucent
- * effect is guaranteed to be met from the inside.
- */
-const WALK_CORRIDOR = { x0: -44, x1: -37.5, z0: -2.2, z1: 2.2 }
 
 /**
  * The jungle floor.
@@ -262,6 +230,9 @@ const WALK_CORRIDOR = { x0: -44, x1: -37.5, z0: -2.2, z1: 2.2 }
  *  - **Approach** — the same shade green run down the beach side, masked off
  *    the sand by `isSand` so it stops at the real shoreline rather than at a
  *    rectangle.
+ *
+ * This is ground, not treeline, and it is built from the shared loam builder
+ * rather than from the retired jungle parts kit — it stays.
  */
 const FLOOR_INTERIOR = { x: -31.4, z: 0, w: 25, d: 27, seed: 0x10a11 }
 
@@ -348,30 +319,51 @@ const FOOT_SPACING = 4.2
 const FOOT_OFFSET = -2.0
 const FOOT_SIZE = 5.5
 
+/** The authored models this wall is planted with. Nothing else is registered. */
+type SpeciesId =
+  | 'tree'
+  | 'pine'
+  | 'palm'
+  | 'coconutPalm'
+  | 'bush'
+  | 'stump'
+  | 'log'
+  | 'rock'
+  | 'rockCluster'
+
 /**
  * The ranks, back to front. `offset` is measured outward from the spine, so a
  * negative number is a step into the clearing.
  *
- * The spacings are the whole design. The rear rank at 3.2 units looks sparse on
- * its own and is not meant to be seen on its own — it is the backing that shows
- * through the holes in front of it. The thicket at 0.7 plugs the base, the
- * broadleaf closes the waist, and the ferns at 0.6 make the line where jungle
- * meets grass a tangle rather than a hemline.
+ * The spacings are the whole design, and they are wider than they look because
+ * the authored crowns are wide: the broadleaf is as broad as it is tall and the
+ * bush is half again broader than it is tall, so a fifteen-unit conifer covers
+ * twelve units of frontage on its own. Three ranks at 3–4 units of spacing
+ * therefore overlap three deep, which is what closes the sky. The rear ranks
+ * look sparse on their own and are not meant to be seen on their own — they are
+ * the backing that shows through the holes in front of them.
+ *
+ * Heights are in world units, against a 1.6-unit farmer. `fitToHeight` turns
+ * each into a scale and a ground lift off the model's own bounding box, so
+ * swapping a model can never silently leave a rank floating or buried.
  */
 interface RankSpec {
-  build: (variant: number) => THREE.Group
-  variants: number
+  species: SpeciesId
   /** World units between pieces along the spine. */
   spacing: number
+  /** Multiplier on `spacing` out along the coastal wings. */
+  wingSpacing?: number
   /** Outward from the spine; negative steps into the clearing. */
   offset: number
   /** Random lateral wander, in units. */
   jitter: number
-  scaleMin: number
-  scaleMax: number
+  /** World height of the piece, in units. */
+  heightMin: number
+  heightMax: number
   /** How far the piece is pushed into the ground, to kill float on slopes. */
   sink: number
-  castShadow: boolean
+  /** Maximum lean off vertical, in radians. Jungle trees are not orchard trees. */
+  lean?: number
   /** Front rank only: draw with the trade-wind vertex shader. */
   sway?: boolean
   /** Small stuff skips the water's reflection and refraction passes. */
@@ -379,15 +371,15 @@ interface RankSpec {
   /** Phase along the spine, so ranks do not line up into rows. */
   phase: number
   /**
-   * Per-rank multiplier on the baked vertex colours, as linear RGB.
+   * Per-rank multiplier on the model's own texture, as linear RGB.
    *
-   * **This is the depth.** Every module in the parts kit authors its own
-   * deep→lit gradient, but every rank was drawing that same gradient, so the
-   * wall came back as one field of green with no front and no back — the
-   * "flat curtain of polygon blobs" the review named. Aerial perspective is a
-   * *value* ladder, and the cheapest place to put one on instanced geometry is
-   * the colour buffer: darken and cool the ranks that are meant to be behind,
-   * lift and warm the ones the dawn actually reaches.
+   * **This is the depth**, and on authored models it is also the palette. The
+   * valley's broadleaf and conifer are tuned for a bright inland meadow at
+   * midday; planted twenty deep on a beach at dawn they come back as one field
+   * of lawn green with no front and no back. Aerial perspective is a *value*
+   * ladder, and per-instance colour is the cheapest place to put one on
+   * instanced geometry: darken and cool the ranks that are meant to be behind,
+   * lift and warm the one the dawn actually reaches.
    *
    * Warmth carries as much of it as brightness. The front rank's tint is
    * lopsided toward red and away from blue, which is what turns a lit green
@@ -395,21 +387,14 @@ interface RankSpec {
    * same shade — and the far ranks lean the other way, because distance is
    * blue. Postfx multiplies saturation by 1.2 afterwards, so the tints are
    * deliberately gentler than they look like they need to be.
-   */
-  tint?: [number, number, number]
-  /**
-   * 0..1 — how far the rank's normals are bent toward straight up.
    *
-   * The sun is barely off the horizon and stands *behind* this wall: the side
-   * facing the beach is the unlit side, so every sphere in the mass comes back
-   * with a black western hemisphere and the whole treeline collapses to one
-   * dark value. The parts kit already forces its leaf normals up for this
-   * reason. Bending the lobes' normals the same way trades their (wrong, at
-   * this scale) round shading for the sky's hemisphere light, and hands the
-   * wall's whole value structure to the authored colours instead — which,
-   * unlike the sun angle, is something this file controls.
+   * This multiplies the *shared* model's texture through `instanceColor`, so
+   * nothing here changes how the same tree looks in the valley. Retinting the
+   * GLB itself (scripts/retint-glb.mjs) would.
    */
-  normalUp?: number
+  tint: [number, number, number]
+  /** Per-instance value spread around `tint`, so no two pieces match. */
+  vary?: number
   /** Drop any piece that lands closer than this to the ring centre — keeps the
    *  inward-spilling ranks out of the farm pad the beds are dug into. */
   keepOut?: number
@@ -418,243 +403,293 @@ interface RankSpec {
 }
 
 const RANKS: RankSpec[] = [
-  // Emergents — a handful of giants breaking the skyline.
-  //
-  // A wall of evenly tall trees produces a level top edge, and a level top edge
-  // is a hedge again however deep the planting behind it. Six or seven of these
-  // standing a third taller than everything else is what turns the outline into
-  // a canopy with a story in it.
-  //
-  // Raised again after the second review: from the wake camera the treeline
-  // still ended inside frame with sky over the top of it, and a treeline you
-  // can see over is a hedge however deep it is. Emergents now run 1.6–2.05,
-  // which puts their crowns past twenty units and off the top of a low
-  // over-the-shoulder frame entirely — you cannot see where the jungle stops,
-  // which is the only way "impassable" ever reads.
-  //
-  // Their scale spread was widened again for this pass: at 1.6–2.05 they were
-  // all within a quarter of each other's height, and a row of near-identical
-  // giants makes a *bumpy* skyline rather than an irregular one. 1.45–2.45 is
-  // the same mean with two-thirds more spread, which is what puts real
-  // difference between one crown and the next.
+  /*
+   * Emergents — the giants breaking the skyline, set well back.
+   *
+   * A wall of evenly tall trees produces a level top edge, and a level top edge
+   * is a hedge however deep the planting behind it. These run 15–22 units,
+   * which puts their crowns off the top of a low over-the-shoulder frame
+   * entirely: you cannot see where the jungle stops, which is the only way
+   * "impassable" ever reads. The conifer is the right species for it — it is
+   * the tallest thing in the model library and its silhouette is a spire, so a
+   * scatter of them behind the broadleaf mass reads as canopy poking through
+   * canopy rather than as a second row of the same tree.
+   *
+   * Darkest and coolest on the wall: this is the value the whole ladder is
+   * measured down from, near the spec's deep `#1E4A2A`.
+   */
   {
-    build: createJungleCanopyA,
-    variants: 3,
-    spacing: 6.4,
-    offset: 3.4,
-    jitter: 1.4,
-    scaleMin: 1.45,
-    scaleMax: 2.45,
-    sink: 0.35,
-    castShadow: false,
+    species: 'pine',
+    spacing: 4.2,
+    wingSpacing: 1.7,
+    offset: 5.0,
+    jitter: 1.6,
+    heightMin: 16,
+    heightMax: 24,
+    sink: 0.5,
+    lean: 0.05,
     phase: 2.2,
-    // Furthest back: darkest and coolest. This is the value the interior of
-    // the wall is measured against, near the spec's deep `#1E4A2A`.
-    tint: [0.62, 0.72, 0.74],
-    normalUp: 0.55,
+    tint: [0.29, 0.40, 0.36],
+    vary: 0.14,
   },
-  // Rear rank — the backing. Tall, dark, set back. Roughly twice the height of
-  // the valley's own trees (5.6u), which is what "looms" costs.
+  // Rear rank — the backing. Tall, dark, set back, and dense enough that its
+  // crowns show through every hole the ranks in front leave.
   {
-    build: createJungleCanopyA,
-    variants: 3,
-    spacing: 2.6,
-    offset: 2.2,
-    jitter: 0.8,
-    scaleMin: 1.0,
-    scaleMax: 1.6,
-    sink: 0.3,
-    castShadow: false,
+    species: 'pine',
+    spacing: 3.6,
+    wingSpacing: 2.4,
+    offset: 3.1,
+    jitter: 1.2,
+    heightMin: 10,
+    heightMax: 15,
+    sink: 0.4,
+    lean: 0.06,
     phase: 0.4,
-    tint: [0.7, 0.8, 0.8],
-    normalUp: 0.55,
+    tint: [0.37, 0.49, 0.43],
+    vary: 0.14,
   },
-  // Second rank — module B, the other silhouette, half a step forward.
+  /*
+   * Canopy rank — the broadleaf, and the mass the wall is actually made of.
+   *
+   * The conifer is a spire and spires stack into a picket fence; the broadleaf
+   * is a wide round crown, so this is the rank that joins up. Half a step
+   * forward of the rear pines and a third shorter, which is what puts a second
+   * layer of crowns *in front of* the first instead of beside it.
+   */
   {
-    build: createJungleCanopyB,
-    variants: 3,
-    spacing: 2.0,
-    offset: 1.1,
-    jitter: 0.7,
-    scaleMin: 1.0,
-    scaleMax: 1.38,
-    sink: 0.25,
-    castShadow: false,
-    phase: 1.5,
-    tint: [0.9, 0.97, 0.92],
-    normalUp: 0.5,
-  },
-  // Third rank — module A again, on the spine, much smaller. This is the rank
-  // the player actually stands in front of, and it sets the scale of the wall:
-  // undersized here, the two behind it read as further away and therefore
-  // bigger, which is the whole trick.
-  {
-    build: createJungleCanopyA,
-    variants: 3,
-    spacing: 2.1,
-    offset: -0.1,
-    jitter: 0.6,
-    scaleMin: 0.6,
-    scaleMax: 0.85,
-    sink: 0.2,
-    castShadow: false,
-    phase: 0.9,
-    tint: [1.14, 1.14, 0.98],
-    normalUp: 0.5,
-  },
-  // The plug. Tight spacing and a jitter wider than the band it sits in, so
-  // the pieces stagger across two depths instead of lining up into one row of
-  // holes the player can look down as they walk past.
-  {
-    build: createUnderThicket,
-    variants: 3,
-    spacing: 0.55,
-    offset: 0.35,
-    jitter: 1.7,
-    scaleMin: 0.95,
-    scaleMax: 1.5,
-    sink: 0.15,
-    castShadow: false,
-    phase: 0.3,
-    // The deepest value on the wall and the one the whole ladder is anchored
-    // to. What shows through the front rank's gaps has to read as *depth*.
-    tint: [0.62, 0.7, 0.7],
-    normalUp: 0.4,
-  },
-  // Trunks. Placed a step *into* the clearing, in front of the standing ranks,
-  // because a trunk seen through foliage is not punctuation. Wide spacing: the
-  // effect is columns cutting the mass into panels, and a column every two
-  // metres is a palisade.
-  {
-    build: createJungleTrunk,
-    variants: 3,
-    spacing: 5.2,
-    offset: -0.55,
-    jitter: 1.0,
-    scaleMin: 0.85,
-    scaleMax: 1.3,
-    sink: 0.25,
-    castShadow: false,
-    phase: 1.7,
-    // Kept dark against everything behind it — a backlit trunk at dawn is a
-    // silhouette, and the silhouette is the entire point of the rank.
-    tint: [0.78, 0.78, 0.8],
-    normalUp: 0.25,
-  },
-  // Vine curtains, hung against the third rank.
-  {
-    build: createVineCurtain,
-    variants: 2,
-    spacing: 4.6,
-    offset: -0.4,
-    jitter: 0.7,
-    scaleMin: 0.85,
-    scaleMax: 1.25,
-    sink: 0.1,
-    castShadow: false,
-    minor: true,
-    phase: 2.6,
-    tint: [0.95, 1.0, 0.92],
-    normalUp: 0.35,
-  },
-  // Mid rank — broadleaf, the wall's waist.
-  {
-    build: createBroadleafClump,
-    variants: 3,
-    spacing: 1.5,
-    offset: -0.9,
-    jitter: 0.5,
-    scaleMin: 0.85,
-    scaleMax: 1.5,
-    sink: 0.1,
-    castShadow: false,
-    phase: 0.2,
-    tint: [1.18, 1.14, 0.94],
-    normalUp: 0.4,
-  },
-  // Monstera stands at the very front edge — the wall's scale rule.
-  //
-  // Sparse and dark: these are read as person-sized shapes against the lit
-  // foliage behind them, which is the only thing in the treeline that tells the
-  // player how big any of it is.
-  {
-    build: createMonsteraStand,
-    variants: 3,
-    spacing: 4.1,
-    offset: -1.75,
+    species: 'tree',
+    spacing: 3.0,
+    wingSpacing: 2.2,
+    offset: 2.4,
     jitter: 1.1,
-    scaleMin: 0.9,
-    scaleMax: 1.45,
-    sink: 0.06,
-    castShadow: false,
-    minor: true,
-    phase: 2.9,
-    tint: [0.84, 0.9, 0.82],
-    normalUp: 0.3,
+    heightMin: 8.5,
+    heightMax: 12,
+    sink: 0.35,
+    lean: 0.09,
+    phase: 1.5,
+    tint: [0.44, 0.57, 0.45],
+    vary: 0.16,
   },
-  // Front rank — fronds. Sunlit, and the only thing here that moves.
+  /*
+   * Mid rank — broadleaf again, on the spine, much smaller.
+   *
+   * This is the rank the player actually stands in front of, and it sets the
+   * scale of the wall: undersized here, the two behind it read as further away
+   * and therefore bigger, which is the whole trick.
+   */
   {
-    build: createFrondFan,
-    variants: 3,
-    spacing: 0.85,
-    offset: -1.1,
-    jitter: 0.45,
-    scaleMin: 1.0,
-    scaleMax: 1.45,
-    sink: 0.08,
-    castShadow: false,
-    sway: true,
-    minor: true,
-    phase: 1.1,
-    // The dawn rim light, and the only warm tint on the wall. Everything else
-    // here is a step on the way down from this.
-    tint: [1.4, 1.28, 0.9],
-    normalUp: 0.5,
+    species: 'tree',
+    spacing: 2.6,
+    wingSpacing: 2.4,
+    offset: -0.2,
+    jitter: 0.9,
+    heightMin: 5.2,
+    heightMax: 8.2,
+    sink: 0.3,
+    lean: 0.11,
+    phase: 0.9,
+    tint: [0.62, 0.74, 0.54],
+    vary: 0.16,
   },
-  // Ferns at the very foot, spilling a little further into the clearing so the
-  // line where jungle meets grass is a tangle instead of a mown edge.
+  /*
+   * Palms threaded through the mass — the species that says *tropical*.
+   *
+   * Sparse on purpose. The broadleaf/conifer pair is the valley's forest, and
+   * a treeline built from nothing else reads as the valley moved to the coast
+   * however dark it is tinted. A palm crown every seven metres, leaning harder
+   * than anything else here, is what turns it into an island.
+   */
   {
-    build: createFernTuft,
-    variants: 3,
-    spacing: 0.6,
-    offset: -1.6,
-    jitter: 0.75,
-    scaleMin: 0.75,
-    scaleMax: 1.4,
-    sink: 0.05,
-    castShadow: false,
-    sway: true,
+    species: 'palm',
+    spacing: 6.4,
+    wingSpacing: 2.0,
+    offset: 1.0,
+    jitter: 1.5,
+    heightMin: 8,
+    heightMax: 13.5,
+    sink: 0.3,
+    lean: 0.22,
+    phase: 3.1,
+    tint: [0.50, 0.63, 0.47],
+    vary: 0.14,
+  },
+  /*
+   * Coconut palms at the front edge, horseshoe only — the wall's scale rule.
+   *
+   * The wall has nothing in it whose size a player can guess at until one of
+   * these stands at the front: a coconut is a known object, and a crown of them
+   * six units up tells you how big everything behind them is. Warm-tinted,
+   * because these are the pieces the low sun actually reaches.
+   */
+  {
+    species: 'coconutPalm',
+    spacing: 8.5,
+    offset: -1.4,
+    jitter: 1.2,
+    heightMin: 5,
+    heightMax: 7.5,
+    sink: 0.15,
+    lean: 0.26,
+    phase: 5.0,
+    wing: false,
+    tint: [0.84, 0.88, 0.60],
+    vary: 0.12,
+  },
+  /*
+   * The plug, upper. Trees have trunks, and trunks have daylight between them:
+   * every rank above still leaves a knee-to-chest band of lit sand showing
+   * straight through the wall, which is precisely the "you can see the sea
+   * through the treeline" failure the whole thing exists to fix.
+   *
+   * The authored bush is half again wider than it is tall, so at three units
+   * high it is nearly five across — tight spacing plus a jitter wider than the
+   * band it sits in staggers the pieces across two depths instead of lining
+   * them up into one row of holes the player can look down as they walk past.
+   *
+   * Deepest value on the wall: what shows through the front gaps has to read as
+   * depth, not as a hole.
+   */
+  {
+    species: 'bush',
+    spacing: 1.3,
+    wingSpacing: 2.0,
+    offset: 0.9,
+    jitter: 2.0,
+    heightMin: 2.4,
+    heightMax: 4.2,
+    sink: 0.25,
+    phase: 0.3,
     minor: true,
+    tint: [0.32, 0.43, 0.35],
+    vary: 0.18,
+  },
+  // The plug, lower — the same trick a step forward and a size down, closing
+  // whatever the upper plug's own gaps let through.
+  {
+    species: 'bush',
+    spacing: 1.1,
+    wingSpacing: 2.2,
+    offset: -0.6,
+    jitter: 1.5,
+    heightMin: 1.5,
+    heightMax: 2.8,
+    sink: 0.2,
+    phase: 1.7,
+    minor: true,
+    tint: [0.48, 0.60, 0.44],
+    vary: 0.18,
+  },
+  /*
+   * Front fringe — sunlit, and the only thing here that moves.
+   *
+   * Spilling a little further into the clearing so the line where jungle meets
+   * ground is a tangle instead of a mown edge. The dawn rim light lives here
+   * and nowhere else: everything behind is a step on the way down from this.
+   */
+  {
+    species: 'bush',
+    spacing: 1.4,
+    wingSpacing: 2.6,
+    offset: -1.9,
+    jitter: 1.2,
+    heightMin: 0.9,
+    heightMax: 1.9,
+    sink: 0.1,
     phase: 0.6,
-    tint: [1.32, 1.24, 0.9],
-    normalUp: 0.5,
-  },
-  // Fern mats, spilling three metres into the clearing.
-  //
-  // The floor field below turns the interior to duff, and bare duff over that
-  // area is a car park. What a jungle interior actually has is scale on the
-  // ground — clumps you walk around — and a scatter of small ferns thinning
-  // inward gives the eye that without putting anything in the player's way.
-  // Wide jitter and small scales: this is a thinning, not a second hedge.
-  {
-    build: createFernTuft,
-    variants: 3,
-    spacing: 1.5,
-    offset: -3.2,
-    jitter: 2.4,
-    scaleMin: 0.45,
-    scaleMax: 0.85,
-    sink: 0.04,
-    castShadow: false,
     sway: true,
     minor: true,
+    tint: [0.90, 0.92, 0.62],
+    vary: 0.16,
+  },
+  /*
+   * A thinning of small bushes three metres into the clearing.
+   *
+   * The floor field turns the interior to shaded duff, and bare duff over that
+   * area is a car park. What a jungle interior actually has is scale on the
+   * ground — clumps you walk around — and a scatter thinning inward gives the
+   * eye that without putting anything in the player's way. Wide jitter and
+   * small scales: this is a thinning, not a second hedge, and it stops well
+   * short of the farm pad.
+   */
+  {
+    species: 'bush',
+    spacing: 2.4,
+    offset: -3.4,
+    jitter: 2.6,
+    heightMin: 0.6,
+    heightMax: 1.3,
+    sink: 0.06,
     phase: 1.9,
+    sway: true,
+    minor: true,
     keepOut: 8.0,
     // Nothing to spill into up the coast — the wings face open beach.
     wing: false,
-    tint: [1.0, 1.02, 0.86],
-    normalUp: 0.5,
+    tint: [0.76, 0.82, 0.56],
+    vary: 0.16,
   },
+  /*
+   * Deadfall at the wall's foot: stumps and logs, horseshoe only.
+   *
+   * A treeline with no debris under it is a hedge that was planted. A cut stump
+   * and a fallen trunk are the two shapes that say the jungle has been standing
+   * here long enough for something to have come down, and they are the only
+   * horizontals in a wall of verticals.
+   */
+  {
+    species: 'stump',
+    spacing: 9.5,
+    offset: -1.5,
+    jitter: 1.4,
+    heightMin: 0.55,
+    heightMax: 1.0,
+    sink: 0.08,
+    phase: 4.2,
+    minor: true,
+    wing: false,
+    tint: [0.60, 0.58, 0.50],
+    vary: 0.1,
+  },
+  {
+    species: 'log',
+    spacing: 11,
+    offset: -2.4,
+    jitter: 1.8,
+    heightMin: 0.6,
+    heightMax: 1.1,
+    sink: 0.1,
+    phase: 7.4,
+    minor: true,
+    wing: false,
+    keepOut: 9.0,
+    tint: [0.62, 0.60, 0.52],
+    vary: 0.1,
+  },
+]
+
+/**
+ * The doorway's arch: two big broadleaves standing on the gap lips and leaning
+ * across the mouth toward one another.
+ *
+ * The retired parts kit had a purpose-built overhang module for this — a trunk
+ * authored leaning toward +X with its crown carried out over open ground. There
+ * is no authored equivalent, so the lean is done at placement instead: a
+ * quarter-radian tilt on an ordinary tree puts its crown out over the corridor
+ * and turns a hole in a hedge into a *doorway*, which is the whole point. The
+ * trunks stand on the lips, three-odd units either side of centre and well
+ * clear of `COLLIDER_OFFSET`'s walking slot; only the canopy crosses.
+ *
+ * Four more are scattered round the ring at arc-length fractions so the arch
+ * does not read as a one-off prop bolted to the gap.
+ */
+const ARCH_LEAN = 0.34
+const ARCH_SPOTS: { at: number; height: number; lean: number }[] = [
+  { at: 0, height: 12.5, lean: ARCH_LEAN },
+  { at: 1, height: 13.5, lean: ARCH_LEAN },
+  { at: 0.28, height: 10.5, lean: 0.24 },
+  { at: 0.46, height: 11.5, lean: 0.2 },
+  { at: 0.63, height: 10, lean: 0.26 },
+  { at: 0.82, height: 12, lean: 0.22 },
 ]
 
 /**
@@ -662,8 +697,8 @@ const RANKS: RankSpec[] = [
  *
  * Circles at 1.4-unit spacing with a 1.5 radius overlap to at least 1.3 units
  * of depth everywhere, which no amount of sliding gets a player through — and
- * they sit half a unit inside the spine so the player is stopped by the fronds
- * they can see rather than by fresh air a metre short of them.
+ * they sit half a unit inside the spine so the player is stopped by the growth
+ * they can see rather than by fresh air a metre short of it.
  */
 const COLLIDER_SPACING = 1.4
 const COLLIDER_RADIUS = 1.5
@@ -672,14 +707,17 @@ const COLLIDER_OFFSET = -0.6
 /** Shared clock for the trade-wind sway, mirroring vegetation's grass uniform. */
 const windTime = { value: 0 }
 
+/** Tallest vertex the sway shader has to account for in the front rank. */
+const SWAY_MAX_HEIGHT = 2.2
+
 /**
  * Near-camera dissolve: where the wall gets between the lens and the player.
  *
  * The engine already collides the camera boom against obstacle circles
  * (`Engine.clearDistance`), and the spine plants one every 1.4 units — but a
  * circle on the spine only describes the *trunks*. This wall's whole design is
- * ranks that step INWARD of the spine (negative rank offsets) and six overhang
- * modules that lean out over the clearing on purpose, and none of that geometry
+ * ranks that step INWARD of the spine (negative rank offsets) and six leaning
+ * trees that reach out over the clearing on purpose, and none of that geometry
  * has a collider by construction: it is the canopy, and giving it one would
  * wall the player out of their own pocket.
  *
@@ -690,13 +728,13 @@ const windTime = { value: 0 }
  *
  * The fix is per-fragment rather than per-object: anything within
  * `NEAR_DISSOLVE_GONE` of the camera is discarded outright, and across the band
- * out to `NEAR_DISSOLVE_FULL` it thins out. Per-fragment matters because the
- * offenders are single huge double-sided leaf quads — hiding the *object* would
- * pop a whole frond in and out as the camera drifts, while dissolving the part
- * of it that is actually in the lens leaves the rest of the same leaf standing.
+ * out to `NEAR_DISSOLVE_FULL` it thins out. Per-fragment matters because hiding
+ * the *object* would pop a whole tree in and out as the camera drifts, while
+ * dissolving the part of it that is actually in the lens leaves the rest of the
+ * same tree standing.
  *
  * The threshold is stippled against interleaved-gradient noise rather than
- * alpha-blended: these are opaque instanced Lambert meshes sorted by nothing in
+ * alpha-blended: these are opaque instanced meshes sorted by nothing in
  * particular, and turning them transparent would cost a sort per frame and give
  * back a pile of ordering artefacts in a scene that is nothing but overlapping
  * foliage. Stipple keeps the material opaque, costs one fract per fragment, and
@@ -706,17 +744,6 @@ const windTime = { value: 0 }
  * material, which this never touches): a leaf dissolving out of the lens should
  * not also take its shadow off the ground three metres away, where the player
  * can plainly see the light has not changed.
- */
-/*
- * Where the wall stops existing, and where it is fully solid again.
- *
- * The first tuning put `GONE` at 0.85, on the theory that only what is
- * practically touching the lens should be deleted. That is right for a leaf
- * drifting past the camera and wrong for the case this exists to fix: in the
- * harvest frame the camera sits *inside* the front ranks, so several metres of
- * foliage fell in the 0.85–3.1 stipple band at once and the frame came back as
- * a coarse screen-door hatch over half its width — an opaque slab traded for a
- * translucent one.
  *
  * 2.0 is the boom's own geometry talking. The gameplay camera rides about 4.8
  * units behind the player, so anything inside 2.0 of the lens is, without
@@ -759,12 +786,7 @@ function applyNearDissolve(material: THREE.Material, cacheKey: string) {
           // Biased hard toward opaque. A linear ramp spends half the band at
           // roughly half coverage, and half coverage of a screen-stable
           // stipple is not "thinning foliage" — it is a fixed screen-door
-          // hatch laid over a quarter of the frame, which the first pass
-          // photographed doing exactly that in the top corners. The square
-          // root collapses that: the band still reaches out to 3.1 units so a
-          // leaf drifting toward the lens starts breaking up early, but it is
-          // only near the inner edge, where the geometry genuinely is in the
-          // lens, that enough fragments drop to read as a hole.
+          // hatch laid over a quarter of the frame.
           keep = sqrt(keep);
           if (keep < 0.999) {
             // Interleaved gradient noise: stable in screen space, so the
@@ -780,103 +802,177 @@ function applyNearDissolve(material: THREE.Material, cacheKey: string) {
 }
 
 /**
- * Lambert with a wind bend injected, so the front rank still takes scene
- * lighting and fog. The bend is quadratic in height: roots planted, tips
- * whipping — and phased off world position so the gust reads as one wave
- * crossing the treeline rather than every frond twitching on its own.
+ * A wall material for one authored model.
+ *
+ * The model's own material is *cloned* rather than edited, because it is shared
+ * with the valley's forest — the wall is allowed to look like a jungle, and the
+ * meadow behind the village is not allowed to change with it. The clone keeps
+ * the baseColour texture (the upload stays shared, so this is free on the GPU)
+ * and gains three things:
+ *
+ *  - `vertexColors`, which is the only path three offers for `instanceColor` to
+ *    reach the fragment shader. Without it every per-instance tint below is
+ *    silently discarded and the whole wall comes back as valley green.
+ *  - the near-camera dissolve.
+ *  - optionally the trade-wind bend, for the one rank that moves.
  */
-function createSwayMaterial(): THREE.MeshLambertMaterial {
-  const material = new THREE.MeshLambertMaterial({
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    shadowSide: THREE.DoubleSide,
-  })
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.uWind = windTime
-    shader.vertexShader = shader.vertexShader
-      // One replace for the declaration: `void main() {` occurs once, and a
-      // second replace aimed at the same anchor silently does nothing.
-      .replace('void main() {', 'uniform float uWind;\nvoid main() {')
-      .replace(
-        '#include <begin_vertex>',
-        /* glsl */ `
-        #include <begin_vertex>
-        #ifdef USE_INSTANCING
-          float wx = instanceMatrix[3][0];
-          float wz = instanceMatrix[3][2];
-          float travel = (wx * 0.11 + wz * 0.085) - uWind * 0.8;
-          float gust = sin(travel) * 0.5 + 0.5;
-          float flutter = sin(uWind * 2.15 + wx * 0.8 + wz * 0.62);
-          float sway = gust * 0.6 + flutter * 0.24;
-          float t = clamp(transformed.y / ${FROND_MAX_HEIGHT.toFixed(3)}, 0.0, 1.0);
-          float bend = t * t * ${FROND_MAX_HEIGHT.toFixed(3)};
-          transformed.x += sway * bend * 0.15;
-          transformed.z += sway * bend * 0.11;
-          transformed.y -= abs(sway) * bend * 0.05;
-        #endif
-        `,
-      )
+function createWallMaterial(model: LoadedModel, sway: boolean): THREE.Material {
+  const material = model.material.clone()
+  material.vertexColors = true
+  if (sway) {
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uWind = windTime
+      shader.vertexShader = shader.vertexShader
+        // One replace for the declaration: `void main() {` occurs once, and a
+        // second replace aimed at the same anchor silently does nothing.
+        .replace('void main() {', 'uniform float uWind;\nvoid main() {')
+        .replace(
+          '#include <begin_vertex>',
+          /* glsl */ `
+          #include <begin_vertex>
+          #ifdef USE_INSTANCING
+            float wx = instanceMatrix[3][0];
+            float wz = instanceMatrix[3][2];
+            float travel = (wx * 0.11 + wz * 0.085) - uWind * 0.8;
+            float gust = sin(travel) * 0.5 + 0.5;
+            float flutter = sin(uWind * 2.15 + wx * 0.8 + wz * 0.62);
+            float sway = gust * 0.6 + flutter * 0.24;
+            // Quadratic in height: roots planted, tips whipping — and phased
+            // off world position so the gust reads as one wave crossing the
+            // treeline rather than every bush twitching on its own.
+            float t = clamp(transformed.y / ${SWAY_MAX_HEIGHT.toFixed(3)}, 0.0, 1.0);
+            float bend = t * t * ${SWAY_MAX_HEIGHT.toFixed(3)};
+            transformed.x += sway * bend * 0.10;
+            transformed.z += sway * bend * 0.075;
+            transformed.y -= abs(sway) * bend * 0.035;
+          #endif
+          `,
+        )
+    }
   }
-  applyNearDissolve(material, 'jungle-sway-dissolve')
+  applyNearDissolve(material, sway ? 'jungle-glb-sway' : 'jungle-glb-static')
   return material
 }
 
 /**
- * Apply a rank's value step and normal bend to its baked geometry, in place.
+ * Give a shared model geometry the white `color` attribute three needs before
+ * `vertexColors` means anything.
  *
- * Both edits belong here rather than in the parts kit: the kit authors *one*
- * jungle, and it is this file that decides which copy of it is fifteen metres
- * back in the shade and which one is catching the sun on the front edge. Doing
- * it after `bakeGroup` means it costs one pass over a few thousand vertices at
- * load and nothing at all per frame, which is the only way it can coexist with
- * instancing.
- *
- * Colours are already in linear space by the time they reach the buffer (three
- * converts on `setHex`), so the multiply is a plain exposure change and warm
- * tints stay warm. Values are allowed past 1: the clamp that matters happens
- * after lighting, and a front rank authored slightly hot is what survives being
- * multiplied by a low sun.
+ * A missing attribute reads as black in WebGL, so a vertex-coloured material on
+ * a geometry without one blackens the entire batch. This writes it once onto
+ * the shared geometry — the same thing `instanceModel` does, and harmless to
+ * every other user of the model, since a material with `vertexColors` off never
+ * looks at it.
  */
-function shadeGeometry(geo: THREE.BufferGeometry, tint?: [number, number, number], normalUp = 0) {
-  const colors = geo.getAttribute('color') as THREE.BufferAttribute | undefined
-  if (tint && colors) {
-    for (let i = 0; i < colors.count; i++) {
-      colors.setXYZ(
-        i,
-        colors.getX(i) * tint[0],
-        colors.getY(i) * tint[1],
-        colors.getZ(i) * tint[2],
-      )
-    }
-    colors.needsUpdate = true
-  }
-  const normals = geo.getAttribute('normal') as THREE.BufferAttribute | undefined
-  if (normalUp > 0 && normals) {
-    const k = Math.min(1, normalUp)
-    for (let i = 0; i < normals.count; i++) {
-      const x = normals.getX(i) * (1 - k)
-      const y = normals.getY(i) * (1 - k) + k
-      const z = normals.getZ(i) * (1 - k)
-      const len = Math.hypot(x, y, z) || 1
-      normals.setXYZ(i, x / len, y / len, z / len)
-    }
-    normals.needsUpdate = true
-  }
-  return geo
+function ensureVertexColorAttribute(geometry: THREE.BufferGeometry) {
+  if (geometry.getAttribute('color')) return
+  const count = geometry.attributes.position.count
+  geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3).fill(1), 3))
 }
 
-/** Static foliage: double-sided because leaves are single-triangle strips. */
-function createLeafMaterial(): THREE.MeshLambertMaterial {
-  const material = new THREE.MeshLambertMaterial({
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    shadowSide: THREE.DoubleSide,
-  })
-  // The overhangs use this material, and they are the single worst offender
-  // for burying the lens: six modules whose whole job is to lean in over the
-  // clearing the player stands in.
-  applyNearDissolve(material, 'jungle-leaf-dissolve')
-  return material
+/** One authored piece of the wall, with the lean the jungle read depends on. */
+interface WallPlacement {
+  x: number
+  y: number
+  z: number
+  rotationY: number
+  scale: number
+  /** Lean off vertical, in radians. */
+  lean: number
+  /** Compass bearing the lean falls toward. */
+  leanBearing: number
+  /** Per-instance tint, linear RGB, already multiplied by the rank's. */
+  tint: [number, number, number]
+}
+
+/**
+ * Build instanced meshes for a set of authored placements, split into spatial
+ * chunks.
+ *
+ * This is `bake.ts`'s `makeInstancedChunks` with one addition it cannot make:
+ * `Placement` carries `rotationY` and nothing else, because everything the
+ * valley plants stands up straight. A jungle does not. The lean is the single
+ * cheapest thing that separates a treeline from an orchard, and it is also how
+ * the doorway gets its arch, so the wall composes its own matrices.
+ *
+ * The chunking is the reason this is worth doing at all: a single InstancedMesh
+ * spanning the whole wall has one bounding volume covering the whole wall, so
+ * it is either fully drawn or fully culled. Chunked, the frustum test discards
+ * the two-thirds of the horseshoe standing behind the camera.
+ */
+const CHUNK_SIZE = 22
+
+function makeWallChunks(
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  placements: WallPlacement[],
+  opts: { minor?: boolean; castShadow?: boolean },
+): THREE.Group {
+  const group = new THREE.Group()
+  if (placements.length === 0) return group
+
+  const buckets = new Map<string, WallPlacement[]>()
+  for (const p of placements) {
+    const key = `${Math.floor(p.x / CHUNK_SIZE)}:${Math.floor(p.z / CHUNK_SIZE)}`
+    let bucket = buckets.get(key)
+    if (!bucket) buckets.set(key, (bucket = []))
+    bucket.push(p)
+  }
+
+  const m = new THREE.Matrix4()
+  const yaw = new THREE.Quaternion()
+  const tilt = new THREE.Quaternion()
+  const axis = new THREE.Vector3()
+  const pos = new THREE.Vector3()
+  const scl = new THREE.Vector3()
+  const up = new THREE.Vector3(0, 1, 0)
+  const colour = new THREE.Color()
+
+  for (const bucket of buckets.values()) {
+    const mesh = new THREE.InstancedMesh(geometry, material, bucket.length)
+    const colors = new Float32Array(bucket.length * 3)
+
+    bucket.forEach((p, i) => {
+      yaw.setFromAxisAngle(up, p.rotationY)
+      // Rotating about the axis perpendicular to a bearing tips the model's
+      // own up-vector over toward that bearing — see the Rodrigues expansion:
+      // (0,1,0)cosθ + (cos b, 0, sin b)sinθ.
+      axis.set(Math.sin(p.leanBearing), 0, -Math.cos(p.leanBearing))
+      tilt.setFromAxisAngle(axis, p.lean)
+      pos.set(p.x, p.y, p.z)
+      scl.setScalar(p.scale)
+      mesh.setMatrixAt(i, m.compose(pos, tilt.multiply(yaw), scl))
+      colour.setRGB(p.tint[0], p.tint[1], p.tint[2])
+      colors[i * 3] = colour.r
+      colors[i * 3 + 1] = colour.g
+      colors[i * 3 + 2] = colour.b
+    })
+
+    mesh.instanceMatrix.needsUpdate = true
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3)
+    mesh.instanceColor.needsUpdate = true
+    /*
+     * Nothing on this wall casts.
+     *
+     * Two hundred and eighty authored trees in the shadow pass is the single
+     * most expensive thing the opening could ask for, and the ground under them
+     * is already carrying painted dapple from the floor fields — a real shadow
+     * map would only fight it. The rocks are the exception; see buildRocks.
+     */
+    mesh.castShadow = opts.castShadow ?? false
+    mesh.receiveShadow = true
+    if (opts.minor) mesh.layers.set(MINOR_LAYER)
+    mesh.computeBoundingSphere()
+    // The lean swings a crown outside the sphere the matrices imply; pad rather
+    // than risk a chunk popping at the frustum edge.
+    mesh.boundingSphere!.radius += 4
+    // Static by construction, so opt out of the per-frame matrix walk.
+    mesh.updateMatrix()
+    mesh.matrixAutoUpdate = false
+    group.add(mesh)
+  }
+
+  return group
 }
 
 /** Cumulative-length walk over the spine, so pieces can be spaced by distance
@@ -921,9 +1017,8 @@ export class JungleWall {
 
   private readonly group = new THREE.Group()
   private readonly obstacles: Obstacle[] = []
-  private readonly geometries: THREE.BufferGeometry[] = []
-  private readonly materials: THREE.Material[] = []
-  private readonly shafts: { mesh: THREE.Mesh; base: number; phase: number }[] = []
+  /** Cloned per model+sway, so the shared originals are never touched. */
+  private readonly materials = new Map<string, THREE.Material>()
   private readonly floor: LoamPatch[] = []
   /** Fast membership test for `setVisible`, which must skip the floor. */
   private readonly floorObjects = new Set<THREE.Object3D>()
@@ -943,23 +1038,20 @@ export class JungleWall {
     // building it before the ranks keeps its render order unambiguous.
     this.buildFloor(spine, wings)
 
-    const swayMaterial = createSwayMaterial()
-    const leafMaterial = createLeafMaterial()
-    this.materials.push(swayMaterial, leafMaterial)
-
     for (const rank of RANKS) {
-      const geos = Array.from({ length: rank.variants }, (_, v) =>
-        shadeGeometry(bakeGroup(rank.build(v)), rank.tint, rank.normalUp),
-      )
-      this.geometries.push(...geos)
-      const buckets: Placement[][] = geos.map(() => [])
+      const model = getModels()[rank.species]
+      // Height→scale is linear in the model's own bounding box, so one fit at
+      // unit height serves every instance in the rank.
+      const unit = fitToHeight(model, 1)
+      const placements: WallPlacement[] = []
 
       const walk = (sp: Spine, onWing: boolean) => {
-        for (let d = rank.phase; d < sp.length; d += rank.spacing) {
+        const step = rank.spacing * (onWing ? (rank.wingSpacing ?? 2.2) : 1)
+        for (let d = rank.phase; d < sp.length; d += step) {
           const { out } = sp.at(d)
           // Jitter runs along the wall as well as across it, so the ranks never
           // resolve into the rows the fixed spacing would otherwise produce.
-          const along = (r() - 0.5) * rank.spacing * 0.8
+          const along = (r() - 0.5) * step * 0.8
           const { p: pj } = sp.at(d + along)
           const off = rank.offset + (r() - 0.5) * rank.jitter
           const x = pj.x + out.x * off
@@ -967,18 +1059,30 @@ export class JungleWall {
           if (rank.keepOut !== undefined && Math.hypot(x - CENTRE.x, z - CENTRE.y) < rank.keepOut) {
             continue
           }
-          // The wings are drawn along a coastline that the spine only
-          // approximates; anything that lands on open beach is a tree growing
-          // out of the sand and gets dropped rather than nudged. The verge —
-          // technically still sand, visually already the bank — is fair game,
-          // and is in fact exactly where a treeline stands.
-          if (onWing && isSand(x, z) && groundHeight(x, z) < VERGE_HIGH) continue
-          buckets[Math.floor(r() * geos.length)].push({
+          /*
+           * Nothing stands in the surf.
+           *
+           * The wings are drawn along a coastline the spine only approximates,
+           * so anything that lands on open beach there is a tree growing out of
+           * the sand and gets dropped rather than nudged. Round the horseshoe
+           * the test is looser — the verge is technically still sand and is in
+           * fact exactly where a treeline stands — but the back ranks now reach
+           * five units seaward of the spine at the gap lips, which is far
+           * enough to wade.
+           */
+          if (isSand(x, z) && groundHeight(x, z) < (onWing ? VERGE_HIGH : VERGE_LOW)) continue
+
+          const height = rank.heightMin + r() * (rank.heightMax - rank.heightMin)
+          const v = 1 + (r() - 0.5) * 2 * (rank.vary ?? 0)
+          placements.push({
             x,
-            y: groundHeight(x, z) - rank.sink,
+            y: groundHeight(x, z) + unit.groundY * height - rank.sink,
             z,
             rotationY: r() * Math.PI * 2,
-            scale: rank.scaleMin + r() * (rank.scaleMax - rank.scaleMin),
+            scale: unit.scale * height,
+            lean: (rank.lean ?? 0) * r(),
+            leanBearing: r() * Math.PI * 2,
+            tint: [rank.tint[0] * v, rank.tint[1] * v, rank.tint[2] * v],
           })
         }
       }
@@ -986,28 +1090,37 @@ export class JungleWall {
       walk(spine, false)
       if (rank.wing !== false) for (const wing of wings) walk(wing, true)
 
-      geos.forEach((geo, i) => {
-        if (buckets[i].length === 0) return
-        this.group.add(
-          makeInstancedChunks(geo, buckets[i], {
-            material: rank.sway ? swayMaterial : leafMaterial,
-            // The wall spans about forty units; one or two chunks is the right
-            // granularity — finer only buys draw calls.
-            chunkSize: 200,
-            castShadow: rank.castShadow,
-            receiveShadow: true,
-            layer: rank.minor ? MINOR_LAYER : undefined,
-          }),
-        )
-      })
+      this.group.add(
+        makeWallChunks(model.geometry, this.materialFor(rank.species, rank.sway === true), placements, {
+          minor: rank.minor,
+        }),
+      )
     }
 
-    this.buildOverhangs(spine, r, leafMaterial)
-    this.buildBasalt(r, leafMaterial)
-    this.buildShafts()
+    this.buildArch(spine, r)
+    this.buildRocks(r)
     this.buildColliders(spine, obstacles)
 
     scene.add(this.group)
+  }
+
+  /**
+   * A cloned material for one species, built at most twice (static and sway).
+   *
+   * Cached rather than cloned per rank so the ranks that share a species also
+   * share a shader program — the value ladder rides on `instanceColor`, which
+   * costs nothing per material.
+   */
+  private materialFor(species: SpeciesId, sway: boolean): THREE.Material {
+    const key = `${species}:${sway}`
+    let material = this.materials.get(key)
+    if (!material) {
+      const model = getModels()[species]
+      ensureVertexColorAttribute(model.geometry)
+      material = createWallMaterial(model, sway)
+      this.materials.set(key, material)
+    }
+    return material
   }
 
   /**
@@ -1219,105 +1332,67 @@ export class JungleWall {
     }
   }
 
-  /**
-   * Module C, the overhangs.
-   *
-   * Two of them lean in over the gap so the doorway has a lintel, and four more
-   * are spread round the wall so the arch does not read as a one-off prop. Each
-   * is rotated to point its reach at the ring's centre — the module is authored
-   * leaning toward +X, so the rotation is simply the bearing of the inward
-   * normal.
-   */
-  private buildOverhangs(spine: Spine, r: () => number, material: THREE.Material) {
-    const geos = [0, 1, 2].map((v) => bakeGroup(createCanopyOverhang(v)))
-    this.geometries.push(...geos)
-    const buckets: Placement[][] = geos.map(() => [])
+  /** The doorway's arch, plus four leaners round the ring. See ARCH_SPOTS. */
+  private buildArch(spine: Spine, r: () => number) {
+    const model = getModels().tree
+    const unit = fitToHeight(model, 1)
+    const placements: WallPlacement[] = []
 
-    // The two gap lips first: arc-length 0 is the south lip, `length` the north.
-    const spots = [0.9, spine.length - 0.9, spine.length * 0.28, spine.length * 0.46, spine.length * 0.63, spine.length * 0.82]
-    spots.forEach((d, i) => {
+    ARCH_SPOTS.forEach((spot, i) => {
+      const d = spot.at * spine.length
       const { p, out } = spine.at(d)
-      const inward = Math.atan2(-out.y, -out.x)
-      const off = i < 2 ? 0.4 : 0.9
+      // A little outward of the spine, so the trunk stands clear of the walking
+      // slot and only the crown crosses it.
+      const off = i < 2 ? 0.5 : 1.0
       const x = p.x + out.x * off
       const z = p.y + out.y * off
-      buckets[i % geos.length].push({
+      // The two gap trees lean at each other across the mouth; the rest lean
+      // inward over the clearing, which is where the player is looking from.
+      const bearing = i === 0 ? Math.PI / 2 : i === 1 ? -Math.PI / 2 : Math.atan2(-out.y, -out.x)
+      const height = spot.height * (0.94 + r() * 0.14)
+      placements.push({
         x,
-        y: groundHeight(x, z) - 0.2,
+        y: groundHeight(x, z) + unit.groundY * height - 0.4,
         z,
-        // Model reaches toward +X; -bearing turns +X onto the inward normal.
-        rotationY: -inward + (r() - 0.5) * 0.35,
-        scale: i < 2 ? 1.05 + r() * 0.2 : 0.85 + r() * 0.3,
-      })
-    })
-
-    geos.forEach((geo, i) => {
-      if (buckets[i].length === 0) return
-      this.group.add(
-        makeInstancedChunks(geo, buckets[i], {
-          material,
-          chunkSize: 200,
-          castShadow: false,
-          receiveShadow: true,
-        }),
-      )
-    })
-  }
-
-  private buildBasalt(r: () => number, material: THREE.Material) {
-    const geos = [0, 1, 2].map((v) => bakeGroup(createBasaltOutcrop(v)))
-    this.geometries.push(...geos)
-    const buckets: Placement[][] = geos.map(() => [])
-    for (const spot of BASALT) {
-      buckets[spot.variant].push({
-        x: spot.x,
-        y: groundHeight(spot.x, spot.z) - 0.12,
-        z: spot.z,
         rotationY: r() * Math.PI * 2,
-        scale: spot.scale,
+        scale: unit.scale * height,
+        lean: spot.lean,
+        leanBearing: bearing + (r() - 0.5) * 0.3,
+        tint: [0.50, 0.63, 0.46],
       })
-    }
-    geos.forEach((geo, i) => {
-      if (buckets[i].length === 0) return
-      this.group.add(
-        makeInstancedChunks(geo, buckets[i], {
-          material,
-          chunkSize: 200,
-          // Basalt is the one thing here that casts: a hard black shadow off a
-          // hard black rock is what sells it as stone next to all that foliage.
-          castShadow: true,
-          receiveShadow: true,
-        }),
-      )
     })
+
+    this.group.add(makeWallChunks(model.geometry, this.materialFor('tree', false), placements, {}))
   }
 
-  private buildShafts() {
-    for (let i = 0; i < SHAFTS.length; i++) {
-      const s = SHAFTS[i]
-      // The exclusion zone, enforced rather than commented. A beam standing in
-      // the walking slot is the exact defect this rebuild exists to remove, and
-      // the table above is the kind of thing that gets nudged by hand later.
-      if (
-        s.x > WALK_CORRIDOR.x0 &&
-        s.x < WALK_CORRIDOR.x1 &&
-        s.z > WALK_CORRIDOR.z0 &&
-        s.z < WALK_CORRIDOR.z1
-      ) {
-        continue
-      }
-      const mesh = createLightShaft(s.top, s.bot, s.height)
-      // Hung from the canopy hole, leaning west with the low eastern sun. The
-      // mouth is the origin, so this is where the beam *starts*, not its middle.
-      mesh.position.set(s.x, groundHeight(s.x, s.z) + SHAFT_HANG, s.z)
-      mesh.rotation.z = s.tilt
-      mesh.rotation.x = (i % 2 === 0 ? 1 : -1) * 0.12
-      mesh.layers.set(MINOR_LAYER)
-      this.group.add(mesh)
-      const material = mesh.material as THREE.MeshBasicMaterial
-      this.materials.push(material)
-      this.geometries.push(mesh.geometry)
-      this.shafts.push({ mesh, base: material.opacity, phase: i * 1.7 })
+  /**
+   * The rock at the jungle foot — the wall's darkest value and its only caster.
+   *
+   * A wall of nothing but green loses its scale, and a hard shadow off a hard
+   * dark rock is what sells stone next to all that foliage. Ten of them is a
+   * shadow bill the pass can afford; the trees' is not.
+   */
+  private buildRocks(r: () => number) {
+    for (const cluster of [false, true]) {
+      const species: SpeciesId = cluster ? 'rockCluster' : 'rock'
+      const model = getModels()[species]
+      const unit = fitToHeight(model, 1)
+      const placements: WallPlacement[] = ROCKS.filter((s) => s.cluster === cluster).map((s) => ({
+        x: s.x,
+        y: groundHeight(s.x, s.z) + unit.groundY * s.height - 0.12,
+        z: s.z,
+        rotationY: r() * Math.PI * 2,
+        scale: unit.scale * s.height,
+        lean: r() * 0.12,
+        leanBearing: r() * Math.PI * 2,
+        // Down and cool: volcanic rock, not the valley's sunlit river stone.
+        tint: [0.40, 0.42, 0.45],
+      }))
+      this.group.add(
+        makeWallChunks(model.geometry, this.materialFor(species, false), placements, {
+          castShadow: true,
+        }),
+      )
     }
   }
 
@@ -1361,16 +1436,11 @@ export class JungleWall {
     for (const o of this.obstacles) o.off = !v
   }
 
-  update(dt: number, elapsed: number) {
+  update(dt: number, _elapsed: number) {
     if (this.disposed || !this.visible) return
+    // The trade-wind sway on the front rank. One uniform; skipping a frame
+    // freezes the treeline.
     windTime.value += dt
-    for (const s of this.shafts) {
-      const material = s.mesh.material as THREE.MeshBasicMaterial
-      // Barely there, and breathing slower than anything else on screen — a
-      // shaft that pulses at a rate the eye can count reads as a light effect
-      // rather than as air.
-      material.opacity = s.base * (0.72 + 0.28 * Math.sin(elapsed * 0.35 + s.phase))
-    }
   }
 
   dispose() {
@@ -1381,10 +1451,12 @@ export class JungleWall {
     this.scene.remove(this.group)
     for (const patch of this.floor) patch.dispose()
     this.floor.length = 0
-    for (const geo of this.geometries) geo.dispose()
-    for (const material of this.materials) material.dispose()
-    this.geometries.length = 0
-    this.materials.length = 0
-    this.shafts.length = 0
+    /*
+     * Materials only — the geometries and the textures under them belong to the
+     * shared model cache and are still planted all over the valley. Disposing
+     * a `LoadedModel.geometry` here would take the forest out with the wall.
+     */
+    for (const material of this.materials.values()) material.dispose()
+    this.materials.clear()
   }
 }

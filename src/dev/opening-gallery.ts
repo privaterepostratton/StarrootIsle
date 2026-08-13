@@ -10,6 +10,7 @@ import {
   createJournalProp,
 } from '../assets/opening/beach-models'
 import { createChaosProp, createBougainvilleaSpill, type ChaosKind } from '../assets/opening/chaos-props'
+import { loadModels, loadGoatModel } from '../assets/models'
 
 /**
  * Dev-only contact sheet for the opening's OBJECTS and CHARACTERS.
@@ -47,6 +48,8 @@ interface Cell {
   yaw?: number
   /** Extra zoom on top of the page zoom. */
   zoom?: number
+  /** Re-pose the cell before a redraw (the rigs that load asynchronously). */
+  settle?: () => void
 }
 
 const cells: Cell[] = []
@@ -55,8 +58,14 @@ const PLANT_STATES: SunTomatoState[] = ['sprout', 'vine', 'flowering', 'fruiting
 
 function goatCell(name: string, yaw: number, look: THREE.Vector3 | null, zoom = 1): Cell {
   const rig = createGoatModel()
-  if (look) for (let i = 0; i < 30; i++) rig.lookAt(look)
-  return { name, object: rig.root, yaw, zoom }
+  // The goat is an authored GLB now, so it is not there on the first pass. The
+  // pose has to be re-settled on the redraw that follows the fetch, hence
+  // `settle` rather than a one-off loop here.
+  const settle = () => {
+    for (let i = 0; i < 30; i++) rig.lookAt(look)
+  }
+  settle()
+  return { name, object: rig.root, yaw, zoom, settle }
 }
 
 if (set === 'all' || set === 'plants') {
@@ -203,8 +212,17 @@ function frame(cell: Cell) {
 const labels = document.getElementById('labels')!
 const dpr = renderer.getPixelRatio()
 
+/*
+ * Drawn as a function rather than once, because several of these props are
+ * authored GLBs now and a static page renders before any fetch lands. The
+ * first pass shows whatever is procedural; the redraw after the models arrive
+ * is the one worth screenshotting, and `__ready` only flips then.
+ */
+function draw() {
+labels.innerHTML = ''
 renderer.setScissorTest(true)
 cells.forEach((cell, i) => {
+  cell.settle?.()
   const col = i % cols
   const row = Math.floor(i / cols)
   const x = col * cellPx
@@ -228,6 +246,11 @@ cells.forEach((cell, i) => {
   labels.appendChild(label)
 })
 renderer.setScissorTest(false)
-
 document.getElementById('head')!.textContent = `${cells.length} objects · set ${set} · dawn rig`
-;(window as unknown as { __ready?: boolean }).__ready = true
+}
+
+draw()
+void Promise.all([loadModels(), loadGoatModel()]).then(() => {
+  draw()
+  ;(window as unknown as { __ready?: boolean }).__ready = true
+})
